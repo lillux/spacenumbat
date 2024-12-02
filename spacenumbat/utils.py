@@ -499,6 +499,7 @@ def get_bulk(count_mat,
     
     return bulk
 
+
 ## Fit snp rate on loh calling
 
 def fit_snp_rate(gene_snps, gene_length):
@@ -545,17 +546,6 @@ def generate_postfix(n:List):
         Alphabetical postfixes corresponding to the integers.
 
     '''
-    """
-
-    Parameters:
-        n (list or array-like): 
-
-    Returns:
-        list of str: 
-
-    Raises:
-        ValueError: 
-    """
 
     if any(x is None for x in n):
         raise ValueError("Segment number cannot contain NA")

@@ -13,9 +13,15 @@ import anndata as ad
 from scipy.cluster.hierarchy import linkage, fcluster, to_tree
 from sklearn.metrics import pairwise_distances
 
-from spacenumbat.utils import filter_genes
+from joblib import Parallel, delayed, cpu_count
+
+from spacenumbat.utils import filter_genes, get_bulk
+
+from functools import partial
 
 import logging
+
+from typing import Any, Dict
 
 
 def scale_counts(x:scipy.sparse.spmatrix) -> scipy.sparse.spmatrix:
@@ -214,3 +220,117 @@ def get_nodes_celltree(hclust, k):
     nodes_dict = {node['sample']: node for node in nodes_list}
     
     return nodes_dict
+
+
+def make_group_bulks(groups: Dict[str, Dict[str, Any]],
+                     count_mat: Any,
+                     df_allele: pd.DataFrame,
+                     lambdas_ref: pd.DataFrame,
+                     gtf: pd.DataFrame,
+                     min_depth: int = 0,
+                     nu: float = 1,
+                     segs_loh: pd.DataFrame = None,
+                     ncores: int = None) -> pd.DataFrame:
+    """
+    Make a group of pseudobulks using joblib for parallel processing.
+
+    Args:
+        groups: Dictionary where keys are node names and values are dictionaries containing 'sample', 'members', 'cells', 'size'.
+        count_mat: AnnData object or similar containing gene counts.
+        df_allele: DataFrame of allele counts.
+        lambdas_ref: DataFrame of reference expression profiles.
+        gtf: DataFrame of transcript annotations.
+        min_depth: Minimum allele depth to include.
+        nu: A parameter (usage depends on get_bulk implementation).
+        segs_loh: DataFrame of segments with clonal LOH to be excluded.
+        ncores: Number of cores for parallel processing.
+
+    Returns:
+        DataFrame containing pseudobulk profiles.
+    """
+    if not groups:
+        return pd.DataFrame()
+
+    if ncores is None:
+        ncores = min(len(groups), cpu_count())
+    # Ensure that ncores does not exceed the number of available CPUs
+    ncores = min(ncores, cpu_count())
+
+    # Prepare arguments to pass to the process_group function
+    process_group_partial = partial(
+        process_group,
+        count_mat=count_mat,
+        df_allele=df_allele,
+        lambdas_ref=lambdas_ref,
+        gtf=gtf,
+        min_depth=min_depth,
+        nu=nu,
+        segs_loh=segs_loh
+    )
+
+    # Use joblib's Parallel and delayed for parallel processing
+    results = Parallel(n_jobs=ncores)(
+        delayed(process_group_partial)(g) for g in groups.values()
+    )
+
+    # Check for errors in the results
+    bulks_list = []
+    for res in results:
+        if isinstance(res, dict) and 'error' in res:
+            g = res['group']
+            log_error(f"Job for sample {g['sample']} failed")
+            log_error(str(res['error']))
+        else:
+            bulks_list.append(res)
+
+    if not bulks_list:
+        return pd.DataFrame()
+
+    # Combine all bulks into a single DataFrame
+    bulks = pd.concat(bulks_list, ignore_index=True)
+
+    # Arrange the DataFrame by 'CHROM' and 'POS'
+    bulks.sort_values(['CHROM', 'POS'], inplace=True)
+
+    # Modify 'snp_id' and 'snp_index' columns
+    # Create a categorical type for 'snp_id' with categories in order of appearance
+    bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique(), ordered=True)
+    bulks['snp_index'] = bulks['snp_id'].cat.codes + 1  # +1 to match R's 1-based indexing
+
+    # Arrange by 'sample'
+    # bulks.sort_values('sample', inplace=True)
+    bulks = bulks.sort_values(['sample', 'snp_id', 'POS'])
+    return bulks
+
+def process_group(g: Dict[str, Any],
+                  count_mat: Any,
+                  df_allele: pd.DataFrame,
+                  lambdas_ref: pd.DataFrame,
+                  gtf: pd.DataFrame,
+                  min_depth: int,
+                  nu: float,
+                  segs_loh: pd.DataFrame):
+    try:
+        # Extract the subset of cells
+        subset_cells = g['cells']
+        # Call get_bulk function for the group
+        bulk = get_bulk(
+            count_mat=count_mat,
+            df_allele=df_allele,
+            subset=subset_cells,
+            lambdas_ref=lambdas_ref,
+            gtf=gtf,
+            min_depth=min_depth,
+            nu=nu,
+            segs_loh=segs_loh
+        )
+        # Add additional columns
+        bulk['n_cells'] = g['size']
+        bulk['members'] = ';'.join(map(str, g['members']))
+        bulk['sample'] = g['sample']
+        return bulk
+    except Exception as e:
+        return {'error': e, 'group': g}
+
+def log_error(message):
+    print(f"ERROR: {message}")
