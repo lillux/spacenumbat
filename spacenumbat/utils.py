@@ -299,9 +299,8 @@ def get_allele_bulk(df_allele:pd.DataFrame,
 
     return df_allele
 
-def combine_bulk(allele_bulk:pd.DataFrame, 
-                 exp_bulk:pd.DataFrame, 
-                 filter_hla:bool=False) -> pd.DataFrame:
+
+def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
     bulk = pd.merge(allele_bulk, exp_bulk, how='outer', on=['CHROM','gene'])
     bulk.loc[:,'snp_id'] = np.where(bulk['snp_id'].isna(), bulk['gene'], bulk['snp_id'])
     bulk.loc[:,'gene'] = pd.Categorical(bulk.loc[:,'gene'], categories=exp_bulk.loc[:,'gene'])
@@ -332,14 +331,14 @@ def combine_bulk(allele_bulk:pd.DataFrame,
                 gene_collect[row.gene][row.snp_id] = row.Y_obs
                 Y_obs_fix.append(row.Y_obs)
     bulk.loc[:, 'Y_obs'] = Y_obs_fix
-    
+    fc = np.exp(np.log(bulk.loc[:,'lambda_obs']) - np.log(bulk.loc[:,'lambda_ref']))
     bulk.loc[:,'lambda_obs'] = bulk.loc[:,'Y_obs'] / bulk.loc[:,'d_obs']
-    bulk.loc[:,'logFC'] = np.log2(bulk.loc[:,'lambda_obs']) - np.log2(bulk.loc[:,'lambda_ref'])
+    bulk.loc[:,'logFC'] = np.log2(fc)
     bulk.loc[:,'logFC'] = np.where(np.isinf(bulk.loc[:,'logFC']), np.nan, bulk.loc[:,'logFC'])
-    bulk.loc[:,'lnFC'] = np.log(bulk.loc[:,'lambda_obs']) - np.log(bulk.loc[:,'lambda_ref'])
+    bulk.loc[:,'lnFC'] = np.log(fc)
     bulk.loc[:,'lnFC'] = np.where(np.isinf(bulk.loc[:,'lnFC']), np.nan, bulk.loc[:,'lnFC'])
-
-    return bulk
+    
+    return bulk.sort_values(by=['CHROM','POS']).reset_index(drop=True)
 
 
 def annot_consensus(bulk, segs_consensus, join_mode='inner'):
