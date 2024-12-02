@@ -313,13 +313,7 @@ def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
     if filter_hla:
         to_filter = bulk[(bulk.loc[:,'CHROM'] == 6) & (bulk.loc[:,'POS'] > 28510120) & (bulk.loc[:,'POS'] < 33480577)].index
         bulk = bulk.loc[bulk.index.difference(to_filter),:]
-    # assign index to snps
-    snp_index = []
-    for chrom in bulk.CHROM.unique():
-        current_snp_num = bulk[bulk.CHROM == chrom].shape[0]
-        snp_index += [i for i in range(current_snp_num)]
-    bulk.loc[:,'snp_index'] = snp_index
-    # assign values to Y_obs # way faster with dict
+        
     gene_collect = {}
     Y_obs_fix = []
     for chrom in bulk.CHROM.unique():
@@ -340,7 +334,14 @@ def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
     bulk.loc[:,'lnFC'] = np.log(fc)
     bulk.loc[:,'lnFC'] = np.where(np.isinf(bulk.loc[:,'lnFC']), np.nan, bulk.loc[:,'lnFC'])
     
-    return bulk.sort_values(by=['CHROM','POS']).reset_index(drop=True)
+    bulk = bulk.sort_values(by=['CHROM','POS']).reset_index(drop=True)
+    # assign index to snps
+    snp_index = []
+    for chrom in bulk.CHROM.unique():
+        current_snp_num = bulk[bulk.CHROM == chrom].shape[0]
+        snp_index += [i for i in range(current_snp_num)]
+    bulk.loc[:,'snp_index'] = snp_index
+    return bulk
 
 
 def annot_consensus(bulk, segs_consensus, join_mode='inner'):
