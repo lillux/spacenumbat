@@ -5,7 +5,7 @@ Created on Tue Nov 19 11:35:09 2024
 
 @author: carlino.calogero
 """
-import warnings
+import string
 
 import numpy as np
 import pandas as pd
@@ -16,12 +16,17 @@ import pyranges as pr
 from pyranges import PyRanges
 
 import scipy
+
 from natsort import natsorted
 
 from typing import Dict, List
 from numpy.typing import NDArray
 
+import warnings
 
+
+
+## Prepare bulk data
 
 def annotate_genes(df, gtf):
     # Rename some gtf columns. Needed for PyRanges.
@@ -146,7 +151,6 @@ def fit_ref_sse_ad(count_mat:ad.AnnData,
     x = fit.x
     x = x/np.sum(x)
     lambdas_bar = np.matmul(lambdas_ref, x)
-    # lambdas_bar = lambdas_bar[lambdas_bar > 0]
     lambdas_mse = fit.fun / len(lambdas_obs)
     return {'w':x, 'lambdas_bar':lambdas_bar, 'mse':lambdas_mse}
 
@@ -177,8 +181,6 @@ def filter_genes(count_mat:ad.AnnData,
     count_mat_filtered = count_mat[:,genes_keep]
     lambdas_bar_filtered = lambdas_bar[genes_keep]
     lambdas_obs = pd.Series(np.array(count_mat_filtered.X.sum(0) / count_mat_filtered.X.sum()).ravel(), index=count_mat_filtered.var.index)
-    # print(count_mat_filtered.shape)
-    # print(lambdas_bar_filtered.shape)
 
     # Thresholds
     min_both = 2
@@ -495,4 +497,135 @@ def get_bulk(count_mat,
         # Set 'loh' to False where it's NaN
         bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
     
+    return bulk
+
+## Fit snp rate on loh calling
+
+def fit_snp_rate(gene_snps, gene_length):
+
+    # Define the objective function to minimize
+    def objective(params):
+        v = params[0]
+        sig = params[1]
+        mu = v * gene_length / 1e6
+        log_likelihood = np.sum(scipy.stats.nbinom.logpmf(gene_snps, sig, sig / (mu + sig)))
+        return -log_likelihood
+
+    # Initial parameters
+    initial_params = [10, 1]
+
+    # Constraints on the parameters (equivalent to lower bounds in R optim)
+    bounds = [(1e-10, None), (1e-10, None)]
+
+    # Minimize the objective function
+    result = scipy.optimize.minimize(objective, initial_params, method='L-BFGS-B', bounds=bounds)
+
+    return result.x
+
+
+## Annotate loh call
+
+def generate_postfix(n:List):
+    '''
+    Generate alphabetical postfixes for a list of positive integers.
+
+    Parameters
+    ----------
+    n : List
+        A list of positive integers.
+
+    Raises
+    ------
+    ValueError
+        Raise ValueError if any of the integers are None.
+
+    Returns
+    -------
+    postfixes : List[str]
+        Alphabetical postfixes corresponding to the integers.
+
+    '''
+    """
+
+    Parameters:
+        n (list or array-like): 
+
+    Returns:
+        list of str: 
+
+    Raises:
+        ValueError: 
+    """
+
+    if any(x is None for x in n):
+        raise ValueError("Segment number cannot contain NA")
+    
+    alphabet = list(string.ascii_lowercase)
+    len_alphabet = len(alphabet)
+    postfixes = []
+    for number in n:
+        i = int(number)  # Ensure the number is an integer
+        postfix = ''
+        while True:
+            i, remainder = divmod(i, len_alphabet)
+            postfix = alphabet[remainder] + postfix
+            if i == 0:
+                break
+        postfixes.append(postfix)
+    return postfixes
+
+
+def annot_segs(bulk, var = 'cnv_state'):
+    '''
+    
+
+    Parameters
+    ----------
+    bulk : TYPE
+        DESCRIPTION.
+    var : TYPE, optional
+        DESCRIPTION. The default is 'cnv_state'.
+
+    Returns
+    -------
+    bulk : TYPE
+        DESCRIPTION.
+
+    '''
+    boundary = []
+    postfix = []
+    for chrom in bulk.CHROM.unique():
+        temp_sorted = bulk[bulk.loc[:, 'CHROM'] == chrom]
+        boundary += [0]+[1 if temp_sorted.loc[:,var].iloc[i] != temp_sorted.loc[:,var].iloc[i - 1] else 0 for i in range(1,temp_sorted.shape[0])]
+        current_postfix = generate_postfix(np.cumsum(boundary[temp_sorted.index[0]:temp_sorted.index[-1]+1]))
+        postfix += [str(chrom)+i for i in current_postfix]
+    
+    bulk.loc[:,'boundary'] = boundary
+    bulk.loc[:,'seg'] = postfix
+    bulk.seg = bulk.seg.astype('category')
+
+    seg_start = []
+    seg_end = []
+    seg_start_index = []
+    seg_end_index = []
+    n_genes = []
+    n_snps = []
+    
+    for seg in bulk.seg.unique():
+        current_seg = bulk[bulk.loc[:, 'seg'] == seg]
+        seg_len = current_seg.shape[0]
+        seg_start += list(np.repeat(current_seg.POS.min(), seg_len))
+        seg_end += list(np.repeat(current_seg.POS.max(), seg_len))
+        seg_start_index += list(np.repeat(current_seg.snp_index.min(), seg_len))
+        seg_end_index += list(np.repeat(current_seg.snp_index.max(), seg_len))
+        n_genes += list(np.repeat(current_seg.gene[~current_seg.gene.isnull()].unique().shape[0], seg_len))
+        n_snps += list(np.repeat(current_seg.pAD[~current_seg.pAD.isnull()].sum(), seg_len))
+    
+    bulk.loc[:, 'seg_start'] = seg_start
+    bulk.loc[:, 'seg_end'] = seg_end
+    bulk.loc[:, 'seg_start_index'] = seg_start_index
+    bulk.loc[:, 'seg_end_index'] = seg_end_index
+    bulk.loc[:, 'n_genes'] = n_genes
+    bulk.loc[:, 'n_snps'] = n_snps
+
     return bulk
