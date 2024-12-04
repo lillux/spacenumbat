@@ -457,8 +457,9 @@ def get_bulk(count_mat,
              segs_loh = None,
              verbose = True,
              filter_hla = True):
-
-    count_mat = check_anndata(count_mat)
+    
+    # YOU NEED TO DO ***EXPLICIT*** COPY OF THE ANNDATA WHEN YOU WRITE ON IT!
+    count_mat = check_anndata(count_mat.copy())
     if subset is not None: 
         if not set(subset).issubset(set(count_mat.obs_names)):
             raise KeyError('All the requested cell barcodes must be present in count_mat')
