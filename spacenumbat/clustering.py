@@ -15,17 +15,16 @@ from sklearn.metrics import pairwise_distances
 
 from joblib import Parallel, delayed, cpu_count
 
-from spacenumbat.utils import filter_genes, get_bulk
+from spacenumbat.utils import filter_genes, get_bulk, check_anndata
 
 from functools import partial
-
 import logging
-
 from typing import Any, Dict
 
 
 def scale_counts(x:scipy.sparse.spmatrix) -> scipy.sparse.spmatrix:
     return x / x.sum(1)
+
 
 def choose_ref_cor(count_mat:ad.AnnData, lambdas_ref:pd.DataFrame, gtf:pd.DataFrame):
     
@@ -116,35 +115,32 @@ def smooth_expression(count_mat, lambdas_ref, gtf, window=101, cap=3, verbose=Fa
     exp_mat_smooth = exp_mat_norm.T.rolling(window=window, center=True, min_periods=1).mean()
     count_mat.layers['X_smooth'] = scipy.sparse.csr_matrix(exp_mat_smooth.values.T)
     count_mat.layers['X'] = count_mat.X
-    count_mat.X = count_mat.layers['X_smooth']
+    # count_mat.X = count_mat.layers['X_smooth']
 
-    # return AnnData with a smoothed X matrix. The original X is stored in layers.
+    # return AnnData with a smoothed X matrix layer. The original X is stored in layers.
     return count_mat
 
 
 def exp_hclust(count_mat, lambdas_ref, gtf, sc_refs=None, window=101, ncores=1, verbose=True):
-    # count_mat = check_matrix(count_mat)
-    
+    count_mat = check_anndata(count_mat.copy())
     if sc_refs is None:
         sc_refs = choose_ref_cor(count_mat, lambdas_ref, gtf)
-    
     lambdas_bar = get_lambdas_bar(lambdas_ref, sc_refs, verbose=False)
-
     gexp_roll_wide = smooth_expression(count_mat, lambdas_bar, gtf, window=window, verbose=verbose)
-
-    # Use parallel pairwise distance computation (mimicking `parallelDist::parDist`)
-    dist_mat = pairwise_distances(gexp_roll_wide, metric='euclidean', n_jobs=ncores)
-
+    # Use parallel pairwise distance computation in scipy
+    dist_mat = pairwise_distances(gexp_roll_wide.layers['X_smooth'], metric='euclidean', n_jobs=ncores)
     # Fill NaNs with zeros (as in R code if there are missing values)
     dist_mat[np.isnan(dist_mat)] = 0
-
-    print('Running hierarchical clustering...')
-    hc = linkage(dist_mat, method='ward')  # equivalent to 'ward.D2' in R
+    # dist_mat is np.close with dist_mat.T, but not np.equal. We need them equal to use condensed matrix
+    dist_mat = (dist_mat + dist_mat.T) / 2
+    dist_mat = scipy.spatial.distance.squareform(dist_mat)
     
-    return {
-        'gexp_roll_wide': gexp_roll_wide,
-        'hc': hc
-    }
+    print('Running hierarchical clustering...')
+    hc = linkage(dist_mat, method='ward')  # 'ward.D2' in R
+    print('Ended hierarchical clustering')
+    
+    return {'gexp_roll_wide': gexp_roll_wide,
+            'hc': hc}
 
 
 def get_internal_nodes(node, node_id, labels, clusters_dict):
