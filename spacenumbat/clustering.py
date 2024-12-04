@@ -99,18 +99,15 @@ def smooth_expression(count_mat, lambdas_ref, gtf, window=101, cap=3, verbose=Fa
     
     # Normalize counts
     exp_mat = scale_counts(count_mat.X).toarray()
-    
     # Log transformation and normalization
     exp_mat_norm = np.log2(exp_mat * 1e6 + 1) - np.log2(lambdas_ref * 1e6 + 1).values
-    
     # Cap values to a range of [-cap, cap]
     exp_mat_norm = np.clip(exp_mat_norm, -cap, cap)
-    
     # Centering by cell (subtract row means)
     row_means = exp_mat_norm.mean(axis=1, keepdims=True)
     exp_mat_norm -= row_means
     exp_mat_norm = pd.DataFrame(exp_mat_norm)
-
+    
     # Apply rolling window smoothing
     exp_mat_smooth = exp_mat_norm.T.rolling(window=window, center=True, min_periods=1).mean()
     count_mat.layers['X_smooth'] = scipy.sparse.csr_matrix(exp_mat_smooth.values.T)
@@ -121,12 +118,12 @@ def smooth_expression(count_mat, lambdas_ref, gtf, window=101, cap=3, verbose=Fa
     return count_mat
 
 
-def exp_hclust(count_mat, lambdas_ref, gtf, sc_refs=None, window=101, ncores=1, verbose=True):
+def exp_hclust(count_mat, lambdas_ref, gtf, sc_refs=None, window=101, ncores=1, verbose=True, filter_hla=True):
     count_mat = check_anndata(count_mat.copy())
     if sc_refs is None:
         sc_refs = choose_ref_cor(count_mat, lambdas_ref, gtf)
     lambdas_bar = get_lambdas_bar(lambdas_ref, sc_refs, verbose=False)
-    gexp_roll_wide = smooth_expression(count_mat, lambdas_bar, gtf, window=window, verbose=verbose)
+    gexp_roll_wide = smooth_expression(count_mat, lambdas_bar, gtf, window=window, verbose=verbose, filter_hla=filter_hla)
     # Use parallel pairwise distance computation in scipy
     dist_mat = pairwise_distances(gexp_roll_wide.layers['X_smooth'], metric='euclidean', n_jobs=ncores)
     # Fill NaNs with zeros (as in R code if there are missing values)

@@ -568,22 +568,9 @@ def generate_postfix(n:List):
 
 
 def annot_segs(bulk, var = 'cnv_state'):
-    '''
-    
-
-    Parameters
-    ----------
-    bulk : TYPE
-        DESCRIPTION.
-    var : TYPE, optional
-        DESCRIPTION. The default is 'cnv_state'.
-
-    Returns
-    -------
-    bulk : TYPE
-        DESCRIPTION.
-
-    '''
+    # you need to reset index so you can pass portion of list (groups)
+    bulk = bulk.copy().reset_index(drop=True) 
+    var = 'cnv_state'
     boundary = []
     postfix = []
     for chrom in bulk.CHROM.unique():
@@ -595,7 +582,7 @@ def annot_segs(bulk, var = 'cnv_state'):
     bulk.loc[:,'boundary'] = boundary
     bulk.loc[:,'seg'] = postfix
     bulk.seg = bulk.seg.astype('category')
-
+    
     seg_start = []
     seg_end = []
     seg_start_index = []
