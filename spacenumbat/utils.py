@@ -570,7 +570,6 @@ def generate_postfix(n:List):
 def annot_segs(bulk, var = 'cnv_state'):
     # you need to reset index so you can pass portion of list (groups)
     bulk = bulk.copy().reset_index(drop=True) 
-    var = 'cnv_state'
     boundary = []
     postfix = []
     for chrom in bulk.CHROM.unique():
@@ -598,8 +597,8 @@ def annot_segs(bulk, var = 'cnv_state'):
         seg_start_index += list(np.repeat(current_seg.snp_index.min(), seg_len))
         seg_end_index += list(np.repeat(current_seg.snp_index.max(), seg_len))
         n_genes += list(np.repeat(current_seg.gene[~current_seg.gene.isnull()].unique().shape[0], seg_len))
-        n_snps += list(np.repeat(current_seg.pAD[~current_seg.pAD.isnull()].sum(), seg_len))
-    
+        n_snps += list(np.repeat(np.count_nonzero(~current_seg.pAD.isna()), seg_len))
+
     bulk.loc[:, 'seg_start'] = seg_start
     bulk.loc[:, 'seg_end'] = seg_end
     bulk.loc[:, 'seg_start_index'] = seg_start_index
