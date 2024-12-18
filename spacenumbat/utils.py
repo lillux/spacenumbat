@@ -457,7 +457,7 @@ def get_bulk(count_mat,
              segs_loh = None,
              verbose = True,
              filter_hla = True):
-    
+
     # YOU NEED TO DO ***EXPLICIT*** COPY OF THE ANNDATA WHEN YOU WRITE ON IT!
     count_mat = check_anndata(count_mat.copy())
     if subset is not None: 
@@ -476,26 +476,19 @@ def get_bulk(count_mat,
     if np.unique(bulk.loc[:,'snp_id']).shape[0] != bulk.loc[:,'snp_id'].shape[0]:
         raise ValueError('Duplicated SNPs found, please check genotypes')
     
-    bulk = bulk[(~bulk.loc[:, 'lambda_ref'].isna()) & (~bulk.loc[:,'gene'].isna())]
-    # Filter out rows where lambda_ref is zero and gene is not NaN
-    # bulk = bulk[(bulk['lambda_ref'] != 0) | (bulk['gene'].isna())]
+    # Filter out rows where lambda_ref is zero or gene is not NaN
+    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
+
     bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', 23, bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'])
     bulk = bulk.reset_index(drop=True)
 
-    ### ADD segs_loh stuff as in Numbat get_bulk()
     # Annotate clonal LOH regions
     if segs_loh is None:
         bulk.loc[:,'loh'] = False
     else:
-        # Ensure 'loh' column exists in segs_loh
-        if 'loh' not in segs_loh.columns:
-            segs_loh = segs_loh.copy()
-            segs_loh.loc[:,'loh'] = True
-
         # Annotate consensus segments
         bulk = annot_consensus(bulk, segs_loh, join_mode='left')
-
         # Set 'loh' to False where it's NaN
         bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
     

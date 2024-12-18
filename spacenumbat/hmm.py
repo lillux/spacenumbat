@@ -44,7 +44,7 @@ def viterbi_loh(HMM):
 
 def detect_clonal_loh(bulk, t:float=1e-5, snp_rate_loh:float=5, min_depth=0):
 
-    bulk = bulk[~bulk.loc[:,'gene'].isnull()]
+    bulk = bulk[(~bulk.loc[:, 'lambda_ref'].isna()) & (~bulk.loc[:,'gene'].isna())].copy()
     
     bulk_snps = {'CHROM':[],
              'gene':[],
@@ -89,11 +89,8 @@ def detect_clonal_loh(bulk, t:float=1e-5, snp_rate_loh:float=5, min_depth=0):
                      bulk_snps_df.d_obs.unique())
     
     mu, sig = fit
-    
     bulk_snps_df.gene_length = bulk_snps_df.gene_length.values.astype(np.int32)
-    
     snp_fit = fit_snp_rate(bulk_snps_df.gene_snps.values, bulk_snps_df.gene_length.values)
-    
     snp_rate_ref, snp_sig = snp_fit
     
     n = bulk_snps_df.shape[0]
@@ -117,7 +114,6 @@ def detect_clonal_loh(bulk, t:float=1e-5, snp_rate_loh:float=5, min_depth=0):
     }
     
     vtb = viterbi_loh(HMM)
-    
     bulk_snps_df.loc[:,'cnv_state'] = vtb
     
     bulk_snps_df.loc[:,'snp_index'] = bulk_snps_df.index
@@ -146,4 +142,4 @@ def detect_clonal_loh(bulk, t:float=1e-5, snp_rate_loh:float=5, min_depth=0):
         segs_loh = None
     return segs_loh
 
-    return bulk_snps_df
+    return segs_loh
