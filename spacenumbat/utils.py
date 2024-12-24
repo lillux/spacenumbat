@@ -425,7 +425,6 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     return bulk
 
 
-
 def get_bulk(count_mat,
              lambdas_ref,
              df_allele,
