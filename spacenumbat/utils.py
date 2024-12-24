@@ -345,7 +345,6 @@ def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
 
 
 def annot_consensus(bulk, segs_consensus, join_mode='inner'):
-    
     """
     Annotate consensus segments on a pseudobulk dataframe.
     
@@ -357,6 +356,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     Returns:
         pd.DataFrame: Annotated pseudobulk profile.
     """
+    
     # Set the join mode
     if join_mode == 'inner':
         how = 'inner'
@@ -385,16 +385,15 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     overlaps = bulk_ranges.join(segs_consensus_ranges, how='right', slack=1)
     overlaps_df = overlaps.df
     
-    # # #renaming
+    #renaming
     bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
     bulk = bulk.drop(columns='End')
     segs_consensus = segs_consensus.rename(columns={'Chromosome':'CHROM', 'Start':'seg_start', 'End':'seg_end'})
-    # Check for specific overlapping columns
     if ('seg_start' in overlaps_df.columns) and ('seg_end' in overlaps_df.columns):
         overlaps_df = overlaps_df.drop(columns=['seg_start', 'seg_end'])
-        
     overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start_b':'seg_start', 'End_b':'seg_end'})
     overlaps_df = overlaps_df.drop(['Start', 'End'], axis=1)
+    
     # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
     
@@ -411,7 +410,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     
     overlaps_df = overlaps_df.drop(columns=[col for col in columns_to_exclude if col in overlaps_df.columns])
     overlaps_df = overlaps_df.loc[:,['snp_id'] + [col for col in segs_consensus if col not in columns_to_exclude]]
-    # # Exclude overlapping columns from bulk except 'snp_id' and 'CHROM'
+    # Exclude overlapping columns from bulk except 'snp_id' and 'CHROM'
     exclude_from_bulk = [col for col in overlaps_df.columns if col not in ['snp_id', 'CHROM']]
     bulk = bulk.drop(columns=[col for col in exclude_from_bulk if col in bulk.columns])
     
@@ -500,7 +499,6 @@ def fit_snp_rate(gene_snps, gene_length):
 
 
 ## Annotate loh call
-
 def generate_postfix(n:List):
     '''
     Generate alphabetical postfixes for a list of positive integers.
@@ -550,10 +548,13 @@ def annot_segs(bulk, var = 'cnv_state'):
         boundary += [0]+[1 if temp_sorted.loc[:,var].iloc[i] != temp_sorted.loc[:,var].iloc[i - 1] else 0 for i in range(1,temp_sorted.shape[0])]
         current_postfix = generate_postfix(np.cumsum(boundary[temp_sorted.index[0]:temp_sorted.index[-1]+1]))
         postfix += [str(chrom)+i for i in current_postfix]
+    # Natural sorting and cast to Categorical to avoid warnings
+    postfix = pd.Series(postfix)
+    unique_segs = natsorted(postfix.unique())
+    bulk['seg'] = pd.Categorical(postfix, categories=unique_segs)
     
     bulk.loc[:,'boundary'] = boundary
     bulk.loc[:,'seg'] = postfix
-    bulk.seg = bulk.seg.astype('category')
     
     seg_start = []
     seg_end = []
@@ -580,5 +581,3 @@ def annot_segs(bulk, var = 'cnv_state'):
     bulk.loc[:, 'n_snps'] = n_snps
 
     return bulk
-
-
