@@ -345,6 +345,7 @@ def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
 
 
 def annot_consensus(bulk, segs_consensus, join_mode='inner'):
+    
     """
     Annotate consensus segments on a pseudobulk dataframe.
     
@@ -355,8 +356,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
         
     Returns:
         pd.DataFrame: Annotated pseudobulk profile.
-    """
-    
+     """
+
     # Set the join mode
     if join_mode == 'inner':
         how = 'inner'
@@ -382,10 +383,10 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     segs_consensus_ranges = pr.PyRanges(df=segs_consensus) 
     
     # Find overlaps between bulk and segs_consensus
-    overlaps = bulk_ranges.join(segs_consensus_ranges, how='right', slack=1)
+    overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
     overlaps_df = overlaps.df
     
-    #renaming
+    # # renaming
     bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
     bulk = bulk.drop(columns='End')
     segs_consensus = segs_consensus.rename(columns={'Chromosome':'CHROM', 'Start':'seg_start', 'End':'seg_end'})
@@ -393,8 +394,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
         overlaps_df = overlaps_df.drop(columns=['seg_start', 'seg_end'])
     overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start_b':'seg_start', 'End_b':'seg_end'})
     overlaps_df = overlaps_df.drop(['Start', 'End'], axis=1)
-    
-    # Remove duplicates of snp_id, keeping the first occurrence
+    # # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
     
     bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
@@ -403,9 +403,10 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     bulk.CHROM = bulk.CHROM.astype(cat_bulk)
     
     overlaps_df.CHROM = overlaps_df.CHROM.astype('int')
-    overlaps_df.CHROM = overlaps_df.CHROM.astype(cat_bulk)
+    # overlaps_df.CHROM = overlaps_df.CHROM.astype(cat_bulk)
+    overlaps_df.CHROM = overlaps_df.CHROM.astype('category')
     
-    # Drop unnecessary columns
+    # # # Drop unnecessary columns
     columns_to_exclude = ['sample']
     
     overlaps_df = overlaps_df.drop(columns=[col for col in columns_to_exclude if col in overlaps_df.columns])
@@ -414,13 +415,13 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     exclude_from_bulk = [col for col in overlaps_df.columns if col not in ['snp_id', 'CHROM']]
     bulk = bulk.drop(columns=[col for col in exclude_from_bulk if col in bulk.columns])
     
-    # Merge bulk and overlaps_df
+    # # Merge bulk and overlaps_df ### THIS IS THE PROBLEM
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
     # Factor 'seg' using natsorted order
     unique_segs = natsorted(bulk['seg'].dropna().unique())
-    bulk['seg'] = pd.Categorical(bulk['seg'], categories=unique_segs, ordered=True)
+    bulk['seg'] = pd.Categorical(bulk['seg'], categories=unique_segs)
 
     return bulk
 
