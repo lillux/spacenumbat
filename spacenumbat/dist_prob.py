@@ -7,7 +7,7 @@ Created on Mon Dec  2 16:08:02 2024
 """
 import numpy as np
 from scipy.integrate import quad
-from scipy.special import gammaln
+from scipy.special import gammaln, comb, betaln
 from scipy.optimize import minimize
 from scipy.stats import nbinom
 
@@ -151,3 +151,23 @@ def fit_lnpois(Y_obs, lambda_ref, d):
 def dnbinom(x, mu, size):
     p = size / (mu + size)
     return nbinom.logpmf(x, p=p, n=size)
+
+
+def log_beta_binomial_pmf(k, n, alpha, beta):
+    """
+    Compute the log of the beta-binomial PMF.
+
+    Parameters:
+        k (numpy.ndarray): Success counts
+        n (numpy.ndarray): Total counts
+        alpha (numpy.ndarray): Alpha parameters
+        beta (numpy.ndarray): Beta parameters
+
+    Returns:
+        numpy.ndarray: Log PMF values
+    """
+    # Calculate the number of combination of n:DP taken k:pAD times
+    log_coef = np.log(comb(n, k))
+    # Calculate PMF using
+    log_pmf = log_coef + betaln(k + alpha, n - k + beta) - betaln(alpha, beta)
+    return log_pmf
