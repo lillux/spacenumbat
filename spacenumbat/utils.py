@@ -16,11 +16,14 @@ import pyranges as pr
 from pyranges import PyRanges
 
 import scipy
+from scipy.stats import ttest_ind
 
 from natsort import natsorted
 
 from typing import Dict, List
 from numpy.typing import NDArray
+
+from functools import Counter
 
 import warnings
 
@@ -581,3 +584,46 @@ def annot_segs(bulk, var = 'cnv_state'):
     bulk.loc[:, 'n_snps'] = n_snps
 
     return bulk
+
+
+def t_test_pval(x, y):
+    """
+    T-test wrapper, handles error for insufficient observations.
+    Returns 1 if either x or y doesn't have more than one element.
+    Otherwise returns the p-value of a two-sample t-test.
+    """
+    x = np.asarray(x)
+    y = np.asarray(y)
+
+    # Check length conditions
+    if x.size <= 1 or y.size <= 1:
+        return 1.0
+    # Perform two-sample t-test (assuming equal var)
+    _, pvalue = ttest_ind(x, y, equal_var=True, nan_policy='omit')
+    return pvalue
+
+
+def simes_p(p_vals, n_dim):
+    """
+    Calculate simes' p.
+    p.vals: array-like of p-values
+    n_dim: scalar integer
+    """
+    p_vals = np.asarray(p_vals)
+    sorted_p = np.sort(p_vals)
+    indices = np.arange(len(sorted_p))
+    return n_dim * np.min(sorted_p / indices)
+
+
+def Modes(x):
+    """
+    Get the modes of a vector.
+    Returns a list of the most frequent values.
+    """
+    x = np.asarray(x)
+    # Count occurrences using Counter
+    c = Counter(x)
+    # Find max frequency
+    max_freq = max(c.values())
+    # Return all elements that have this frequency
+    return [k for k, v in c.items() if v == max_freq]
