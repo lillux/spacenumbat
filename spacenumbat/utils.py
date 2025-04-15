@@ -20,7 +20,7 @@ from scipy.stats import ttest_ind
 
 from natsort import natsorted
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from numpy.typing import NDArray
 
 from functools import Counter
@@ -31,74 +31,200 @@ import warnings
 
 ## Prepare bulk data
 
-def annotate_genes(df, gtf):
-    # Rename some gtf columns. Needed for PyRanges.
-    gtf = gtf.rename(columns={'gene_start':'Start', 'gene_end':'End', 'CHROM':'Chromosome'})
-    # Take unique SNPs and rename columns for PyRanges
+def annotate_genes(df: pd.DataFrame, gtf: pd.DataFrame) -> pd.DataFrame:
+    """
+    Annotate SNPs with overlapping gene names using genomic coordinates.
+
+    This function takes a DataFrame of SNPs and a gene annotation DataFrame (GTF format),
+    identifies overlaps between SNP positions and gene regions, and annotates each SNP
+    with the corresponding gene name if an overlap is found.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing SNP information with at least the following columns:
+        - 'snp_id': Unique identifier for each SNP.
+        - 'CHROM': Chromosome identifier.
+        - 'POS': Position of the SNP on the chromosome.
+    gtf : pd.DataFrame
+        Gene annotation DataFrame with at least the following columns:
+        - 'CHROM': Chromosome identifier.
+        - 'gene_start': Start position of the gene.
+        - 'gene_end': End position of the gene.
+        - 'gene': Gene name.
+
+    Returns
+    -------
+    pd.DataFrame
+        The input SNP DataFrame augmented with a new column:
+        - 'gene': Name of the gene overlapping with the SNP position, if any.
+
+    Notes
+    -----
+    - The function uses the PyRanges library to efficiently find overlaps between SNPs and genes.
+    - If a SNP overlaps with multiple genes, only the first match is retained.
+    - SNPs without any overlapping gene will have a NaN value in the 'gene' column.
+    """
+    # Rename GTF columns to match PyRanges expected format
+    gtf = gtf.rename(columns={'gene_start': 'Start', 'gene_end': 'End', 'CHROM': 'Chromosome'})
+
+    # Extract unique SNPs and prepare for PyRanges
     snps = df[['snp_id', 'CHROM', 'POS']].drop_duplicates()
-    snps = snps.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
-    snps.loc[:,'End'] = snps.loc[:,'Start']
-    # Create PyRanges for SNPs and GTF
-    snps_pr = PyRanges(df=snps)
-    gtf_pr = PyRanges(df=gtf)
-    # Find overlaps between SNPs and genes, remove duplicates
+    snps = snps.rename(columns={'CHROM': 'Chromosome', 'POS': 'Start'})
+    snps['End'] = snps['Start']  # SNPs are single-base positions
+
+    # Create PyRanges objects for SNPs and genes
+    snps_pr = PyRanges(snps)
+    gtf_pr = PyRanges(gtf)
+
+    # Find overlaps between SNPs and genes
     hits = snps_pr.join(gtf_pr).df.drop_duplicates('snp_id')
-    # Add genes name to snps
-    snps = snps.merge(hits.loc[:,['snp_id', 'gene']], on='snp_id', how='left')
-    # Left join with SNPs
-    df = df.loc[:, df.columns.difference(['gene', 'gene_start', 'gene_end'], sort=False)].merge(snps.loc[:,['snp_id','gene']], on='snp_id', how='left')
+
+    # Merge gene annotations back to SNPs
+    snps = snps.merge(hits[['snp_id', 'gene']], on='snp_id', how='left')
+
+    # Remove existing gene annotation columns to avoid duplication
+    df = df.drop(columns=[col for col in ['gene', 'gene_start', 'gene_end'] if col in df.columns])
+
+    # Merge the gene annotations with the original DataFrame
+    df = df.merge(snps[['snp_id', 'gene']], on='snp_id', how='left')
 
     return df
     
 
-def filter_coverage(df_obs, df_allele, cell_coverage: int = 0, gene_coverage: int = 1):
-    
+def filter_coverage(
+    df_obs: pd.DataFrame,
+    df_allele: pd.DataFrame,
+    cell_coverage: int = 0,
+    gene_coverage: int = 1
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Filter genes and cells based on coverage thresholds.
+
+    This function filters out cells (columns) from the observation matrix `df_obs`
+    that have a total count less than `cell_coverage`, and genes (rows) that have
+    a total count less than or equal to `gene_coverage`. It also filters the
+    `df_allele` DataFrame to remove entries corresponding to the removed cells.
+
+    Parameters
+    ----------
+    df_obs : pd.DataFrame
+        Observation matrix with genes as rows and cells as columns.
+    df_allele : pd.DataFrame
+        DataFrame containing allele information with a 'cell' column.
+    cell_coverage : int, optional
+        Minimum total count required for a cell to be retained. Default is 0.
+    gene_coverage : int, optional
+        Minimum total count required for a gene to be retained. Default is 1.
+
+    Returns
+    -------
+    Tuple[pd.DataFrame, pd.DataFrame]
+        A tuple containing:
+        - Filtered observation matrix (`df_obs`)
+        - Filtered allele DataFrame (`df_allele`)
+
+    Notes
+    -----
+    - Cells with total counts less than `cell_coverage` are removed.
+    - Genes with total counts less than or equal to `gene_coverage` are removed.
+    - Entries in `df_allele` corresponding to removed cells are also removed.
+    """
+    # Record initial dimensions
     n_starting_genes = df_obs.shape[0]
     n_starting_cells = df_obs.shape[1]
     print(f'Starting with {n_starting_genes} genes and {n_starting_cells} cells.')
 
-    # remove cells with less than min_coverage
-    under_cov = df_obs.loc[:,df_obs.sum() < cell_coverage].columns
-    if len(under_cov) > cell_coverage:
-        df_obs = df_obs.loc[:, df_obs.columns.difference(list(under_cov))]
+    # Identify cells with total counts less than cell_coverage
+    under_cov = df_obs.columns[df_obs.sum(axis=0) < cell_coverage]
+    if len(under_cov) > 0:
+        # Remove low-coverage cells from df_obs
+        df_obs = df_obs.drop(columns=under_cov)
         print(f'Filtered {len(under_cov)} cells with less than {cell_coverage} coverage.')
-        cov_mask = [i not in set(list(under_cov)) for i in df_allele.loc[:,'cell']]
-        df_allele = df_allele[cov_mask]
-        # Check if df_allele is empty?
-    # remove genes with less than gene_coverage
-    df_obs = df_obs.loc[df_obs.sum(1) > gene_coverage,:]
 
-    
-    print(f'Finishing with {df_obs.shape[0]} genes and {df_obs.shape[1]} cells.')
+        # Remove entries from df_allele corresponding to removed cells
+        df_allele = df_allele[~df_allele['cell'].isin(under_cov)]
+
+    # Remove genes with total counts less than or equal to gene_coverage
+    df_obs = df_obs[df_obs.sum(axis=1) > gene_coverage]
+
+    # Record final dimensions
+    n_final_genes = df_obs.shape[0]
+    n_final_cells = df_obs.shape[1]
+    print(f'Finishing with {n_final_genes} genes and {n_final_cells} cells.')
+
     return df_obs, df_allele
     
 
-def check_anndata(count_ad:ad.AnnData, count_to_int=True, fix_names=True):
-    # check type
+def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=True) -> ad.AnnData:
+    """
+    Validate and preprocess an AnnData object for downstream analysis.
+
+    This function performs several checks and modifications on an AnnData object to ensure it is
+    properly formatted for analysis:
+    1. Converts the `.X` attribute to a CSC (Compressed Sparse Column) matrix if it is a dense NumPy array.
+    2. Ensures that the data in `.X` are of integer type, converting if necessary and allowed.
+    3. Checks for duplicate gene names in `var_names` and makes them unique if required.
+
+    Parameters
+    ----------
+    count_ad : AnnData
+        The AnnData object containing the count matrix and associated metadata.
+    count_to_int : bool, optional (default: True)
+        If True, converts the count matrix to 32-bit integers if it is not already of integer type.
+        If False, raises a ValueError when the count matrix is not of integer type.
+    fix_names : bool, optional (default: True)
+        If True, modifies duplicate gene names to make them unique.
+        If False, raises a ValueError when duplicate gene names are found.
+
+    Returns
+    -------
+    AnnData
+        The validated and possibly modified AnnData object.
+
+    Raises
+    ------
+    ValueError
+        If `.X` is neither a NumPy array nor a SciPy sparse matrix.
+        If `count_to_int` is False and the count matrix is not of integer type.
+        If `fix_names` is False and duplicate gene names are present.
+
+    Notes
+    -----
+    This function is intended to standardize the format of AnnData objects before analysis,
+    ensuring consistency in data types and uniqueness of gene identifiers.
+    """
+    # Convert .X to CSC matrix if it's a dense NumPy array
     if isinstance(count_ad.X, np.ndarray):
         count_ad.X = scipy.sparse.csc_matrix(count_ad.X)
+    # Raise an error if .X is neither a NumPy array nor a SciPy sparse matrix
     elif not scipy.sparse.issparse(count_ad.X):
-        msg = f'You passed an object of type {type(count_ad.X)}. count_mat should be a numpy array or a scipy sparse csc_matrix.'
+        msg = (f'You passed an object with an .X of type {type(count_ad.X)}. '
+               'count_ad.X should be a NumPy array or a SciPy sparse CSC matrix.')
         raise ValueError(msg)
 
-    # check if data are integer counts
-    if not np.issubdtype(count_ad.X, np.integer):
+    # Check if the data in .X are of integer type
+    if not np.issubdtype(count_ad.X.dtype, np.integer):
         if count_to_int:
-            msg = f'The count matrix in the supplied count_ad is of type {count_ad.X.dtype}. Converting to {np.int32}.'
+            msg = (f'The count matrix in the supplied count_ad is of type {count_ad.X.dtype}. '
+                   f'Converting to {np.int32}.')
             warnings.warn(msg)
             count_ad.X = count_ad.X.astype(np.int32)
             warnings.warn(f'Conversion to {np.int32} completed.')
         else:
-            msg = f'Supplied matrix is not of dtype integer, but it is {count_ad.X.dtype}. Please supply an integer count matrix.'
+            msg = (f'Supplied matrix is not of dtype integer, but it is {count_ad.X.dtype}. '
+                   'Please supply an integer count matrix.')
             raise ValueError(msg)
-    # check if genes name are duplicated, and fix
+
+    # Check for duplicate gene names and make them unique if required
     if count_ad.var_names.shape[0] != np.unique(count_ad.var_names).shape[0]:
         if fix_names:
             count_ad.var_names_make_unique()
         else:
-            msg = f'Some genes name in var_names are not unique. Please make them unique or set the argument fix_names=True instead of {fix_names}.'
+            msg = ('Some gene names in var_names are not unique. '
+                   'Please make them unique or set the argument fix_names=True.')
             raise ValueError(msg)
-    
+
     return count_ad
 
 
@@ -137,7 +263,7 @@ def fit_ref_sse_ad(count_mat:ad.AnnData,
     common_genes = [i for i in gtf.loc[:,'gene'] if i in common_genes]
     count_mat = count_mat[:,common_genes]
     lambdas_obs = np.exp(np.log(np.array(count_mat.X.sum(0)).flatten()) - np.log(np.array(count_mat.X.sum(0)).flatten().sum()))
-    lambdas_ref = lambdas_ref.loc[common_genes,:] # fix the case in which there is only 1 columns (remove : in [common_genes,:])
+    lambdas_ref = lambdas_ref.loc[common_genes,:] # fix the case in which there is only 1 columns
     
     n_ref = lambdas_ref.shape[1]
     
