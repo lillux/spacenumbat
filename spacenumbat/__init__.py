@@ -4,3 +4,4 @@ from . import utils
 from . import dist_prob
 from . import hmm
 from . import clustering
+from . import data
