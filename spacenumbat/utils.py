@@ -23,7 +23,7 @@ from natsort import natsorted
 from typing import Dict, List, Tuple
 from numpy.typing import NDArray
 
-from functools import Counter
+from collections import Counter
 
 import warnings
 
@@ -368,7 +368,7 @@ def get_inter_cm(cM:pd.Series) -> NDArray:
     else:
         return np.hstack([np.nan, np.array(cM[1:].values - cM[:-1].values)])
 
-def switch_prob(distance:np.Array,
+def switch_prob(distance:NDArray,
                 nu:float=1, 
                 min_p:float=1e-10) -> NDArray:
     if nu == 0:
