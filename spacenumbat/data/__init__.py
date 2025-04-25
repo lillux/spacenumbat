@@ -17,9 +17,9 @@ from typing import Dict
 
 # A mapping between attribute names and the corresponding .tsv file names
 _DATA_FILES: Dict[str, str] = {
-    "gtf_hg38": "gtf_hg38.tsv",
-    "gtf_hg19": "gtf_hg19.tsv",
-    "gtf_mm10": "gtf_mm10.tsv",
+    "hg38": "gtf_hg38.tsv",
+    "hg19": "gtf_hg19.tsv",
+    "mm10": "gtf_mm10.tsv",
 }
 
 # Internal cache to hold loaded DataFrames
