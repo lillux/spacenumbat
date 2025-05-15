@@ -26,4 +26,9 @@ setup(name = 'spacenumbat',
           'Topic :: Scientific/Engineering :: Bio-Informatics'
       ],
               
-      packages=find_packages())
+      packages=find_packages(),
+      include_package_data=True,  # Include package data specified in MANIFEST.in
+      package_data={
+       'spacenumbat.data': ['*.tsv'],
+       }
+      )

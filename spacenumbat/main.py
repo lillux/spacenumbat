@@ -14,6 +14,10 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from spacenumbat import utils
+
+from spacenumbat._log import configure, get_logger
+
 def run_numbat(
     count_mat,
     lambdas_ref,
@@ -138,39 +142,19 @@ def run_numbat(
         A status code indicating success or failure of the workflow.
 
     """
+
+
+    configure(level="DEBUG", log_dir=out_dir)
+    log = get_logger(__name__)
+    log.info("This is an info message.")
     
-    ######### Setup output folder #########
-    # Set default out_dir if not provided
-    if out_dir is None:
-        out_dir = tempfile.gettempdir()
     
-    # Create the output directory (including parent directories) if it doesn't exist
-    os.makedirs(out_dir, exist_ok=True)
     
-    # Build the logfile path using os.path.join for cross-platform compatibility
-    logfile = os.path.join(out_dir, "log.txt")
     
-    # Remove the logfile if it already exists
-    if os.path.exists(logfile):
-        os.remove(logfile)
     
-    ######### Setup output logging #########
-    # Create a file handler that writes debug messages to the logfile
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)  # Set the logging level for the logger
+    #count_mat = utils.check_anndata(count_mat)
+    #df_allele = utils.annotate_genes(df=count_mat, gtf=gtf)
     
-    # Create file handler which logs debug messages
-    file_handler = logging.FileHandler(logfile, mode='w')
-    file_handler.setLevel(logging.DEBUG)
-    
-    # Define a formatter and set it for the handler
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    
-    # Add the handler to the logger
-    logger.addHandler(file_handler)
-    
-    # Example log message to verify logging is working
-    logger.info("Logging started.")
+
     
     
