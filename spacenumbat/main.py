@@ -175,6 +175,14 @@ def run_numbat(
     count_mat = count_mat[:,ordered_gene_shared]
     lambdas_ref = lambdas_ref.loc[ordered_gene_shared,:]
     
+    # filter 0 coverage cells
+    zero_cov = count_mat[count_mat.X.sum(1) == 0].obs_names.to_list()
+    if len(zero_cov) > 0:
+        print(f"Filtering out {len(zero_cov)} cells with 0 coverage")
+        count_mat = count_mat[~count_mat.obs_names.isin(zero_cov),:]
+        df_allele[~df_allele.cell.isin(zero_cov)]
+    
+    
 
     
     
