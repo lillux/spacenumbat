@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+import spacenumbat
 from spacenumbat import utils
 
 from spacenumbat._log import configure, get_logger
@@ -22,6 +23,7 @@ def run_numbat(
     count_mat,
     lambdas_ref,
     df_allele,
+    gtf=None,
     genome='hg38',
     out_dir=None,
     max_iter=2,
@@ -74,6 +76,8 @@ def run_numbat(
         where rows are genes and columns are pseudobulk names.
     df_allele : pandas.DataFrame
         DataFrame of allele counts per cell, produced by preprocess_allele.
+    gtf : str or Path    
+        dataframe Transcript GTF, if NULL will use the default GTF for the specified genome 
     genome : str, optional
         Genome version (e.g., 'hg38', 'hg19', or 'mm10'). Default is 'hg38'.
     out_dir : str, optional
@@ -143,17 +147,33 @@ def run_numbat(
 
     """
 
-
     configure(level="DEBUG", log_dir=out_dir)
     log = get_logger(__name__)
-    log.info("This is an info message.")
+    log.info("Starting pypeline!")
     
+    if not gtf:
+        if genome == "hg38":
+            gtf = spacenumbat.data.hg38
+        elif genome == "hg19":
+            gtf = spacenumbat.data.hg19
+        elif genome == "mm10":
+            gtf = spacenumbat.data.mm10
+        else:
+            msg = f"genome version must be hg38, hg19, or mm10, not {genome}"
+            raise ValueError(msg)
+    else:
+        spacenumbat.io.load_and_validate_annotation(gtf)
+        
+    count_mat = utils.check_anndata(count_mat)
+    df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
+    df_allele = utils.check_allele_df(df_allele)
+    lambdas_ref = utils.check_exp_ref(lambdas_ref)
     
-    
-    
-    
-    #count_mat = utils.check_anndata(count_mat)
-    #df_allele = utils.annotate_genes(df=count_mat, gtf=gtf)
+    # filter for annotated genes
+    gene_shared = set(gtf['gene']).intersection(set(count_mat.var_names.values)).intersection(set(lambdas_ref.index.values))
+    ordered_gene_shared = [i for i in gtf['gene'] if i in gene_shared]
+    count_mat = count_mat[:,ordered_gene_shared]
+    lambdas_ref = lambdas_ref.loc[ordered_gene_shared,:]
     
 
     

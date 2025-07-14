@@ -127,6 +127,7 @@ def configure(
         Directory path for log files. If None, no file handler is added.
     """
     dictConfig(_build_default_config(log_dir, level))
+    return
     
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:

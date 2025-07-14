@@ -20,13 +20,12 @@ from scipy.stats import ttest_ind
 
 from natsort import natsorted
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union, Sequence, Any
 from numpy.typing import NDArray
 
 from collections import Counter
 
 import warnings
-
 
 
 ## Prepare bulk data
@@ -228,60 +227,171 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
     return count_ad
 
 
-def fit_ref_sse_ad(count_mat:ad.AnnData, 
-                   lambdas_ref:pd.DataFrame, 
-                   gtf:pd.DataFrame, 
-                   min_lambda = 2e-6, 
-                   verbose = False) -> Dict:
-    '''
-    Fit reference expression profile, using AnnData.
+def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Validate and clean an allele-count DataFrame.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Allele dataframe expected to contain:
+        ['cell','snp_id','CHROM','POS','cM','REF','ALT','AD','DP','GT','gene']
+
+    Returns
+    -------
+    pandas.DataFrame
+        The same dataframe, filtered to autosomes 1-22.
+
+    Raises
+    ------
+    ValueError
+        If mandatory columns are missing or SNP genotypes are inconsistent.
+    """
+    # check column
+    expected: List[str] = ["cell","snp_id","CHROM",
+                           "POS","cM","REF",
+                           "ALT","AD","DP",
+                           "GT","gene"]
+    missing = [c for c in expected if c not in df.columns]
+    if missing:
+        raise ValueError(
+            "The allele count dataframe appears to be malformed; "
+            f"missing column(s): {', '.join(missing)}. Please fix.")
+
+    # genotype check
+    snp_n_unique = df.loc[df["GT"] != "", ["snp_id", "GT"]].groupby("snp_id", 
+                                                  sort=False)["GT"].nunique()
+    if (snp_n_unique > 1).any():
+        msg = ("Inconsistent SNP genotypes; "
+               "Are cells from two different individuals mixed together?")
+        # logging.error(msg)
+        raise ValueError(msg)
+
+    # Strip 'chr' prefix
+    # Only check if the first entry starts with "chr"
+    if df["CHROM"].astype(str).str.contains(r"^chr").iloc[0]:
+        df = df.assign(CHROM=df["CHROM"].astype(str).str.replace(r"^chr", "", regex=True))
+
+    # Keep chr 1-22
+    autosomes = [str(i) for i in range(1, 23)]
+    df = df[df["CHROM"].astype('string').isin(autosomes)]    
+
+    return df.copy()
+
+
+def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.DataFrame:
+    """
+    Validate a reference-expression profile.
+
+    Parameters
+    ----------
+    lambdas_ref : pandas.DataFrame | array-like
+        Gene-by-reference matrix of (normalised) expression magnitudes.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The same matrix, free of NA, free of duplicated genes,
+        and confirmed to contain non-integer (normalised) values.
+
+    Raises
+    ------
+    ValueError
+        When any of the data-quality checks fail.
+    """
+    
+    # check it is a 2-D DataFrame
+    if not isinstance(lambdas_ref, pd.DataFrame):
+        lambdas_ref = pd.DataFrame(lambdas_ref)
+        lambdas_ref.columns = ['ref']
+
+    # remove NA
+    if lambdas_ref.isna().any(axis=None):
+        msg = ("The reference expression matrix 'lambdas_ref' "
+               "should not contain any NA values.")
+        # logging.error(msg)
+        raise ValueError(msg)
+
+    # Reject integer-only matrices (raw counts)
+    arr = lambdas_ref.to_numpy(copy=False)
+    if np.all(arr == arr.astype(int)):
+        msg = ("The reference expression matrix 'lambdas_ref' appears to "
+               "contain only integer values. Please normalise raw counts "
+               "with aggregate_counts() before calling this routine.")
+        # logging.error(msg)
+        raise ValueError(msg)
+
+    # check that Gene IDs (row index) are unique
+    if lambdas_ref.index.has_duplicates:
+        msg = "Please remove duplicated genes in reference profile."
+        # logging.error(msg)
+        raise ValueError(msg)
+
+    return lambdas_ref.copy()
+
+
+def fit_ref_sse_ad(
+    count_mat: ad.AnnData,
+    lambdas_ref: pd.DataFrame,
+    gtf: pd.DataFrame,
+    min_lambda: float = 2e-6,
+    verbose: bool = False
+    ) -> Dict[str, Any]:
+    """
+    Fit a reference expression profile to a count matrix using sum-of-squared-errors on log-scaled values.
 
     Parameters
     ----------
     count_mat : ad.AnnData
-        AnnData containing the sample counts.
+        AnnData object containing sample counts (cells x genes).
     lambdas_ref : pd.DataFrame
-        Reference expression profile.
+        Reference expression profiles; genes as index, profiles as columns.
     gtf : pd.DataFrame
-        Reference genome annotation.
-    min_lambda : TYPE, optional
-        Minimal gene expression frequency.
-        The default is 2e-6.
-    verbose : TYPE, optional
-        Verbosity of the optimization algorithm.
-        The default is False.
+        Genome annotation with a 'gene' column listing gene names.
+    min_lambda : float, optional
+        Minimum mean expression threshold for genes to include (default 2e-6).
+    verbose : bool, optional
+        If True, show optimization progress (default False).
 
     Returns
     -------
-    Dict
-        DESCRIPTION.
-
-    '''
-    count_mat = count_mat[:,np.array(count_mat.X.sum(0) > 0).flatten()]
+    Dict[str, Any]
+        Dictionary with keys:
+        - 'w': np.ndarray of optimized weights per reference profile.
+        - 'lambdas_bar': np.ndarray weighted combination of reference profiles.
+        - 'mse': float mean squared error of the fit per gene.
+    """
+    count_mat = count_mat[:, np.array(count_mat.X.sum(0) > 0).flatten()]
     common_genes = set(gtf.loc[:,'gene']).intersection(set(count_mat.var_names)).intersection(set(lambdas_ref[lambdas_ref.mean(1) > min_lambda].index))
+    common_genes = [g for g in gtf.loc[:, 'gene'] if g in common_genes]
 
-    common_genes = [i for i in gtf.loc[:,'gene'] if i in common_genes]
-    count_mat = count_mat[:,common_genes]
-    lambdas_obs = np.exp(np.log(np.array(count_mat.X.sum(0)).flatten()) - np.log(np.array(count_mat.X.sum(0)).flatten().sum()))
-    lambdas_ref = lambdas_ref.loc[common_genes,:] # fix the case in which there is only 1 columns
-    
+    count_mat = count_mat[:, common_genes]
+    lambdas_obs = np.exp(np.log(np.array(count_mat.X.sum(0)).flatten()) -
+                         np.log(np.array(count_mat.X.sum(0)).flatten().sum()))
+    lambdas_ref = lambdas_ref.loc[common_genes, :]
+
     n_ref = lambdas_ref.shape[1]
-    
-    def kl_to_min(x):
-        return np.sum(np.power(np.log(lambdas_obs) - (np.log(np.matmul(lambdas_ref, x/np.sum(x)))),2))
 
-    
-    par = np.array([1/n_ref for i in range(n_ref)])
-    fit = scipy.optimize.minimize(fun=kl_to_min,
-                                  x0=par,
-                                  method='L-BFGS-B',
-                                  tol=1e-6,
-                                  options={'disp': verbose})
+    def kl_to_min(x):
+        return np.sum(np.power(np.log(lambdas_obs) -
+                               np.log(np.matmul(lambdas_ref, x / np.sum(x))),
+                               2))
+
+    par = np.ones(n_ref) / n_ref
+    fit = scipy.optimize.minimize(
+        fun=kl_to_min,
+        x0=par,
+        method='L-BFGS-B',
+        tol=1e-6,
+        options={'disp': verbose}
+    )
+
     x = fit.x
-    x = x/np.sum(x)
+    x /= np.sum(x)
     lambdas_bar = np.matmul(lambdas_ref, x)
     lambdas_mse = fit.fun / len(lambdas_obs)
-    return {'w':x, 'lambdas_bar':lambdas_bar, 'mse':lambdas_mse}
+
+    return {'w': x, 'lambdas_bar': lambdas_bar, 'mse': lambdas_mse}
 
 
 def filter_genes(count_mat:ad.AnnData, 

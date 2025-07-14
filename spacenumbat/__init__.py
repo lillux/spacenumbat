@@ -6,6 +6,7 @@ from . import hmm
 from . import clustering
 from . import data
 from . import _log
+from . import io
 
 from .main import run_numbat
 
