@@ -6,10 +6,12 @@ from . import hmm
 from . import clustering
 from . import data
 from . import _log
-from . import io
+from . import diagnostics
 
 from .main import run_numbat
 
 __all__ = [
     "run_numbat"
     ]
+
+__version__ = "0.0.1"
