@@ -15,7 +15,7 @@ import pandas as pd
 from scipy import sparse
 
 import spacenumbat
-from spacenumbat import utils
+from spacenumbat import utils, diagnostics
 
 from spacenumbat._log import configure, get_logger
 
@@ -182,7 +182,26 @@ def run_numbat(
         count_mat = count_mat[~count_mat.obs_names.isin(zero_cov),:]
         df_allele[~df_allele.cell.isin(zero_cov)]
     
-    
+    # keep cells that have a transcriptome
+    df_allele = df_allele[df_allele.cell.isin(count_mat.obs_names)]
+    if df_allele.shape[0] == 0:
+        msg = "No matching cell names between count_mat and df_allele. Breaking pipeline!"
+        raise ValueError(msg)
 
+    # check if conficts on given genomic information
+    if segs_loh and segs_consensus_fix:
+        msg = "Cannot specify both segs_loh and segs_consensus_fix."
+        raise ValueError(msg)
+    
+    # check provided consensus CNVs
+    segs_consensus_fix = diagnostics.check_segs_fix(segs_consensus_fix)
+    
+    # check provided clonal LoH
+    if segs_loh:
+        if call_clonal_loh:
+            msg = "Cannot specify both segs_loh and call_clonal_loh"
+            raise ValueError(msg)
+        segs_loh = diagnostics.check_segs_loh(segs_loh)
+    
     
     
