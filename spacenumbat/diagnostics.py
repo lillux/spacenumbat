@@ -115,7 +115,9 @@ def check_segs_fix(segs_consensus_fix: Optional[pd.DataFrame]) -> Optional[pd.Da
 
     required_cols = ['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state']
     if not all(col in segs_consensus_fix.columns for col in required_cols):
-        raise ValueError('The consensus segment dataframe appears to be malformed. Please fix.')
+        raise ValueError("The consensus segment dataframe appears to be malformed. Please fix.\n"
+                         f"The dataframe requires the following columns:\n{required_cols}\n"
+                         f"The current columns in your dataframe are:\n{segs_consensus_fix.columns}")
 
     # Chromosome relevel and sort
     # segs_consensus_fix = relevel_chrom(segs_consensus_fix)
@@ -170,7 +172,9 @@ def check_segs_loh(segs_loh: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
 
     required_cols = ['CHROM', 'seg', 'seg_start', 'seg_end']
     if not all([col in segs_loh.columns for col in required_cols]):
-        raise ValueError('The clonal LOH segment dataframe appears to be malformed. Please fix.')
+        raise ValueError("The clonal LOH segment dataframe appears to be malformed. Please fix.\n"
+                         f"The dataframe requires the following columns:\n{required_cols}\n"
+                         f"The current columns in your dataframe are:\n{segs_loh.columns}")
 
     # If seg column is integer, convert to string: CHROM_SEG
     if pd.api.types.is_integer_dtype(segs_loh['seg']):
@@ -186,3 +190,69 @@ def check_segs_loh(segs_loh: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     segs_loh = segs_loh.sort_values(['CHROM', 'seg_start'], key=natsort.natsort_keygen()).reset_index(drop=True)
 
     return segs_loh
+
+
+def check_filter_segments(filter_segments_path: str) -> pd.DataFrame:
+    """
+    Validate that the provided path exists, is a readable TSV file,
+    and contains required columns with correct types.
+    Required columns are: ['CHROM', 'seg_start', 'seg_end']
+    
+    Example:
+        CHROM    seg_start    seg_end
+        6    28510120    33480577
+
+    Parameters
+    ----------
+    filter_segments_path : str
+        File path to the TSV file containing segment data.
+
+    Returns
+    -------
+    pd.DataFrame
+        Loaded DataFrame if all checks pass.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist or path is invalid.
+    ValueError
+        If the file cannot be read as a TSV, or required columns are missing
+        or have incorrect types.
+    """
+    # Check path existence and validity
+    if not os.path.exists(filter_segments_path):
+        raise FileNotFoundError(f"Path does not exist: {filter_segments_path}")
+    if not os.path.isfile(filter_segments_path):
+        raise FileNotFoundError(f"Path is not a file: {filter_segments_path}")
+
+    # Read the file as TSV
+    try:
+        df = pd.read_csv(filter_segments_path, sep='\t')
+    except Exception as e:
+        raise ValueError(f"Failed to read file as TSV: {e}")
+
+    # Validate required columns
+    required_columns = ['CHROM', 'seg_start', 'seg_end']
+    missing_cols = [col for col in required_columns if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    # Validate column types: CHROM as string, seg_start and seg_end as integers
+    # Coerce columns to expected types and check for errors
+    if not pd.api.types.is_string_dtype(df['CHROM']):
+        try:
+            df['CHROM'] = df['CHROM'].astype(str)
+        except Exception:
+            raise ValueError("Column 'CHROM' cannot be converted to string")
+
+    for col in ['seg_start', 'seg_end']:
+        if not pd.api.types.is_integer_dtype(df[col]):
+            # Try coercing to integers (may fail if non-numeric data present)
+            try:
+                df[col] = pd.to_numeric(df[col], errors='raise').astype(int)
+            except Exception:
+                raise ValueError(f"Column '{col}' cannot be converted to integer")
+
+    return df
+

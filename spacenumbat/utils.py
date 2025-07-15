@@ -12,15 +12,17 @@ import pandas as pd
 
 import anndata as ad
 
+
 import pyranges as pr
 from pyranges import PyRanges
 
 import scipy
 from scipy.stats import ttest_ind
 
+import natsort
 from natsort import natsorted
 
-from typing import Dict, List, Tuple, Union, Sequence, Any
+from typing import Dict, List, Union, Sequence, Any, Optional
 from numpy.typing import NDArray
 
 from collections import Counter
@@ -30,63 +32,56 @@ import warnings
 
 ## Prepare bulk data
 
-def annotate_genes(df: pd.DataFrame, gtf: pd.DataFrame) -> pd.DataFrame:
+def annotate_genes(
+    df: pd.DataFrame,
+    gtf: pd.DataFrame
+    ) -> pd.DataFrame:
     """
-    Annotate SNPs with overlapping gene names using genomic coordinates.
+    Annotate SNPs in `df` with gene names based on overlaps with gene regions from `gtf`.
 
-    This function takes a DataFrame of SNPs and a gene annotation DataFrame (GTF format),
-    identifies overlaps between SNP positions and gene regions, and annotates each SNP
-    with the corresponding gene name if an overlap is found.
+    This function uses PyRanges to find overlaps between SNP positions and gene coordinates,
+    adding a 'gene' column to the input SNP dataframe.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        DataFrame containing SNP information with at least the following columns:
-        - 'snp_id': Unique identifier for each SNP.
-        - 'CHROM': Chromosome identifier.
-        - 'POS': Position of the SNP on the chromosome.
-    gtf : pd.DataFrame
-        Gene annotation DataFrame with at least the following columns:
-        - 'CHROM': Chromosome identifier.
-        - 'gene_start': Start position of the gene.
-        - 'gene_end': End position of the gene.
-        - 'gene': Gene name.
+    df : pandas.DataFrame
+        SNP dataframe containing at least columns ['snp_id', 'CHROM', 'POS'].
+    gtf : pandas.DataFrame
+        Gene annotation dataframe containing at least columns ['gene', 'gene_start', 'gene_end', 'CHROM'].
 
     Returns
     -------
-    pd.DataFrame
-        The input SNP DataFrame augmented with a new column:
-        - 'gene': Name of the gene overlapping with the SNP position, if any.
+    pandas.DataFrame
+        The input SNP dataframe `df` with an added 'gene' column, indicating the gene overlapping
+        each SNP if any; otherwise, NaN.
 
     Notes
     -----
-    - The function uses the PyRanges library to efficiently find overlaps between SNPs and genes.
-    - If a SNP overlaps with multiple genes, only the first match is retained.
-    - SNPs without any overlapping gene will have a NaN value in the 'gene' column.
+    - The function renames columns to conform to PyRanges expectations ('Chromosome', 'Start', 'End').
+    - SNP positions are treated as zero-length intervals for overlap detection.
+    - Duplicate SNPs are removed during processing to avoid redundant annotations.
     """
-    # Rename GTF columns to match PyRanges expected format
-    gtf = gtf.rename(columns={'gene_start': 'Start', 'gene_end': 'End', 'CHROM': 'Chromosome'})
+    # Rename some gtf columns. Needed for PyRanges.
+    gtf = gtf.rename(columns={'gene_start':'Start', 'gene_end':'End', 'CHROM':'Chromosome'})
 
-    # Extract unique SNPs and prepare for PyRanges
+    # Take unique SNPs and rename columns for PyRanges
     snps = df[['snp_id', 'CHROM', 'POS']].drop_duplicates()
-    snps = snps.rename(columns={'CHROM': 'Chromosome', 'POS': 'Start'})
-    snps['End'] = snps['Start']  # SNPs are single-base positions
+    snps = snps.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
+    snps.loc[:, 'End'] = snps.loc[:, 'Start']
 
-    # Create PyRanges objects for SNPs and genes
-    snps_pr = PyRanges(snps)
-    gtf_pr = PyRanges(gtf)
+    # Create PyRanges for SNPs and GTF
+    snps_pr = PyRanges(df=snps)
+    gtf_pr = PyRanges(df=gtf)
 
-    # Find overlaps between SNPs and genes
+    # Find overlaps between SNPs and genes, remove duplicates
     hits = snps_pr.join(gtf_pr).df.drop_duplicates('snp_id')
 
-    # Merge gene annotations back to SNPs
-    snps = snps.merge(hits[['snp_id', 'gene']], on='snp_id', how='left')
+    # Add gene names to snps
+    snps = snps.merge(hits.loc[:, ['snp_id', 'gene']], on='snp_id', how='left')
 
-    # Remove existing gene annotation columns to avoid duplication
-    df = df.drop(columns=[col for col in ['gene', 'gene_start', 'gene_end'] if col in df.columns])
-
-    # Merge the gene annotations with the original DataFrame
-    df = df.merge(snps[['snp_id', 'gene']], on='snp_id', how='left')
+    # Left join with SNPs to original df (dropping existing gene columns)
+    df = df.loc[:, df.columns.difference(['gene', 'gene_start', 'gene_end'], sort=False)].merge(
+        snps.loc[:, ['snp_id', 'gene']], on='snp_id', how='left')
 
     return df
     
@@ -330,50 +325,99 @@ def fit_ref_sse_ad(
     return {'w': x, 'lambdas_bar': lambdas_bar, 'mse': lambdas_mse}
 
 
-def filter_genes(count_mat:ad.AnnData, 
-                 lambdas_bar:pd.Series,
-                 gtf:pd.DataFrame,
-                 filter_hla:bool=False, 
-                 verbose:bool=False) -> List:
-    gtf_df = pd.DataFrame(gtf)
-    
-    # Get genes to keep
-    genes_keep = set(gtf_df['gene']).intersection(set(count_mat.var_names)).intersection(set(lambdas_bar.keys()))
-    # Sort genes name following gtf ordering 
-    genes_keep = [gene for gene in gtf_df.loc[:,'gene'] if gene in genes_keep]
-    
-    if filter_hla:
-        # Gene in HLA region in human, based on chromosome and position.
-        # This works on hg19 and hg38.
-        genes_exclude = gtf_df[(gtf_df['CHROM'] == 6) & 
-                               (gtf_df['gene_start'] < 33480577) & 
-                               (gtf_df['gene_end'] > 28510120)]['gene'].tolist()
-        
-        # Exclude genes to keep
-        genes_keep = [gene for gene in genes_keep if gene not in genes_exclude]
-    
-    # Filter count matrix, lambdas_ref, and compute lambdas_obs
-    count_mat_filtered = count_mat[:,genes_keep]
-    lambdas_bar_filtered = lambdas_bar[genes_keep]
-    lambdas_obs = pd.Series(np.array(count_mat_filtered.X.sum(0) / count_mat_filtered.X.sum()).ravel(), index=count_mat_filtered.var.index)
+def filter_genes(
+    count_mat: ad.AnnData,
+    lambdas_bar: Union[Dict[str, float], pd.Series],
+    gtf: Union[pd.DataFrame, dict],
+    filter_segments: Optional[pd.DataFrame] = None,
+    filter_hla: bool = True,
+    verbose: bool = False
+) -> List[str]:
+    """
+    Filter genes based on expression and annotation criteria.
 
-    # Thresholds
+    Parameters
+    ----------
+    count_mat : AnnData
+        Single-cell count matrix with `.var_names` representing gene names.
+    lambdas_bar : dict or pd.Series
+        Reference expression profile keyed/indexed by gene names.
+    gtf : pd.DataFrame or dict
+        Genome annotation containing at least columns ['gene', 'CHROM', 'gene_start', 'gene_end'].
+    filter_segments : pd.DataFrame, optional
+        Optional segments dataframe used to exclude genes overlapping these regions.
+        Must contain columns ['CHROM', 'seg_start', 'seg_end'].
+    filter_hla : bool, optional
+        Whether to exclude genes in the HLA region on chromosome 6 (default True).
+    verbose : bool, optional
+        If True, prints the number of retained genes (default False).
+
+    Returns
+    -------
+    List[str]
+        List of gene names retained after filtering.
+
+    Notes
+    -----
+    - Genes are initially filtered to those present in all three inputs: gtf, count_mat, and lambdas_bar.
+    - Optionally excludes genes overlapping the human HLA region on chromosome 6.
+    - Optionally excludes genes overlapping regions defined in `filter_segments`.
+    - Retention is based on expression thresholds applied to both the reference profile (`lambdas_bar`) and observed counts.
+    """
+    gtf_df = pd.DataFrame(gtf)
+
+    # Get genes to keep - intersection of gtf genes, count_mat genes, and lambdas_bar keys
+    genes_keep = set(gtf_df['gene']).intersection(set(count_mat.var_names)).intersection(set(lambdas_bar.keys()))
+    # Sort genes following gtf ordering
+    genes_keep = [gene for gene in gtf_df['gene'] if gene in genes_keep]
+
+    if filter_hla:
+        # Exclude genes in HLA region (chr6: 28,510,120 - 33,480,577) in hg38 and hg19
+        genes_exclude = gtf_df[(gtf_df['CHROM'] == 6) &
+                               (gtf_df['gene_start'] < 33480577) &
+                               (gtf_df['gene_end'] > 28510120)]['gene'].tolist()
+        genes_keep = [gene for gene in genes_keep if gene not in genes_exclude]
+
+    if filter_segments is not None and not filter_segments.empty:
+        genes_exclude = []
+        for _, row in filter_segments.iterrows():
+            overlapping = gtf_df[(gtf_df['CHROM'].astype(str) == str(row.CHROM)) &
+                                 (gtf_df['gene_start'] < row.seg_end) &
+                                 (gtf_df['gene_end'] > row.seg_start)]['gene'].tolist()
+            genes_exclude.extend(overlapping)
+        genes_keep = [gene for gene in genes_keep if gene not in genes_exclude]
+
+    # Filter count matrix and lambdas_bar
+    count_mat_filtered = count_mat[:, genes_keep]
+    lambdas_bar_filtered = lambdas_bar.loc[genes_keep] if isinstance(lambdas_bar, pd.Series) else {g: lambdas_bar[g] for g in genes_keep}
+    if isinstance(lambdas_bar_filtered, dict):
+        # Convert dict to pd.Series for consistent indexing below
+        lambdas_bar_filtered = pd.Series(lambdas_bar_filtered)
+
+    lambdas_obs = pd.Series(
+        np.array(count_mat_filtered.X.sum(0) / count_mat_filtered.X.sum()).ravel(),
+        index=count_mat_filtered.var_names
+    )
+
+    # Thresholds and means
     min_both = 2
-    mean_lambdas_bar = lambdas_bar_filtered[lambdas_bar_filtered > 0].values.mean()
-    mean_lambdas_obs = lambdas_obs[lambdas_obs > 0].values.mean(dtype=np.float64)
-    # print(mean_lambdas_bar, mean_lambdas_obs)
-    
-    # # Genes to retain
-    mut_expressed = pd.DataFrame(((lambdas_bar_filtered.values.flatten() * 1e6 > min_both) & (lambdas_obs.values * 1e6 > min_both) | 
-                    (lambdas_bar_filtered.values.flatten() > mean_lambdas_bar) | 
-                    (lambdas_obs.values > mean_lambdas_obs)) & (lambdas_bar_filtered.values.flatten() > 0))
+    mean_lambdas_bar = lambdas_bar_filtered[lambdas_bar_filtered > 0].mean()
+    mean_lambdas_obs = lambdas_obs[lambdas_obs > 0].mean(dtype=np.float64)
+
+    # Identify genes passing expression filters
+    mut_expressed = pd.DataFrame(
+        (((lambdas_bar_filtered.values.flatten() * 1e6 > min_both) & (lambdas_obs.values * 1e6 > min_both)) |
+         (lambdas_bar_filtered.values.flatten() > mean_lambdas_bar) |
+         (lambdas_obs.values > mean_lambdas_obs)) & 
+        (lambdas_bar_filtered.values.flatten() > 0))
     mut_expressed.index = lambdas_bar_filtered.index
-    
-    retained = [gene for gene, expressed in zip(genes_keep, mut_expressed.values) if expressed]
+
+    # Retain genes that meet the filter criteria
+    retained = [gene for gene, expressed in zip(genes_keep, mut_expressed[0]) if expressed]
 
     if verbose:
         print(f'number of genes left: {len(retained)}')
-    
+
     return retained
 
 
@@ -477,13 +521,13 @@ def get_allele_bulk(df_allele:pd.DataFrame,
     return df_allele
 
 
-def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
+def combine_bulk(allele_bulk, exp_bulk, filter_hla=True):
     bulk = pd.merge(allele_bulk, exp_bulk, how='outer', on=['CHROM','gene'])
     bulk.loc[:,'snp_id'] = np.where(bulk['snp_id'].isna(), bulk['gene'], bulk['snp_id'])
     bulk.loc[:,'gene'] = pd.Categorical(bulk.loc[:,'gene'], categories=exp_bulk.loc[:,'gene'])
     bulk.loc[:,'POS'] = np.where(bulk.loc[:,'POS'].isna(), bulk.loc[:,'gene_start'], bulk.loc[:,'POS'])
     bulk.loc[:,'p_s'] = np.where(bulk.loc[:,'p_s'].isna(), 0, bulk.loc[:,'p_s'])
-    bulk = bulk.sort_values(by=['CHROM','POS'])
+    bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     # filter HLA
     if filter_hla:
         to_filter = bulk[(bulk.loc[:,'CHROM'] == 6) & (bulk.loc[:,'POS'] > 28510120) & (bulk.loc[:,'POS'] < 33480577)].index
@@ -509,7 +553,7 @@ def combine_bulk(allele_bulk, exp_bulk, filter_hla=False):
     bulk.loc[:,'lnFC'] = np.log(fc)
     bulk.loc[:,'lnFC'] = np.where(np.isinf(bulk.loc[:,'lnFC']), np.nan, bulk.loc[:,'lnFC'])
     
-    bulk = bulk.sort_values(by=['CHROM','POS']).reset_index(drop=True)
+    bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen()).reset_index(drop=True)
     # assign index to snps
     snp_index = []
     for chrom in bulk.CHROM.unique():
@@ -532,7 +576,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     Returns:
         pd.DataFrame: Annotated pseudobulk profile.
      """
-
+    
     # Set the join mode
     if join_mode == 'inner':
         how = 'inner'
@@ -558,6 +602,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     segs_consensus_ranges = pr.PyRanges(df=segs_consensus) 
     
     # Find overlaps between bulk and segs_consensus
+    # overlaps = segs_consensus_ranges.join(bulk_ranges, how='right', slack=1)
     overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
     overlaps_df = overlaps.df
     
@@ -567,8 +612,9 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     segs_consensus = segs_consensus.rename(columns={'Chromosome':'CHROM', 'Start':'seg_start', 'End':'seg_end'})
     if ('seg_start' in overlaps_df.columns) and ('seg_end' in overlaps_df.columns):
         overlaps_df = overlaps_df.drop(columns=['seg_start', 'seg_end'])
-    overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start_b':'seg_start', 'End_b':'seg_end'})
-    overlaps_df = overlaps_df.drop(['Start', 'End'], axis=1)
+    if ('Start_b' in overlaps_df.columns) and ('End_b' in overlaps_df.columns):
+        overlaps_df = overlaps_df.drop(columns=['Start_b', 'End_b'])
+    overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start':'seg_start', 'End':'seg_end'})
     # # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
     
@@ -578,7 +624,6 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     bulk.CHROM = bulk.CHROM.astype(cat_bulk)
     
     overlaps_df.CHROM = overlaps_df.CHROM.astype('int')
-    # overlaps_df.CHROM = overlaps_df.CHROM.astype(cat_bulk)
     overlaps_df.CHROM = overlaps_df.CHROM.astype('category')
     
     # # # Drop unnecessary columns
@@ -590,7 +635,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     exclude_from_bulk = [col for col in overlaps_df.columns if col not in ['snp_id', 'CHROM']]
     bulk = bulk.drop(columns=[col for col in exclude_from_bulk if col in bulk.columns])
     
-    # # Merge bulk and overlaps_df ### THIS IS THE PROBLEM
+    # # Merge bulk and overlaps_df
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
@@ -610,6 +655,7 @@ def get_bulk(count_mat,
              nu = 1,
              segs_loh = None,
              verbose = True,
+             disp = False,
              filter_hla = True):
 
     # YOU NEED TO DO ***EXPLICIT*** COPY OF THE ANNDATA WHEN YOU WRITE ON IT!
@@ -621,7 +667,7 @@ def get_bulk(count_mat,
             count_mat = count_mat[subset]
             df_allele_subset_mask = [i in subset for i in df_allele.cell]
             df_allele = df_allele[df_allele_subset_mask]
-    fit = fit_ref_sse_ad(count_mat, lambdas_ref, gtf, verbose=verbose)
+    fit = fit_ref_sse_ad(count_mat, lambdas_ref, gtf, verbose=disp)
     exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla)
     exp_bulk = exp_bulk[(exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5) | (exp_bulk.loc[:,'Y_obs'] == 0)]
     exp_bulk.loc[:,'mse'] = fit['mse']
@@ -634,7 +680,7 @@ def get_bulk(count_mat,
     bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
 
     bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', 23, bulk.loc[:,'CHROM'])
-    bulk = bulk.sort_values(by=['CHROM','POS'])
+    bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     bulk = bulk.reset_index(drop=True)
 
     # Annotate clonal LOH regions
@@ -644,7 +690,8 @@ def get_bulk(count_mat,
         # Annotate consensus segments
         bulk = annot_consensus(bulk, segs_loh, join_mode='left')
         # Set 'loh' to False where it's NaN
-        bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
+        # bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
+        bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(0).astype(bool)
     
     return bulk
 

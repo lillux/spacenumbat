@@ -58,7 +58,10 @@ def run_numbat(
     p_multi=None,
     plot=True,
     check_convergence=False,
-    exclude_neu=True
+    exclude_neu=True,
+    filter_hla_hg38=True, #Just added
+    filter_chromosome_segments=None # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
+    
 ):
     """
     Run workflow to decompose tumor subclones.
@@ -146,8 +149,8 @@ def run_numbat(
         A status code indicating success or failure of the workflow.
 
     """
-
-    configure(level="DEBUG", log_dir=out_dir)
+    configure(level="INFO", log_dir=out_dir)
+    logging.getLogger('numba').setLevel(logging.WARNING)
     log = get_logger(__name__)
     log.info("Starting pypeline!")
     
@@ -202,6 +205,59 @@ def run_numbat(
             msg = "Cannot specify both segs_loh and call_clonal_loh"
             raise ValueError(msg)
         segs_loh = diagnostics.check_segs_loh(segs_loh)
+        
+    # Prepare parameter log
+    log_lines = [
+    "",
+    f"Spacenumbat version: {spacenumbat.__version__}",
+    "Running under parameters:",
+    f"t = {t}",
+    f"alpha = {alpha}",
+    f"gamma = {gamma}",
+    f"min_cells = {min_cells}",
+    f"init_k = {init_k}",
+    f"max_cost = {max_cost}",
+    f"n_cut = {n_cut}",
+    f"max_iter = {max_iter}",
+    f"max_nni = {max_nni}",
+    f"min_depth = {min_depth}",
+    f"use_loh = {'auto' if use_loh is None else use_loh}",
+    f"segs_loh = {'None' if segs_loh is None else 'Given'}",
+    f"call_clonal_loh = {call_clonal_loh}",
+    f"segs_consensus_fix = {'None' if segs_consensus_fix is None else 'Given'}",
+    f"multi_allelic = {multi_allelic}",
+    f"min_LLR = {min_LLR}",
+    f"min_overlap = {min_overlap}",
+    f"max_entropy = {max_entropy}",
+    f"skip_nj = {skip_nj}",
+    f"diploid_chroms = {'None' if diploid_chroms is None else 'Given'}",
+    f"ncores = {ncores}",
+    f"ncores_nni = {ncores_nni}",
+    f"common_diploid = {common_diploid}",
+    f"tau = {tau}",
+    f"check_convergence = {check_convergence}",
+    f"genome = {genome}",
+    "Input metrics:",
+    f"{count_mat.shape[0]} cells"  # assuming AnnData or DataFrame (columns = cells)
+    ]
+
+    log.info('\n'.join(log_lines))
+    
+    # Call clonal loss of heterozygosity inference if requested
+    if call_clonal_loh:
+        msg = "Calling segments with clonal LoH."
+        log.info(msg)
+        
+        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38)
+        segs_loh = utils.detect_clonal_loh(bulk, t=t)
+    
+        if segs_loh:
+            segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
+        else:
+            log.info('No segments with clonal LoH detected.')
+            
+    
+            
     
     
     
