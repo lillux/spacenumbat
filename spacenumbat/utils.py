@@ -1238,13 +1238,15 @@ def detect_clonal_loh(
     segs_loh = segs_loh.groupby(['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state'], observed=True, sort=False).sum()
     segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state', 'gene_snps', 'gene_length']]
     
+    
     segs_loh.loc[:,'snp_rate'] = snp_rate
     segs_loh = segs_loh[segs_loh.cnv_state == 'loh'].copy()
-    segs_loh.loc[:, 'loh'] = True
-    segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'snp_rate', 'loh']]
     
     if segs_loh.shape[0] == 0:
-        segs_loh = None
-    return segs_loh
+       segs_loh = None
 
+    else:
+        segs_loh.loc[:, 'loh'] = True
+        segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'snp_rate', 'loh']]
+    
     return segs_loh
