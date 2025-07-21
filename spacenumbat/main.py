@@ -209,7 +209,10 @@ def run_numbat(
     
     # Check if filtering Chromosomal segments
     if filter_chromosome_segments:
-        diagnostics.check_filter_segments(filter_chromosome_segments)
+        # filter_segments_df = diagnostics.check_filter_segments(filter_chromosome_segments)
+        filter_segments_df = diagnostics.check_filter_segments(filter_chromosome_segments)
+    else:
+        filter_segments_df = None
         
     # Prepare parameter log
     log_lines = [
@@ -255,7 +258,7 @@ def run_numbat(
         msg = "Calling segments with clonal LoH."
         log.info(msg)
         
-        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, filter_segments=filter_chromosome_segments )
+        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, filter_segments=filter_segments_df)
        # segs_loh = utils.detect_clonal_loh(bulk, t=t)
     
        # if segs_loh:

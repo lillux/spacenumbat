@@ -21,7 +21,7 @@ import natsort
 from natsort import natsorted
 
 from typing import Dict, List, Union, Sequence, Any, Optional
-from numpy.typing import NDArray
+from numpy.typing import NDArray, ArrayLike
 
 from collections import Counter
 
@@ -378,7 +378,7 @@ def filter_genes(
                                (gtf_df['gene_end'] > 28510120)]['gene'].tolist()
         genes_keep = [gene for gene in genes_keep if gene not in genes_exclude]
 
-    if filter_segments is not None and not filter_segments.empty:
+    if filter_segments is not None: # and not filter_segments.empty:
         genes_exclude = []
         for _, row in filter_segments.iterrows():
             overlapping = gtf_df[(gtf_df['CHROM'].astype(str) == str(row.CHROM)) &
@@ -705,7 +705,7 @@ def combine_bulk(
         bulk = bulk.drop(index=to_filter)
     
     # Filter segments overlap if provided
-    if filter_segments is not None and not filter_segments.empty:
+    if filter_segments is not None: # and not filter_segments.empty:
         genes_exclude = []
         for _, row in filter_segments.iterrows():
             to_filter = bulk[(bulk['CHROM'].astype(str) == str(row.CHROM)) &
@@ -832,18 +832,63 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     return bulk
 
 
-def get_bulk(count_mat,
-             lambdas_ref,
-             df_allele,
-             gtf,
-             subset = None,
-             min_depth = 0,
-             nu = 1,
-             segs_loh = None,
-             verbose = True,
-             disp = False,
-             filter_hla = True,
-             filter_segments=None):
+def get_bulk(
+    count_mat: ad.AnnData,
+    lambdas_ref: Union[pd.DataFrame, pd.Series],
+    df_allele: pd.DataFrame,
+    gtf: pd.DataFrame,
+    subset: Optional[Sequence[str]] = None,
+    min_depth: int = 0,
+    nu: float = 1,
+    segs_loh: Optional[pd.DataFrame] = None,
+    verbose: bool = True,
+    disp: bool = False,
+    filter_hla: bool = True,
+    filter_segments: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+    """
+    Compute combined bulk allele and expression data with filtering and clonal LOH annotation.
+
+    Parameters
+    ----------
+    count_mat : anndata.AnnData
+        Single-cell count matrix.
+    lambdas_ref : pd.DataFrame or pd.Series
+        Reference expression profile.
+    df_allele : pd.DataFrame
+        Allele-level data frame with SNP genotype info.
+    gtf : pd.DataFrame
+        Genome annotation with gene info.
+    subset : Optional[Sequence[str]], optional
+        Optional list of cell barcodes to subset `count_mat` and `df_allele`.
+        Default is None (no subsetting).
+    min_depth : int, optional
+        Minimum depth threshold for filtering alleles (default 0).
+    nu : float, optional
+        Parameter for switch probability calculation (default 1).
+    segs_loh : Optional[pd.DataFrame], optional
+        Clonal LOH segments for annotation (default None).
+    verbose : bool, optional
+        Verbosity flag for internal functions (default True).
+    disp : bool, optional
+        Display flag for optimization steps (default False).
+    filter_hla : bool, optional
+        Whether to filter HLA region genes (default True).
+    filter_segments : Optional[pd.DataFrame], optional
+        Additional segments to filter genes/SNPs overlapping these (default None).
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined and annotated bulk data with gene, allele, expression, and LOH information.
+
+    Raises
+    ------
+    KeyError
+        If requested cell barcodes in `subset` are not all present in `count_mat.obs_names`.
+    ValueError
+        If duplicated SNP IDs are found after merging allele and expression data.
+    """
 
     # ***EXPLICIT*** COPY OF THE ANNDATA BEFORE YOU WRITE ON IT!
     count_mat = check_anndata(count_mat.copy())
@@ -859,7 +904,7 @@ def get_bulk(count_mat,
     exp_bulk = exp_bulk[(exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5) | (exp_bulk.loc[:,'Y_obs'] == 0)]
     exp_bulk.loc[:,'mse'] = fit['mse']
     allele_bulk = get_allele_bulk(df_allele, nu=nu, min_depth=min_depth)
-    bulk = combine_bulk(allele_bulk, exp_bulk, filter_hla=filter_hla)
+    bulk = combine_bulk(allele_bulk, exp_bulk, filter_hla=filter_hla, filter_segments=filter_segments)
     if np.unique(bulk.loc[:,'snp_id']).shape[0] != bulk.loc[:,'snp_id'].shape[0]:
         raise ValueError('Duplicated SNPs found, please check genotypes')
     
@@ -885,8 +930,33 @@ def get_bulk(count_mat,
 
 ## Fit snp rate on loh calling
 
-def fit_snp_rate(gene_snps, gene_length):
+def fit_snp_rate(
+    gene_snps: ArrayLike,
+    gene_length: float
+    ) -> np.ndarray:
+    """
+    Fit SNP mutation rate parameters to observed SNP counts per gene using Negative Binomial likelihood.
 
+    Parameters
+    ----------
+    gene_snps : array-like
+        Observed SNP counts for a single gene across samples or regions (non-negative integers).
+    gene_length : float
+        Length of the gene in base pairs.
+
+    Returns
+    -------
+    np.ndarray
+        Estimated parameters array `[v, sig]`:
+        - v: scaled mutation rate parameter (unit depends on gene length scaling)
+        - sig: dispersion parameter of the Negative Binomial distribution
+
+    Notes
+    -----
+    - The mean `mu` of the Negative Binomial is modeled as `v * gene_length / 1e6`.
+    - Uses L-BFGS-B optimizer with positivity constraints on parameters.
+    - Returns the optimized parameters minimizing the negative log-likelihood.
+    """
     # Define the objective function to minimize
     def objective(params):
         v = params[0]
@@ -897,8 +967,7 @@ def fit_snp_rate(gene_snps, gene_length):
 
     # Initial parameters
     initial_params = [10, 1]
-
-    # Constraints on the parameters (equivalent to lower bounds in R optim)
+    # Constraints on the parameters (lower bounds)
     bounds = [(1e-10, None), (1e-10, None)]
 
     # Minimize the objective function
