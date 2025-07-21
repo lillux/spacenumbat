@@ -56,13 +56,11 @@ def run_numbat(
     skip_nj=False,
     multi_allelic=True,
     p_multi=None,
-    plot=True,
     check_convergence=False,
     exclude_neu=True,
     filter_hla_hg38=True, #Just added
-    filter_chromosome_segments=None # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
-    
-):
+    filter_chromosome_segments=None, # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
+    ):
     """
     Run workflow to decompose tumor subclones.
 
@@ -72,7 +70,7 @@ def run_numbat(
 
     Parameters
     ----------
-    count_mat : scipy.sparse.csc_matrix or similar
+    count_mat : anndata.AnnData
         Raw count matrix where rows are genes and columns are cells.
     lambdas_ref : numpy.ndarray, pandas.DataFrame, dict, or similar
         Either a mapping with gene names as keys and normalized expression as values, or a matrix
@@ -138,8 +136,8 @@ def run_numbat(
         Whether to initiate phylogeny using a random tree (internal use only). Default is False.
     exclude_neu : bool, optional
         Whether to exclude neutral segments from CNV retesting (internal use only). Default is True.
-    plot : bool, optional
-        Whether to plot results. Default is True.
+    filter_hla_hg38 : bool. Filter HLA region, comprised =True, #Just added
+    filter_chromosome_segments=None
     verbose : bool, optional
         Flag to enable verbose output. Default is True.
 
@@ -161,10 +159,13 @@ def run_numbat(
             gtf = spacenumbat.data.hg19
         elif genome == "mm10":
             gtf = spacenumbat.data.mm10
+            filter_hla_hg38=False
+            filter_chromosome_segments=None
         else:
             msg = f"genome version must be hg38, hg19, or mm10, not {genome}"
             raise ValueError(msg)
     else:
+        filter_hla_hg38=False
         spacenumbat.io.load_and_validate_annotation(gtf)
         
     count_mat = utils.check_anndata(count_mat)
@@ -205,6 +206,10 @@ def run_numbat(
             msg = "Cannot specify both segs_loh and call_clonal_loh"
             raise ValueError(msg)
         segs_loh = diagnostics.check_segs_loh(segs_loh)
+    
+    # Check if filtering Chromosomal segments
+    if filter_chromosome_segments:
+        diagnostics.check_filter_segments(filter_chromosome_segments)
         
     # Prepare parameter log
     log_lines = [
@@ -237,6 +242,8 @@ def run_numbat(
     f"tau = {tau}",
     f"check_convergence = {check_convergence}",
     f"genome = {genome}",
+    f"Filter HLA region = {filter_hla_hg38}",
+    f"Filtering custom chromosomal region = {filter_chromosome_segments}"
     "Input metrics:",
     f"{count_mat.shape[0]} cells"  # assuming AnnData or DataFrame (columns = cells)
     ]
@@ -248,14 +255,15 @@ def run_numbat(
         msg = "Calling segments with clonal LoH."
         log.info(msg)
         
-        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38)
-        segs_loh = utils.detect_clonal_loh(bulk, t=t)
+        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, )
+       # segs_loh = utils.detect_clonal_loh(bulk, t=t)
     
-        if segs_loh:
-            segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
-        else:
-            log.info('No segments with clonal LoH detected.')
-            
+       # if segs_loh:
+       #     segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
+       # else:
+       #     log.info('No segments with clonal LoH detected.')
+       
+    return bulk
     
             
     

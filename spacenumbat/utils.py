@@ -9,16 +9,12 @@ import string
 
 import numpy as np
 import pandas as pd
-
 import anndata as ad
-
-
 import pyranges as pr
 from pyranges import PyRanges
 
 import scipy
 from scipy.stats import ttest_ind
-
 import natsort
 from natsort import natsorted
 
@@ -26,7 +22,6 @@ from typing import Dict, List, Union, Sequence, Any, Optional
 from numpy.typing import NDArray
 
 from collections import Counter
-
 import warnings
 
 
@@ -349,6 +344,8 @@ def filter_genes(
         Must contain columns ['CHROM', 'seg_start', 'seg_end'].
     filter_hla : bool, optional
         Whether to exclude genes in the HLA region on chromosome 6 (default True).
+        Exclude hg38 chr6:28510120-33480577.
+        !!! SET TO False IF USED IN GENOMES OTHER THAN hg38 and hg19 !!!
     verbose : bool, optional
         If True, prints the number of retained genes (default False).
 
@@ -402,7 +399,7 @@ def filter_genes(
     # Thresholds and means
     min_both = 2
     mean_lambdas_bar = lambdas_bar_filtered[lambdas_bar_filtered > 0].mean()
-    mean_lambdas_obs = lambdas_obs[lambdas_obs > 0].mean(dtype=np.float64)
+    mean_lambdas_obs = lambdas_obs[lambdas_obs > 0].values.mean(dtype=np.float64)
 
     # Identify genes passing expression filters
     mut_expressed = pd.DataFrame(
@@ -421,145 +418,331 @@ def filter_genes(
     return retained
 
 
-def get_exp_bulk(count_mat:ad.AnnData, 
-                 lambdas_bar:pd.Series,
-                 gtf:pd.DataFrame,
-                 verbose:bool=False,
-                 filter_hla:bool=False) -> pd.DataFrame:
-    depth_obs_before_filt = count_mat.X.sum()
-    mut_expressed = filter_genes(count_mat, lambdas_bar, gtf, filter_hla=filter_hla)
-    count_mat = count_mat[:,mut_expressed]
-    # depth_obs_after_filt = count_mat.sum().sum()
-    lambdas_bar = lambdas_bar.loc[mut_expressed]
-    
-    # dataframe set-up
-    bulk_obs = pd.DataFrame({'Y_obs':count_mat.X.sum(0).T.A.ravel()}, index=count_mat.var_names)
-    bulk_obs = bulk_obs.rename_axis('gene').reset_index()
-    # library depth before gene filtering is used to normalize counts.
-    bulk_obs.loc[:,'d_obs'] = depth_obs_before_filt
-    bulk_obs.loc[:,'lambda_obs'] = np.array(bulk_obs.loc[:,'Y_obs'] / bulk_obs.loc[:,'d_obs'], dtype=np.float64)
-    bulk_obs.loc[:,'lambda_ref'] = lambdas_bar[bulk_obs.loc[:,'gene']].values.astype(np.float64)
-    gtf.loc[:,'gene_index'] = gtf.index
-    bulk_obs = bulk_obs.merge(gtf, on='gene', how='left', sort=False)
-    bulk_obs.CHROM = bulk_obs.CHROM.astype('category')
-    bulk_obs.gene = bulk_obs.gene.astype('category')
-    
-    bulk_obs.loc[:, 'logFC'] = np.log2(bulk_obs.loc[:,'lambda_obs'].values) - np.log2(bulk_obs.loc[:, 'lambda_ref'].values)
-    bulk_obs.loc[:, 'lnFC'] = np.log(bulk_obs.loc[:,'lambda_obs'].values) - np.log(bulk_obs.loc[:,'lambda_ref'].values)
-    # add control for infinity
-    bulk_obs = bulk_obs[(~np.isinf(bulk_obs.logFC)) & (~np.isinf(bulk_obs.lnFC))] # here we filter infinity. Original implementation assign NA
+def get_exp_bulk(
+    count_mat: ad.AnnData,
+    lambdas_bar: pd.Series,
+    gtf: pd.DataFrame,
+    verbose: bool = False,
+    filter_hla: bool = False,
+    filter_segments: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+    """
+    Compute bulk gene expression metrics by filtering genes and combining observed counts
+    with reference expression profiles and genome annotations.
 
+    Parameters
+    ----------
+    count_mat : ad.AnnData
+        Single-cell count matrix with genes as `.var_names`.
+    lambdas_bar : pd.Series
+        Reference expression profile indexed by gene names.
+    gtf : pd.DataFrame
+        Genome annotation containing at least ['gene', 'CHROM'] columns.
+    verbose : bool, optional
+        Whether to print progress messages (default False).
+    filter_hla : bool, optional
+        Whether to exclude genes in the HLA region on chromosome 6 (default False).
+    filter_segments : pd.DataFrame or None, optional
+        Optional dataframe defining genomic segments to filter out overlapping genes (default None).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with bulk gene expression statistics per gene including:
+        - 'Y_obs': observed counts sum
+        - 'd_obs': total library depth before filtering
+        - 'lambda_obs': normalized observed expression (counts / depth)
+        - 'lambda_ref': reference expression
+        - gene annotation columns from `gtf`
+        - 'logFC': log2 fold change between observed and reference expression
+        - 'lnFC': natural log fold change between observed and reference expression
+
+    Notes
+    -----
+    - Genes are filtered using `filter_genes` function based on expression and annotations.
+    - Log fold changes with infinite values are filtered out.
+    """
+    depth_obs_before_filt = count_mat.X.sum()
+    mut_expressed = filter_genes(count_mat, lambdas_bar, gtf, filter_hla=filter_hla, filter_segments=filter_segments)
+    count_mat = count_mat[:, mut_expressed]
+    lambdas_bar = lambdas_bar.loc[mut_expressed]
+
+    bulk_obs = pd.DataFrame({'Y_obs': count_mat.X.sum(0).T.A.ravel()}, index=count_mat.var_names)
+    bulk_obs = bulk_obs.rename_axis('gene').reset_index()
+
+    # Use pre-filter library depth for normalization
+    bulk_obs['d_obs'] = depth_obs_before_filt
+    bulk_obs['lambda_obs'] = bulk_obs['Y_obs'] / bulk_obs['d_obs']
+    bulk_obs['lambda_ref'] = lambdas_bar[bulk_obs['gene']].values.astype(np.float64)
+
+    gtf = gtf.copy()
+    gtf['gene_index'] = gtf.index
+    bulk_obs = bulk_obs.merge(gtf, on='gene', how='left', sort=False)
+
+    bulk_obs['CHROM'] = bulk_obs['CHROM'].astype('category')
+    bulk_obs['gene'] = bulk_obs['gene'].astype('category')
+    bulk_obs['logFC'] = np.log2(bulk_obs['lambda_obs']) - np.log2(bulk_obs['lambda_ref'])
+    bulk_obs['lnFC'] = np.log(bulk_obs['lambda_obs']) - np.log(bulk_obs['lambda_ref'])
+
+    # Filter out infinite log fold changes
+    bulk_obs = bulk_obs[~bulk_obs['logFC'].isin([np.inf, -np.inf]) & ~bulk_obs['lnFC'].isin([np.inf, -np.inf])]
     return bulk_obs
 
 
-def get_inter_cm(cM:pd.Series) -> NDArray:
+def get_inter_cm(cM: pd.Series) -> NDArray:
+    """
+    Compute inter-marker genetic distances from cumulative cM positions.
+
+    Parameters
+    ----------
+    cM : pandas.Series
+        A series of cumulative genetic positions in centiMorgans (cM),
+        ordered along a chromosome.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of inter-marker distances with the same length as `cM`.
+        The first element is NaN (no preceding marker).
+        If input length <= 1, returns np.nan scalar.
+    """
     if len(cM) <= 1:
         return np.nan
     else:
-        return np.hstack([np.nan, np.array(cM[1:].values - cM[:-1].values)])
+        return np.hstack([np.nan, cM.values[1:] - cM.values[:-1]])
 
-def switch_prob(distance:NDArray,
-                nu:float=1, 
-                min_p:float=1e-10) -> NDArray:
+
+def switch_prob(
+    distance: NDArray,
+    nu: float = 1,
+    min_p: float = 1e-10
+) -> NDArray:
+    """
+    Calculate switch probabilities based on genetic distances and parameter nu.
+
+    Parameters
+    ----------
+    distance : numpy.ndarray
+        Array of inter-marker distances (genetic distances in cM or recombination units).
+    nu : float, optional
+        Recombination rate parameter. If zero, returns zeros array. Default is 1.
+    min_p : float, optional
+        Minimum threshold for switch probabilities to avoid zeros. Default is 1e-10.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of switch probabilities, thresholded to minimum `min_p`.
+        NaN values are replaced by 0.
+    """
     if nu == 0:
         p = np.zeros(len(distance))
     else:
-        p = np.exp(np.log(1 - np.exp(-2*nu*distance)) - np.log(2))
+        p = np.exp(np.log(1 - np.exp(-2 * nu * distance)) - np.log(2))
         p = np.maximum(p, min_p)
 
     p[np.isnan(p)] = 0
     return p
 
 
-def get_allele_bulk(df_allele:pd.DataFrame, 
-                    nu:float=1, 
-                    min_depth:int=0) -> pd.DataFrame:
-    
+def get_allele_bulk(
+    df_allele: pd.DataFrame,
+    nu: float = 1,
+    min_depth: int = 0
+    ) -> pd.DataFrame:
+    """
+    Process allele count data to produce a bulk allele summary table with
+    allele ratios, positional indexing, and switch probabilities.
+
+    Parameters
+    ----------
+    df_allele : pd.DataFrame
+        Allele-level DataFrame expected to contain columns:
+        ['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'AD', 'DP', 'GT', 'gene'].
+        'GT' genotype values must be in {'1|0', '0|1'} for inclusion.
+    nu : float, optional
+        Parameter for recombination rate used in switch probability calculation,
+        by default 1.
+    min_depth : int, optional
+        Minimum depth (DP) threshold for including SNPs, by default 0.
+
+    Returns
+    -------
+    pd.DataFrame
+        Processed allele bulk DataFrame including:
+        - Aggregated allele depths ('AD') and total depths ('DP')
+        - Allelic ratio ('AR')
+        - SNP positional index within each chromosome ('snp_index')
+        - Probabilistic B-allele frequency ('pBAF') and adjusted depth ('pAD')
+        - Inter-SNP genetic distance ('inter_snp_cm')
+        - Switch probability ('p_s')
+        - 'gene' column cast to string or NaN if missing
+
+    Notes
+    -----
+    - SNPs with genotypes other than '1|0' or '0|1' are excluded.
+    - SNPs with NaN genetic map positions ('cM') are excluded.
+    - The function computes inter-SNP distances per chromosome.
+    - Switch probabilities are computed using `switch_prob` function (nu parameter).
+    """
     df_allele = df_allele.loc[:, ['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'AD', 'DP', 'GT', 'gene']]
-    df_allele = df_allele[[i in {'1|0', '0|1'} for i in df_allele.GT]]
-    df_allele = df_allele[~np.isnan(df_allele.cM)]    
-    df_allele = df_allele.groupby(['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'GT', 'gene'], sort=False, as_index=False, dropna=False).sum(['AD', 'DP'])
-    df_allele.loc[:,'AR'] = df_allele.AD / df_allele.DP
-    df_allele = df_allele.sort_values(['CHROM', 'POS'])
+    df_allele = df_allele[df_allele.GT.isin({'1|0', '0|1'})]
+    df_allele = df_allele[~np.isnan(df_allele.cM)]
     
+    # Sum AD and DP grouped by SNP attributes
+    df_allele = df_allele.groupby(['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'GT', 'gene'],
+                                    sort=False, as_index=False, dropna=False).sum(['AD', 'DP'])
+    
+    df_allele['AR'] = df_allele.AD / df_allele.DP
+    df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
+
+    # Assign SNP index per chromosome
     flat_list = []
     for chrom in df_allele.CHROM.unique():
-        for idx, snp in enumerate(df_allele[df_allele.CHROM == chrom].snp_id, start=1):
-            flat_list.append(idx)
-            
-    df_allele.loc[:,'snp_index'] = flat_list
+        snps = df_allele[df_allele.CHROM == chrom].snp_id
+        flat_list.extend(range(1, len(snps) + 1))
+    df_allele['snp_index'] = flat_list
+
+    # Filter by minimum depth
     df_allele = df_allele[df_allele.DP >= min_depth]
-    
+
+    # Compute probabilistic B-allele frequency and adjusted depth
     pBAF = []
     pAD = []
-    for row, data in df_allele.iterrows():
+    for _, data in df_allele.iterrows():
         if data.GT == '1|0':
             pBAF.append(data.AR)
             pAD.append(data.AD)
         else:
-            pBAF.append(1-data.AR)
+            pBAF.append(1 - data.AR)
             pAD.append(data.DP - data.AD)
-    df_allele.loc[:,'pBAF'] = pBAF
-    df_allele.loc[:,'pAD'] = pAD
-    #
-    df_allele = df_allele.sort_values(['CHROM', 'POS'])
-    df_allele.CHROM = df_allele.CHROM.astype('category')
-    
+    df_allele['pBAF'] = pBAF
+    df_allele['pAD'] = pAD
+
+    df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
+    df_allele['CHROM'] = df_allele['CHROM'].astype('category')
+
+    # Compute inter-SNP genetic distances chromosome-wise
     inter_snp_cm = np.zeros(df_allele.shape[0])
     start_idx = 0
     for chrom in df_allele.CHROM.unique():
-        df_allele_chrom = df_allele.loc[df_allele.CHROM == chrom]
-        end_idx = start_idx + df_allele_chrom.shape[0]
-        inter_snp_cm[start_idx:end_idx] = get_inter_cm(df_allele_chrom.cM)
-        start_idx += df_allele_chrom.shape[0]
+        df_chrom = df_allele.loc[df_allele.CHROM == chrom]
+        end_idx = start_idx + df_chrom.shape[0]
+        inter_snp_cm[start_idx:end_idx] = get_inter_cm(df_chrom.cM)
+        start_idx = end_idx
+    df_allele['inter_snp_cm'] = inter_snp_cm
     
-    df_allele.loc[:,'inter_snp_cm'] = inter_snp_cm
-    
-    df_allele.loc[:,'p_s'] = switch_prob(df_allele.inter_snp_cm)
-    df_allele.loc[:,'gene'] = [i if isinstance(i, str) else np.nan for i in df_allele.gene]
+    # Compute switch probabilities
+    df_allele['p_s'] = switch_prob(df_allele['inter_snp_cm'].values, nu=nu)
 
+    # Ensure 'gene' column has string or NaN values
+    df_allele['gene'] = df_allele['gene'].apply(lambda i: i if isinstance(i, str) else np.nan)
     return df_allele
 
 
-def combine_bulk(allele_bulk, exp_bulk, filter_hla=True):
-    bulk = pd.merge(allele_bulk, exp_bulk, how='outer', on=['CHROM','gene'])
-    bulk.loc[:,'snp_id'] = np.where(bulk['snp_id'].isna(), bulk['gene'], bulk['snp_id'])
-    bulk.loc[:,'gene'] = pd.Categorical(bulk.loc[:,'gene'], categories=exp_bulk.loc[:,'gene'])
-    bulk.loc[:,'POS'] = np.where(bulk.loc[:,'POS'].isna(), bulk.loc[:,'gene_start'], bulk.loc[:,'POS'])
-    bulk.loc[:,'p_s'] = np.where(bulk.loc[:,'p_s'].isna(), 0, bulk.loc[:,'p_s'])
-    bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
-    # filter HLA
+def combine_bulk(
+    allele_bulk: pd.DataFrame,
+    exp_bulk: pd.DataFrame,
+    filter_hla: bool = True,
+    filter_segments: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+    """
+    Combine allele-level bulk data and expression-level bulk data into a unified DataFrame,
+    with optional filtering for HLA region and specified genomic segments.
+
+    Parameters
+    ----------
+    allele_bulk : pd.DataFrame
+        DataFrame containing allele bulk data, expected to include columns
+        like ['snp_id', 'CHROM', 'POS', 'gene', 'p_s', 'Y_obs'].
+    exp_bulk : pd.DataFrame
+        DataFrame containing expression bulk data with columns including
+        ['gene', 'CHROM', 'gene_start', 'lambda_obs', 'lambda_ref', 'd_obs'].
+    filter_hla : bool, optional
+        Whether to exclude SNPs/genes located in the HLA region on chromosome 6
+        (default True).
+    filter_segments : pd.DataFrame or None, optional
+        DataFrame of genomic segments with columns ['CHROM', 'seg_start', 'seg_end']
+        used to exclude overlapping SNPs/genes (default None).
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined and filtered DataFrame with updated allele counts,
+        normalized expression values, log fold changes, and SNP indices.
+
+    Notes
+    -----
+    - SNP IDs missing in `allele_bulk` are filled with corresponding gene names.
+    - Positions missing in `allele_bulk` are filled with gene start positions from `exp_bulk`.
+    - Switch probabilities missing in allele data are set to zero.
+    - Filters out HLA region on chromosome 6 and any segments specified in `filter_segments`.
+    - SNP indices are reassigned per chromosome in genomic order.
+    - Fold changes (`logFC` and `lnFC`) are computed with infinity values replaced by NaN.
+    """
+    # Outer merge on CHROM and gene
+    bulk = pd.merge(allele_bulk, exp_bulk, how='outer', on=['CHROM', 'gene'])
+    # Fill missing SNP ids with gene names
+    bulk['snp_id'] = np.where(bulk['snp_id'].isna(), bulk['gene'], bulk['snp_id'])
+    # Convert gene column to categorical with exp_bulk gene order
+    bulk['gene'] = pd.Categorical(bulk['gene'], categories=exp_bulk['gene'])
+    # Fill missing POS with gene_start from expression data
+    bulk['POS'] = np.where(bulk['POS'].isna(), bulk['gene_start'], bulk['POS'])
+    # Fill missing switch probabilities with zero
+    bulk['p_s'] = np.where(bulk['p_s'].isna(), 0, bulk['p_s'])
+    
+    # Sort by chromosome and position using natural sorting
+    bulk = bulk.sort_values(by=['CHROM', 'POS'], key=natsort.natsort_keygen())
+    
+    # Filter out HLA region if requested
     if filter_hla:
-        to_filter = bulk[(bulk.loc[:,'CHROM'] == 6) & (bulk.loc[:,'POS'] > 28510120) & (bulk.loc[:,'POS'] < 33480577)].index
-        bulk = bulk.loc[bulk.index.difference(to_filter),:]
-        
+        to_filter = bulk[(bulk['CHROM'] == 6) & 
+                    (bulk['POS'] > 28510120) & 
+                    (bulk['POS'] < 33480577)].index
+        bulk = bulk.drop(index=to_filter)
+    
+    # Filter segments overlap if provided
+    if filter_segments is not None and not filter_segments.empty:
+        genes_exclude = []
+        for _, row in filter_segments.iterrows():
+            to_filter = bulk[(bulk['CHROM'].astype(str) == str(row.CHROM)) &
+                             (bulk['POS'] < row.seg_end) &
+                             (bulk['POS'] > row.seg_start)].index.tolist()
+            genes_exclude.extend(to_filter)
+        bulk = bulk.drop(index=genes_exclude)
+    
+    # Fix observed counts, collapsing multiple SNPs per gene
     gene_collect = {}
     Y_obs_fix = []
-    for chrom in bulk.CHROM.unique():
-        running_chrom_bulk = bulk[bulk.loc[:,'CHROM'] == chrom]
-        for idx, row, in running_chrom_bulk.iterrows():
-            if row.gene in gene_collect and (row.gene is not np.nan):
+    for chrom in bulk['CHROM'].unique():
+        chrom_bulk = bulk[bulk['CHROM'] == chrom]
+        for idx, row in chrom_bulk.iterrows():
+            if pd.notna(row.gene) and row.gene in gene_collect:
                 gene_collect[row.gene][row.snp_id] = row.Y_obs
                 Y_obs_fix.append(np.nan)
             else:
-                gene_collect[row.gene] = {}
-                gene_collect[row.gene][row.snp_id] = row.Y_obs
+                gene_collect[row.gene] = {row.snp_id: row.Y_obs}
                 Y_obs_fix.append(row.Y_obs)
-    bulk.loc[:, 'Y_obs'] = Y_obs_fix
-    fc = np.exp(np.log(bulk.loc[:,'lambda_obs']) - np.log(bulk.loc[:,'lambda_ref']))
-    bulk.loc[:,'lambda_obs'] = bulk.loc[:,'Y_obs'] / bulk.loc[:,'d_obs']
-    bulk.loc[:,'logFC'] = np.log2(fc)
-    bulk.loc[:,'logFC'] = np.where(np.isinf(bulk.loc[:,'logFC']), np.nan, bulk.loc[:,'logFC'])
-    bulk.loc[:,'lnFC'] = np.log(fc)
-    bulk.loc[:,'lnFC'] = np.where(np.isinf(bulk.loc[:,'lnFC']), np.nan, bulk.loc[:,'lnFC'])
+    bulk['Y_obs'] = Y_obs_fix
     
-    bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen()).reset_index(drop=True)
-    # assign index to snps
+    # Calculate fold changes and normalize lambda_obs
+    fc = np.exp(np.log(bulk['lambda_obs']) - np.log(bulk['lambda_ref']))
+    bulk['lambda_obs'] = bulk['Y_obs'] / bulk['d_obs']
+    bulk['logFC'] = np.log2(fc)
+    bulk['logFC'] = bulk['logFC'].replace([np.inf, -np.inf], np.nan)
+    bulk['lnFC'] = np.log(fc)
+    bulk['lnFC'] = bulk['lnFC'].replace([np.inf, -np.inf], np.nan)
+    
+    # Resort by chromosome and position with natural sorting
+    bulk = bulk.sort_values(by=['CHROM', 'POS'], key=natsort.natsort_keygen()).reset_index(drop=True)
+    
+    # Assign SNP index per chromosome
     snp_index = []
-    for chrom in bulk.CHROM.unique():
-        current_snp_num = bulk[bulk.CHROM == chrom].shape[0]
-        snp_index += [i for i in range(current_snp_num)]
-    bulk.loc[:,'snp_index'] = snp_index
+    for chrom in bulk['CHROM'].unique():
+        current_snp_num = bulk[bulk['CHROM'] == chrom].shape[0]
+        snp_index.extend(range(current_snp_num))
+    bulk['snp_index'] = snp_index
+    
     return bulk
 
 
@@ -656,9 +839,10 @@ def get_bulk(count_mat,
              segs_loh = None,
              verbose = True,
              disp = False,
-             filter_hla = True):
+             filter_hla = True,
+             filter_segments=None):
 
-    # YOU NEED TO DO ***EXPLICIT*** COPY OF THE ANNDATA WHEN YOU WRITE ON IT!
+    # ***EXPLICIT*** COPY OF THE ANNDATA BEFORE YOU WRITE ON IT!
     count_mat = check_anndata(count_mat.copy())
     if subset is not None: 
         if not set(subset).issubset(set(count_mat.obs_names)):
@@ -668,7 +852,7 @@ def get_bulk(count_mat,
             df_allele_subset_mask = [i in subset for i in df_allele.cell]
             df_allele = df_allele[df_allele_subset_mask]
     fit = fit_ref_sse_ad(count_mat, lambdas_ref, gtf, verbose=disp)
-    exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla)
+    exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla, filter_segments=filter_segments)
     exp_bulk = exp_bulk[(exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5) | (exp_bulk.loc[:,'Y_obs'] == 0)]
     exp_bulk.loc[:,'mse'] = fit['mse']
     allele_bulk = get_allele_bulk(df_allele, nu=nu, min_depth=min_depth)
