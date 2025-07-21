@@ -24,8 +24,10 @@ from typing import Dict, List, Union, Sequence, Any, Optional
 from numpy.typing import NDArray, ArrayLike
 
 from collections import Counter
-
+import tqdm
 import warnings
+
+from spacenumbat import hmm
 
 
 ## Prepare bulk data
@@ -1102,3 +1104,147 @@ def Modes(x):
     max_freq = max(c.values())
     # Return all elements that have this frequency
     return [k for k, v in c.items() if v == max_freq]
+
+
+def detect_clonal_loh(
+    bulk: pd.DataFrame,
+    t: float = 1e-5,
+    snp_rate_loh: float = 5,
+    min_depth: int = 0
+    ) -> Optional[pd.DataFrame]:
+    """
+    Detect clonal Loss of Heterozygosity (LOH) segments from bulk-level allelic data.
+
+    This function summarizes SNP counts and allelic metrics per gene, fits statistical
+    models for allelic expression and SNP rates, and applies a Hidden Markov Model (HMM)
+    to call clonal LOH segments. Outputs a DataFrame of detected LOH segments with
+    estimated SNP rates.
+
+    Parameters
+    ----------
+    bulk : pd.DataFrame
+        DataFrame containing bulk-level allele and gene information, with required columns:
+        ['CHROM', 'gene', 'gene_start', 'gene_end', 'AD', 'DP', 'Y_obs', 'lambda_ref',
+         'logFC', 'd_obs'].
+    t : float, optional
+        HMM transition probability parameter, by default 1e-5.
+    snp_rate_loh : float, optional
+        Reference SNP mutation rate for LOH state in the HMM, by default 5.
+    min_depth : int, optional
+        Minimum depth (DP) for SNP inclusion, by default 0.
+
+    Returns
+    -------
+    Optional[pd.DataFrame]
+        DataFrame of LOH segments with columns:
+        ['CHROM', 'seg', 'seg_start', 'seg_end', 'snp_rate', 'loh'],
+        or None if no LOH segments are detected.
+
+    Notes
+    -----
+    - Genes are summarized per chromosome, with per-gene and per-segment SNP statistics.
+    - Statistical fitting is performed using Negative Binomial and Poisson lognormal models.
+    - HMM is used to segment genes into neutral and LOH states.
+    - Only segments classified as 'loh' are retained in the output.
+    - If no LOH segments are found, returns None.
+    """
+    
+    bulk = bulk[(~bulk.loc[:, 'lambda_ref'].isna()) & (~bulk.loc[:,'gene'].isna())].copy()
+    
+    bulk_snps = {'CHROM':[],
+             'gene':[],
+             'gene_start':[],
+             'gene_end':[],
+             'gene_snps':[],
+             'Y_obs':[],
+             'lambda_ref':[],
+             'logFC':[],
+             'd_obs':[],
+             'gene_length':[]}
+    
+    chrom_unique = bulk.CHROM.unique()
+    for chrom in tqdm.tqdm(chrom_unique):
+        gene_unique = bulk[bulk.loc[:, 'CHROM'] == chrom].gene.unique()
+        for gene in gene_unique:
+            tmp_bulk = bulk[(bulk.loc[:,'CHROM'] == chrom) &
+                            (bulk.loc[:,'gene'] == gene)]
+            gene_snps = tmp_bulk[(~tmp_bulk.loc[:,'AD'].isna()) &
+                                (tmp_bulk.loc[:,'DP'] > min_depth)].shape[0]
+            Y_obs = tmp_bulk.loc[:,'Y_obs'].dropna().unique().astype(np.int32).sum()
+            lambda_ref = tmp_bulk.loc[:,'lambda_ref'].dropna().unique().item()
+            logFC = tmp_bulk.loc[:,'logFC'].dropna().unique().item()
+            d_obs = tmp_bulk.loc[:,'d_obs'].dropna().unique().item()
+            bulk_snps['gene_snps'].append(gene_snps)
+            bulk_snps['Y_obs'].append(Y_obs)
+            bulk_snps['lambda_ref'].append(lambda_ref)
+            bulk_snps['logFC'].append(logFC)
+            bulk_snps['d_obs'].append(np.int32(d_obs))
+            bulk_snps['gene'].append(tmp_bulk.gene.values[0])
+            bulk_snps['gene_start'].append(tmp_bulk.gene_start.astype(np.int32).values[0])
+            bulk_snps['gene_end'].append(tmp_bulk.gene_end.astype(np.int32).values[0])
+            bulk_snps['gene_length'].append(np.array(tmp_bulk.gene_end.values[0] - tmp_bulk.gene_start.values[0]).astype(np.int32))
+            bulk_snps['CHROM'].append(chrom)
+    
+    bulk_snps_df = pd.DataFrame(bulk_snps)
+    bulk_snps_df = bulk_snps_df[(bulk_snps_df.logFC < 8) & (bulk_snps_df.logFC > -8)]
+    bulk_snps_df = bulk_snps_df.sort_values(['CHROM','gene_start']).reset_index(drop=True)
+    
+    fit = hmm.fit_lnpois(bulk_snps_df.Y_obs.values,
+                     bulk_snps_df.lambda_ref.values,
+                     bulk_snps_df.d_obs.unique())
+    
+    mu, sig = fit
+    bulk_snps_df.gene_length = bulk_snps_df.gene_length.values.astype(np.int32)
+    snp_fit = fit_snp_rate(bulk_snps_df.gene_snps.values, bulk_snps_df.gene_length.values)
+    snp_rate_ref, snp_sig = snp_fit
+    
+    n = bulk_snps_df.shape[0]
+    A = np.array([[1-t, t],[t, 1-t]])
+    As = np.tile(A, (n, 1, 1)).transpose(1, 2, 0)
+    
+    HMM = {
+    'x': bulk_snps_df.gene_snps,
+    'Pi': As,
+    'delta': [1-t, t],
+    'pm': np.array([snp_rate_ref, snp_rate_loh]),
+    'pn': np.array(bulk_snps_df.gene_length / 1e6),
+    'snp_sig': snp_sig,
+    'y': bulk_snps_df.Y_obs,
+    'phi': [1, 0.5],
+    'lambda_star': bulk_snps_df.lambda_ref,
+    'd': bulk_snps_df.d_obs.unique(),
+    'mu': mu,
+    'sig':sig,
+    'states': ['neu', 'loh']
+    }
+    
+    vtb = hmm.viterbi_loh(HMM)
+    bulk_snps_df.loc[:,'cnv_state'] = vtb
+    
+    bulk_snps_df.loc[:,'snp_index'] = bulk_snps_df.index
+    bulk_snps_df.loc[:,'POS'] = bulk_snps_df.gene_start
+    bulk_snps_df.loc[:,'pAD'] = 1
+
+    segs_loh = annot_segs(bulk_snps_df)  # you may want this output for plot in bulk
+
+    snp_rate = []
+    for chrom in segs_loh.CHROM.unique():
+        chrom_bulk = segs_loh[segs_loh.CHROM == chrom]
+        for seg in chrom_bulk.seg.unique():
+            seg_bulk = chrom_bulk[chrom_bulk.seg == seg]
+    
+            snp_rate.append(fit_snp_rate(seg_bulk.gene_snps, seg_bulk.gene_length)[0])
+    
+    segs_loh = segs_loh.groupby(['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state'], observed=True, sort=False).sum()
+    segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state', 'gene_snps', 'gene_length']]
+    
+    segs_loh.loc[:,'snp_rate'] = snp_rate
+    segs_loh = segs_loh[segs_loh.cnv_state == 'loh'].copy()
+    segs_loh.loc[:, 'loh'] = True
+    segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'snp_rate', 'loh']]
+    
+    if segs_loh.shape[0] == 0:
+        segs_loh = None
+    return segs_loh
+
+    return segs_loh
