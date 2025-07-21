@@ -209,7 +209,6 @@ def run_numbat(
     
     # Check if filtering Chromosomal segments
     if filter_chromosome_segments:
-        # filter_segments_df = diagnostics.check_filter_segments(filter_chromosome_segments)
         filter_segments_df = diagnostics.check_filter_segments(filter_chromosome_segments)
     else:
         filter_segments_df = None
@@ -246,7 +245,7 @@ def run_numbat(
     f"check_convergence = {check_convergence}",
     f"genome = {genome}",
     f"Filter HLA region = {filter_hla_hg38}",
-    f"Filtering custom chromosomal region = {filter_chromosome_segments}"
+    f"Filtering custom chromosomal region = {filter_chromosome_segments}",
     "Input metrics:",
     f"{count_mat.shape[0]} cells"  # assuming AnnData or DataFrame (columns = cells)
     ]
@@ -259,14 +258,14 @@ def run_numbat(
         log.info(msg)
         
         bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, filter_segments=filter_segments_df)
-       # segs_loh = utils.detect_clonal_loh(bulk, t=t)
-    
-       # if segs_loh:
-       #     segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
-       # else:
-       #     log.info('No segments with clonal LoH detected.')
+        segs_loh = utils.detect_clonal_loh(bulk, t=t)
+        
+        if segs_loh:
+            segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
+        else:
+            log.info('No segments with clonal LoH detected.')
        
-    return bulk
+    return segs_loh
     
             
     
