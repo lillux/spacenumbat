@@ -13,7 +13,8 @@ import warnings
 
 import natsort
 
-from typing import Optional
+from typing import Optional, Union
+from pathlib import Path
 
 
 def load_and_validate_annotation(file_path: str, sep: str = "\t") -> pd.DataFrame:
@@ -192,15 +193,11 @@ def check_segs_loh(segs_loh: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return segs_loh
 
 
-def check_filter_segments(filter_segments_path: str) -> pd.DataFrame:
+def check_filter_segments(filter_segments_path: Union[Path, None]) -> pd.DataFrame:
     """
     Validate that the provided path exists, is a readable TSV file,
     and contains required columns with correct types.
     Required columns are: ['CHROM', 'seg_start', 'seg_end']
-    
-    Example:
-        CHROM    seg_start    seg_end
-        6    28510120    33480577
 
     Parameters
     ----------
@@ -220,6 +217,9 @@ def check_filter_segments(filter_segments_path: str) -> pd.DataFrame:
         If the file cannot be read as a TSV, or required columns are missing
         or have incorrect types.
     """
+    if filter_segments_path is None:
+        return filter_segments_path
+    
     # Check path existence and validity
     if not os.path.exists(filter_segments_path):
         raise FileNotFoundError(f"Path does not exist: {filter_segments_path}")
