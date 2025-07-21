@@ -255,7 +255,7 @@ def run_numbat(
         msg = "Calling segments with clonal LoH."
         log.info(msg)
         
-        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, )
+        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, filter_segments=filter_chromosome_segments )
        # segs_loh = utils.detect_clonal_loh(bulk, t=t)
     
        # if segs_loh:
