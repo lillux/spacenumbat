@@ -6,12 +6,7 @@ Created on Mon Dec  2 17:06:08 2024
 @author: lillux
 """
 import numpy as np
-import pandas as pd
-
-from spacenumbat.dist_prob import fit_lnpois, dnbinom, dpoilog, log_beta_binomial_pmf
-from spacenumbat.utils import fit_snp_rate, annot_segs
-
-import tqdm
+from spacenumbat.dist_prob import dnbinom, dpoilog, log_beta_binomial_pmf
 import logging
 
 
