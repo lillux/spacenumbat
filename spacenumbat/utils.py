@@ -27,7 +27,7 @@ from collections import Counter
 import tqdm
 import warnings
 
-from spacenumbat import hmm
+from spacenumbat import hmm, dist_prob
 
 
 ## Prepare bulk data
@@ -1189,7 +1189,7 @@ def detect_clonal_loh(
     bulk_snps_df = bulk_snps_df[(bulk_snps_df.logFC < 8) & (bulk_snps_df.logFC > -8)]
     bulk_snps_df = bulk_snps_df.sort_values(['CHROM','gene_start']).reset_index(drop=True)
     
-    fit = hmm.fit_lnpois(bulk_snps_df.Y_obs.values,
+    fit = dist_prob.fit_lnpois(bulk_snps_df.Y_obs.values,
                      bulk_snps_df.lambda_ref.values,
                      bulk_snps_df.d_obs.unique())
     
