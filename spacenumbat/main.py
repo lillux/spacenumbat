@@ -15,7 +15,7 @@ import pandas as pd
 from scipy import sparse
 
 import spacenumbat
-from spacenumbat import utils, diagnostics
+from spacenumbat import utils, diagnostics, clustering
 
 from spacenumbat._log import configure, get_logger
 
@@ -166,7 +166,7 @@ def run_numbat(
             raise ValueError(msg)
     else:
         filter_hla_hg38=False
-        spacenumbat.io.load_and_validate_annotation(gtf)
+        gtf = diagnostics.load_and_validate_annotation(gtf)
         
     count_mat = utils.check_anndata(count_mat)
     df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
@@ -264,8 +264,12 @@ def run_numbat(
             segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
         else:
             log.info('No segments with clonal LoH detected.')
+            
+    # Calculate reference transcriptomic profile of cell with reference categories
+    sc_refs = clustering.choose_ref_cor(count_mat, lambdas_ref, gtf)
+    sc_refs.to_csv(os.path.join(out_dir, "sc_refs.tsv"), sep="\t")
        
-    return segs_loh
+            
     
             
     
