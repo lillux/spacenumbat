@@ -268,7 +268,26 @@ def run_numbat(
     # Calculate reference transcriptomic profile of cell with reference categories
     sc_refs = clustering.choose_ref_cor(count_mat, lambdas_ref, gtf)
     sc_refs.to_csv(os.path.join(out_dir, "sc_refs.tsv"), sep="\t")
-       
+    
+    
+    if random_init:
+        print("")
+        ## TODO
+        
+    elif init_k == 1:
+        log.info("Initializing with all-cell pseudobulk ...")
+        
+        ## TODO
+        
+    else:
+        log.info("Approximating initial clusters using smoothed expression ...")
+        clust = clustering.exp_hclust(count_mat=count_mat,
+                           lambdas_ref=lambdas_ref,
+                           gtf=gtf,
+                           sc_refs=sc_refs,
+                           ncores=ncores)
+        
+        ## TODO
             
     
             
