@@ -321,8 +321,12 @@ def run_numbat(
                                  filter_hla=filter_hla_hg38,
                                  filter_segments=filter_chromosome_segments)
     
+    ### Diagnostics ##TODO
     
-    
+    # if i == 0:
+        
+    #if segs_consensus_fix is None:
+        
     
     
     

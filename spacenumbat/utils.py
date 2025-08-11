@@ -209,7 +209,7 @@ def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
     # Keep chr 1-22
     autosomes = [str(i) for i in range(1, 23)]
     df = df[df["CHROM"].astype('string').isin(autosomes)]    
-
+    df["CHROM"] = df["CHROM"].astype('string')
     return df.copy()
 
 
@@ -378,15 +378,15 @@ def filter_genes(
 
     if filter_hla:
         # Exclude genes in HLA region (chr6: 28,510,120 - 33,480,577) in hg38 and hg19
-        genes_exclude = gtf_df[(gtf_df['CHROM'] == 6) &
+        genes_exclude = gtf_df[(gtf_df['CHROM'].astype("string").isin(["6", "chr6"]) &
                                (gtf_df['gene_start'] < 33480577) &
-                               (gtf_df['gene_end'] > 28510120)]['gene'].tolist()
+                               (gtf_df['gene_end'] > 28510120))]['gene'].tolist()
         genes_keep = [gene for gene in genes_keep if gene not in genes_exclude]
 
-    if filter_segments is not None: # and not filter_segments.empty:
+    if filter_segments is not None and not filter_segments.empty:
         genes_exclude = []
         for _, row in filter_segments.iterrows():
-            overlapping = gtf_df[(gtf_df['CHROM'].astype(str) == str(row.CHROM)) &
+            overlapping = gtf_df[(gtf_df['CHROM'].astype("string") == str(row.CHROM)) &
                                  (gtf_df['gene_start'] < row.seg_end) &
                                  (gtf_df['gene_end'] > row.seg_start)]['gene'].tolist()
             genes_exclude.extend(overlapping)
@@ -487,8 +487,8 @@ def get_exp_bulk(
     gtf['gene_index'] = gtf.index
     bulk_obs = bulk_obs.merge(gtf, on='gene', how='left', sort=False)
 
-    bulk_obs['CHROM'] = bulk_obs['CHROM'].astype('category')
-    bulk_obs['gene'] = bulk_obs['gene'].astype('category')
+    bulk_obs['CHROM'] = bulk_obs['CHROM'].astype('string') #was category
+    bulk_obs['gene'] = bulk_obs['gene'].astype('string') #was category
     bulk_obs['logFC'] = np.log2(bulk_obs['lambda_obs']) - np.log2(bulk_obs['lambda_ref'])
     bulk_obs['lnFC'] = np.log(bulk_obs['lambda_obs']) - np.log(bulk_obs['lambda_ref'])
 
@@ -628,7 +628,7 @@ def get_allele_bulk(
     df_allele['pAD'] = pAD
 
     df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
-    df_allele['CHROM'] = df_allele['CHROM'].astype('category')
+    # df_allele['CHROM'] = df_allele['CHROM'].astype('string')
 
     # Compute inter-SNP genetic distances chromosome-wise
     inter_snp_cm = np.zeros(df_allele.shape[0])
@@ -692,8 +692,6 @@ def combine_bulk(
     bulk = pd.merge(allele_bulk, exp_bulk, how='outer', on=['CHROM', 'gene'])
     # Fill missing SNP ids with gene names
     bulk['snp_id'] = np.where(bulk['snp_id'].isna(), bulk['gene'], bulk['snp_id'])
-    # Convert gene column to categorical with exp_bulk gene order
-    bulk['gene'] = pd.Categorical(bulk['gene'], categories=exp_bulk['gene'])
     # Fill missing POS with gene_start from expression data
     bulk['POS'] = np.where(bulk['POS'].isna(), bulk['gene_start'], bulk['POS'])
     # Fill missing switch probabilities with zero
@@ -702,18 +700,18 @@ def combine_bulk(
     # Sort by chromosome and position using natural sorting
     bulk = bulk.sort_values(by=['CHROM', 'POS'], key=natsort.natsort_keygen())
     
-    # Filter out HLA region if requested
+    # Exclude genes in HLA region (chr6: 28,510,120 - 33,480,577) in hg38 and hg19
     if filter_hla:
-        to_filter = bulk[(bulk['CHROM'] == 6) & 
+        to_filter = bulk[(bulk['CHROM'].astype("string").isin(["6", "chr6"]) & 
                     (bulk['POS'] > 28510120) & 
-                    (bulk['POS'] < 33480577)].index
+                    (bulk['POS'] < 33480577))].index
         bulk = bulk.drop(index=to_filter)
     
     # Filter segments overlap if provided
-    if filter_segments is not None: # and not filter_segments.empty:
+    if filter_segments is not None and not filter_segments.empty:
         genes_exclude = []
         for _, row in filter_segments.iterrows():
-            to_filter = bulk[(bulk['CHROM'].astype(str) == str(row.CHROM)) &
+            to_filter = bulk[(bulk['CHROM'].astype("string") == str(row.CHROM)) &
                              (bulk['POS'] < row.seg_end) &
                              (bulk['POS'] > row.seg_start)].index.tolist()
             genes_exclude.extend(to_filter)
@@ -793,7 +791,6 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     segs_consensus_ranges = pr.PyRanges(df=segs_consensus) 
     
     # Find overlaps between bulk and segs_consensus
-    # overlaps = segs_consensus_ranges.join(bulk_ranges, how='right', slack=1)
     overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
     overlaps_df = overlaps.df
     
@@ -810,14 +807,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
     
     bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
-    cat_bulk = pd.CategoricalDtype(categories=bulk.CHROM.unique())
-    bulk.CHROM = bulk.CHROM.astype('int')
-    bulk.CHROM = bulk.CHROM.astype(cat_bulk)
     
-    overlaps_df.CHROM = overlaps_df.CHROM.astype('int')
-    overlaps_df.CHROM = overlaps_df.CHROM.astype('category')
-    
-    # # # Drop unnecessary columns
+    # Drop unnecessary columns
     columns_to_exclude = ['sample']
     
     overlaps_df = overlaps_df.drop(columns=[col for col in columns_to_exclude if col in overlaps_df.columns])
@@ -830,9 +821,6 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
-    # Factor 'seg' using natsorted order
-    unique_segs = natsorted(bulk['seg'].dropna().unique())
-    bulk['seg'] = pd.Categorical(bulk['seg'], categories=unique_segs)
 
     return bulk
 
@@ -927,7 +915,6 @@ def get_bulk(
         # Annotate consensus segments
         bulk = annot_consensus(bulk, segs_loh, join_mode='left')
         # Set 'loh' to False where it's NaN
-        # bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
         bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(0).astype(bool)
     
     return bulk
