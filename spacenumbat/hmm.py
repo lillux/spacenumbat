@@ -6,9 +6,11 @@ Created on Mon Dec  2 17:06:08 2024
 @author: lillux
 """
 import numpy as np
-from spacenumbat.dist_prob import dnbinom, dpoilog, log_beta_binomial_pmf
-from typing import List, Optional, Dict, Any
+from numpy.typing import NDArray, ArrayLike
+from typing import List, Optional, Dict, Any, Mapping, Sequence, Union
 import pandas as pd
+from spacenumbat.dist_prob import dnbinom, dpoilog, log_beta_binomial_pmf
+from spacenumbat import utils
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -16,7 +18,7 @@ log = get_logger(__name__)
 
 
 
-def viterbi_loh(HMM:Dict):
+def viterbi_loh(HMM:Mapping[str, Any]):
     """
     Run Viterbi decoding in log-space for a joint LOH HMM and return the most
     likely sequence of state *labels* (not state indices).
@@ -32,7 +34,7 @@ def viterbi_loh(HMM:Dict):
 
     Parameters
     ----------
-    HMM : Dict
+    HMM : Mapping[str, Any]
         Mapping containing observations, parameters, transition and initial
         probabilities, and the list of state labels.
         
@@ -171,7 +173,7 @@ def viterbi_compute(log_delta: np.ndarray,
     return z
 
 
-def viterbi_allele(hmm):
+def viterbi_allele(hmm:Mapping[str, Any]):
     """
     Viterbi algorithm for allele HMM. This function builds the log observation 
     probabilities from beta-binomial models and then decodes the most likely state 
@@ -179,7 +181,7 @@ def viterbi_allele(hmm):
     
     Parameters
     ----------
-    hmm : dict
+    hmm : Mapping[str, Any]
         A dictionary of HMM parameters. Expected keys:
             'x'      : np.ndarray, allele counts.
             'd'      : np.ndarray, total allele counts.
@@ -395,3 +397,575 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
         raise ValueError(msg)
 
     return bulk
+
+
+def viterbi_joint(hmm: Mapping[str, Any]) -> NDArray[np.integer]:
+    """
+    Viterbi decoding for the joint (allele + expression) HMM.
+
+    This function computes per-state log-emission probabilities by combining:
+      1) a **Beta–Binomial** (via ``log_beta_binomial_pmf``) for allele counts, and
+      2) a **Poisson–lognormal** (via ``dpoilog``) for expression counts,
+    then runs a log-space Viterbi recursion using the provided initial state
+    probabilities and (genomic coordinates-varying) transition log-probabilities.
+
+    Parameters
+    ----------
+    hmm : Mapping[str, Any]
+        A dictionary-like container with the following required keys and shapes
+        (N = number of observations, M = number of states):
+
+        Allele model (required)
+        - "x" : NDArray[int], shape (N,)
+            Alternative (or minor) allele counts per position.
+        - "d" : NDArray[int], shape (N,)
+            Total allele depths per position.
+        - "alpha" : NDArray[float], shape (N, M) or (1, M)
+            Alpha parameters (can be coordinates-varying or broadcastable over N).
+        - "beta" : NDArray[float], shape (N, M) or (1, M)
+            Beta parameters (can be coordinates-varying or broadcastable over N).
+
+        Transitions / initialization (required)
+        - "delta" : NDArray[float], shape (M,)
+            Initial state probabilities (must be strictly positive).
+        - "logPi" : NDArray[float], shape (N, M, M)
+            Transition **log**-probabilities for each coordinates step *t*:
+            "logPi[t, i, j] = log P(z_t = j | z_{t-1} = i)".
+            (The code treats these as log-probabilities and does **not** take logs again.)
+
+        Expression model (optional; used only if present)
+        - "y" : NDArray[int], shape (N,)
+            Expression counts per position.
+        - "l" : NDArray[float], shape (N,)
+            Per-position scaling factor (gene length).
+        - "lambda" : NDArray[float], shape (N,)
+            Baseline expression rate modifier (reference expression).
+        - "mu" : NDArray[float], shape (N,)
+            Baseline log-mean for the Poisson–lognormal.
+        - "sig" : NDArray[float], shape (N,)
+            Lognormal standard deviation (sigma).
+        - "phi" : NDArray[float], shape (M,)
+            State-specific multiplicative fold-change applied to expression.
+
+        Misc (optional)
+        - "states" : Sequence[Any]
+            State labels; not used here, but often paired with the Viterbi path.
+
+    Returns
+    -------
+    numpy.ndarray of int
+        The decoded Viterbi state sequence "z" of length N.
+
+    Notes
+    -----
+    - All log-domain inputs must be finite (no zeros before taking logs).
+    - NaNs in the allele/emission terms are treated as 0 contribution via
+      "np.nan_to_num(..., nan=0.0)" in the allele component.
+    - If any expression key (e.g., "y") is absent or "None", only the
+      allele component contributes to the emission log-probability.
+
+    Examples
+    --------
+    >>> z = viterbi_joint({
+    ...     "x": x, "d": d, "alpha": alpha, "beta": beta,
+    ...     "delta": delta, "logPi": logPi,
+    ...     "y": y, "l": L, "lambda": lam, "mu": mu, "sig": sig, "phi": phi
+    ... })
+    """
+    # N = number of observations
+    x = hmm["x"]              # shape (N,)
+    d = hmm["d"]              # shape (N,)
+    alpha = hmm["alpha"]      # expected shape (..., M) or (N, M) if time-varying
+    beta  = hmm["beta"]       # same shape as alpha
+    delta = hmm["delta"]      # shape (M,)
+    logPi = hmm["logPi"]      # shape (N, M, M)
+    
+    N = len(x)
+    M = logPi.shape[1]  # number of states
+    
+    # If we have expression data (y, l, lambda, mu, sig, phi), handle that
+    has_expression = "y" in hmm and hmm["y"] is not None
+    
+    # Compute logprob[i, m] for each observation i and state m
+    logprob = np.zeros((N, M))
+    for m in range(M):
+        # Beta-Binomial
+        l_x = log_beta_binomial_pmf(x, d, alpha[:, m], beta[:, m])  
+        # Replace NaNs with 0
+        l_x = np.nan_to_num(l_x, nan=0.0)
+        
+        if has_expression:
+            y     = hmm["y"]
+            valid = ~np.isnan(y)
+            l_y   = np.zeros(N)
+            # calculate Poisson-Log distribution. 
+            l_y[valid] = dpoilog(
+                x=y[valid],
+                mu=hmm["mu"][valid] + np.log(hmm["phi"][m] * hmm["l"][valid] * hmm["lambda"][valid]),
+                sig=hmm["sig"][valid],
+                log=True
+            )
+        else:
+            l_y = 0
+        
+        logprob[:, m] = l_x + l_y
+    
+    z = viterbi_compute(
+        log_delta = np.log(delta),
+        logprob   = logprob,
+        logPi     = logPi
+    )
+    
+    return z
+
+
+def get_trans_probs_s15(
+    t: float,
+    p_s: ArrayLike | float,
+    w: Mapping[str, float],
+    cn_from: str,
+    phase_from: Optional[str],
+    cn_to: str,
+    phase_to: Optional[str],
+    ) -> np.ndarray:
+    """
+    Compute transition probabilities for the 15-state joint HMM for a single
+    (from_state -> to_state) pair, optionally across multiple phase-switch
+    probabilities.
+
+    Parameters
+    ----------
+    t: float
+        CNV state transition probability (scalar in [0, 1]).
+    p_s: ArrayLike | float
+        Phase switch probability; scalar or 1-D array. The function returns one
+        probability per element of "p_s".
+    w: Mapping[str, float]
+        Relative abundances (mixture weights) per CNV state name, e.g.
+        {"neu": 0.5, "del_1": 0.1, ...}. Used to allocate mass when the
+        CNV state changes.
+    cn_from: str
+        Origin CNV state label (e.g., "neu", "del_1", "loh_2").
+    phase_from: Optional[str]
+        Origin phase label ("up", "down", or None when phase is not
+        applicable for the CNV state).
+    cn_to: str
+        Destination CNV state label.
+    phase_to: Optional[str]
+        Destination phase label ("up", "down", or None).
+
+    Returns
+    -------
+    np.ndarray
+        1-D array of shape (len(p_s),) with transition probabilities for the
+        specified (from, to) pair. If "p_s" is a scalar, the shape is (1,).
+
+    Notes
+    -----
+    - Special case: for neu -> neu, the effective phase switch probability is
+      forced to 0.5.
+    - When cn_from == cn_to:
+        * No phase (both None): probability is "1 - t".
+        * Same phase: (1 - t) * (1 - p_s).
+        * Different phase: (1 - t) * p_s.
+    - When cn_from != cn_to:
+        * Mass "t" is distributed to other CNV states in proportion to their
+          weights "w[cn_to]" (normalized by the sum of weights excluding "cn_from").
+        * If the destination has a phase, the probability is split equally
+          between its two phase labels (division by 2).
+
+    Raises
+    ------
+    KeyError
+        If "cn_to" (or "cn_from") is missing from "w".
+    ZeroDivisionError
+        If the weight denominator (sum of weights excluding "cn_from") is zero.
+    """
+    p_s = np.array(p_s, ndmin=1)  # ensure array
+    
+    # Special case: if going from neu -> neu, then p_s = 0.5
+    if cn_from == 'neu' and cn_to == 'neu':
+        p_s = np.full_like(p_s, 0.5)
+    
+    if cn_from == cn_to:
+        if phase_from is None and phase_to is None:
+            p = 1.0 - t
+            p_out = np.full_like(p_s, p)
+        elif phase_from == phase_to:
+            p_out = (1.0 - t) * (1.0 - p_s)
+        else:
+            p_out = (1.0 - t) * p_s
+    else:
+        denom = sum([v for k,v in w.items() if k != cn_from])
+        p_cnv = t * (w[cn_to] / denom)
+        
+        # If there's a phase_to, we split in half
+        if phase_to is not None:
+            p_cnv = p_cnv / 2.0
+        
+        p_out = np.full_like(p_s, p_cnv)
+    
+    return p_out
+
+
+def calc_trans_mat_s15(
+    t: float,
+    p_s: ArrayLike | float,
+    w: Mapping[str, float],
+    states_cn: Sequence[str],
+    states_phase: Sequence[Optional[str]],
+    ) -> np.ndarray:
+    """
+    Build the full transition tensor for the 15-state joint HMM across one or
+    more phase-switch probabilities.
+
+    Parameters
+    ----------
+    t: float
+        CNV state transition probability (scalar in [0, 1]).
+    p_s: ArrayLike | float
+        Phase switch probability; scalar or 1-D array. The output contains one
+        transition matrix per element of "p_s".
+    w: Mapping[str, float]
+        Relative abundances (mixture weights) per CNV state name.
+    states_cn: Sequence[str]
+        Sequence of CNV state labels (length "n_states"), aligned with
+        "states_phase". Each pair "(states_cn[i], states_phase[i])" defines
+        one HMM state.
+    states_phase
+        Sequence of phase labels ("up", "down", or None) aligned to states_cn.
+
+    Returns
+    -------
+    np.ndarray
+        Transition tensor "A" of shape "(n_states, n_states, len(p_s))",
+        where "A[i, j, k]" is the transition probability from state "i" to
+        state "j" given "p_s[k]".
+
+    Raises
+    ------
+    ValueError
+        If ``states_cn`` and ``states_phase`` differ in length.
+    """
+    n_states = len(states_cn)
+    p_s = np.array(p_s, ndmin=1)  # ensure array
+    n_ps = len(p_s)
+    # build a (n_states, n_states, n_ps) array
+    A = np.zeros((n_states, n_states, n_ps), dtype=float)
+
+    for i in range(n_states):
+        for j in range(n_states):
+            trans_ij = get_trans_probs_s15(
+                t         = t,
+                p_s       = p_s,
+                w         = w,
+                cn_from   = states_cn[i],
+                phase_from= states_phase[i],
+                cn_to     = states_cn[j],
+                phase_to  = states_phase[j]
+            )
+            # trans_ij is shape (n_ps,)
+            A[i, j, :] = trans_ij
+
+    return A
+
+
+def run_joint_hmm_s15(
+    pAD: ArrayLike,
+    DP: ArrayLike,
+    p_s: Union[ArrayLike, float],
+    Y_obs: Optional[ArrayLike] = None,
+    lambda_ref: Optional[ArrayLike] = None,
+    d_total: Optional[ArrayLike] = None,
+    theta_min: float = 0.08,
+    theta_neu: float = 0.0,
+    bal_cnv: bool = True,
+    phi_del: float = 2 ** (-0.25),
+    phi_amp: float = 2 ** 0.25,
+    phi_bamp: Optional[float] = None,
+    phi_bdel: Optional[float] = None,
+    mu: Union[float, ArrayLike] = 0.0,
+    sig: Union[float, ArrayLike] = 1.0,
+    t: float = 1e-5,
+    gamma: float = 18,
+    prior: Optional[ArrayLike] = None,
+    exp_only: bool = False,
+    allele_only: bool = False,
+    classify_allele: bool = False,
+    debug: bool = False,
+    ) -> List[str]:
+    """
+    Decode CNV states with the 15-state joint HMM (allele + expression).
+
+    This wrapper builds a 15-state model (optionally reduced based on flags),
+    assembles emission/transition parameters, runs a Viterbi routine, and
+    returns the most probable state labels per position.
+
+    Model states
+    ------------
+    The full model includes 15 states:
+        neu,
+        del_1_(up|down), del_2_(up|down),
+        loh_1_(up|down), loh_2_(up|down),
+        amp_1_(up|down), amp_2_(up|down),
+        bamp, bdel
+    Flags can reduce this set:
+        - bal_cnv=False    -> drop {bamp, bdel}
+        - allele_only=True -> keep {neu, loh_1_(up|down), loh_2_(up|down)}
+        - classify_allele  -> keep {loh_1_up, loh_1_down} only
+        - exp_only=True    -> expression-only mode (allele channels disabled)
+
+    Parameters
+    ----------
+    pAD : ArrayLike
+        Allelic fraction per position (minor-allele fraction); length N.
+    DP : ArrayLike
+        Total allele depth per position; length N.
+    p_s : ArrayLike or float
+        Phase-switch probability per position (length N) or a scalar.
+        Used when constructing transition tensors.
+    Y_obs : ArrayLike, optional
+        Expression counts per position; length N. If None, filled with zeros.
+    lambda_ref : ArrayLike, optional
+        Baseline expression rate modifiers per position; length N. If None, zeros.
+    d_total : ArrayLike, optional
+        Library / depth scaling per position; length N or scalar. If None, zeros.
+    theta_min : float, default=0.08
+        Minimum allelic imbalance for single-copy LOH/DEL/AMP (affects Beta–Binomial α/β).
+    theta_neu : float, default=0.0
+        Neutral allelic offset (affects neutral α/β).
+    bal_cnv : bool, default=True
+        If False, removes balanced CNV states (bamp/bdel) from the state space.
+    phi_del : float, default=2**(-0.25)
+        Fold-change for single-copy deletion in expression emissions.
+    phi_amp : float, default=2**0.25
+        Fold-change for single-copy amplification in expression emissions.
+    phi_bamp : float, optional
+        Fold-change for balanced amplification state; defaults to `phi_amp` if None.
+    phi_bdel : float, optional
+        Fold-change for balanced deletion state; defaults to `phi_del` if None.
+    mu : float or ArrayLike, default=0.0
+        Baseline log-mean for the Poisson–lognormal expression model; scalar or length N.
+    sig : float or ArrayLike, default=1.0
+        Lognormal sigma for the expression model; scalar or length N.
+    t : float, default=1e-5
+        CNV state transition probability.
+    gamma : float, default=18
+        Dispersion scale for the Beta–Binomial (α = γ * θ, β = γ * (1-θ)).
+    prior : ArrayLike, optional
+        Initial state probabilities over the active state set. If None, a heuristic
+        prior is constructed from transitions starting at 'neu'.
+    exp_only : bool, default=False
+        Expression-only mode: disables allele channel (pAD set to NaN; p_s set to 0).
+    allele_only : bool, default=False
+        Allele-only mode: restricts states to {neu, loh_1_(up|down), loh_2_(up|down)}
+        and disables expression channel (Y_obs set to NaN).
+    classify_allele : bool, default=False
+        Keep only {loh_1_up, loh_1_down} for allele-classification tasks.
+    debug : bool, default=False
+        Reserved for debugging; not used here.
+
+    Returns
+    -------
+    list[str]
+        Most probable state labels (length N), e.g., ``['neu', 'del_1_up', ...]``.
+
+    Notes
+    -----
+    - Inputs are converted to numpy arrays; scalars for `mu`, `sig`, or `d_total`
+      are broadcast to length N.
+    - Transition tensor `A` is built for the full 15-state set and then subset to
+      the active states. It is converted to log-space (`logPi`) for Viterbi.
+    - Balanced CNV fold-changes default to the corresponding single-copy values
+      if not provided (``phi_bamp <- phi_amp``, ``phi_bdel <- phi_del``).
+      
+    Raises
+    ------
+    KeyError
+        If a CNV state required for transition weighting is missing from `w`.
+    ValueError
+        May be raised downstream for inconsistent shapes in helper functions.
+    """
+
+    # Default arguments
+    if Y_obs is None:
+        Y_obs = np.zeros_like(pAD, dtype=float)
+    if lambda_ref is None:
+        lambda_ref = np.zeros_like(pAD, dtype=float)
+    if d_total is None:
+        d_total = np.zeros_like(pAD, dtype=int)
+    if phi_bamp is None:
+        phi_bamp = phi_amp
+    if phi_bdel is None:
+        phi_bdel = phi_del
+    
+    # Define the 15 states
+    states = ["neu",
+              "del_1_up", "del_1_down", "del_2_up", "del_2_down",
+              "loh_1_up", "loh_1_down", "loh_2_up", "loh_2_down",
+              "amp_1_up", "amp_1_down", "amp_2_up", "amp_2_down",
+              "bamp", "bdel"]
+
+    # Extract CN parts and up/down from state names
+    states_cn = [utils.remove_up_down(s) for s in states] 
+    states_phase = [utils.extract_up_down(s) for s in states]
+
+    # Relative abundance of states (w)
+    w = {"neu":   1,
+         "del_1": 1,
+         "del_2": 1e-10,
+         "loh_1": 1,
+         "loh_2": 1e-10,
+         "amp_1": 1,
+         "amp_2": 1e-10,
+         "bamp":  1e-4,
+         "bdel":  1e-10,}
+
+    # If `prior` is None, build an initial prior (one for each of the 15 states).
+    if prior is None:
+        prior = []
+        for i, st in enumerate(states):
+            cn_to = utils.remove_up_down(st)
+            phase_to = utils.extract_up_down(st)
+            t_inflate = min(t * 100, 1.0)
+            p_init = get_trans_probs_s15(
+                t=t_inflate,
+                p_s=0.0,
+                w=w,
+                cn_from='neu',
+                phase_from=None,
+                cn_to=cn_to,
+                phase_to=phase_to)
+            # p_init is array shape (1,); we want scalar
+            prior.append(p_init[0])
+        prior = np.array(prior, dtype=float)
+
+    # Possibly drop states
+    # The code reindexes states according to bal_cnv, exp_only, allele_only, classify_allele.
+    states_index = np.arange(len(states))  # 0..14
+    if not bal_cnv:
+        states_index = np.arange(13)  # drop indices 13,14 (bamp, bdel)
+    if exp_only:
+        pAD = np.full_like(pAD, np.nan, dtype=float)
+        p_s = np.zeros_like(p_s, dtype=float)
+    if allele_only:
+        states_index = np.array([0, 5, 6, 7, 8], dtype=int)
+        Y_obs = np.full_like(Y_obs, np.nan, dtype=float)
+    if classify_allele:
+        states_index = np.array([5, 6], dtype=int)
+
+    # Subset
+    prior         = prior[states_index]
+    states_sub    = [states[i] for i in states_index]
+    #states_cn_sub = [states_cn[i] for i in states_index]
+    #states_ph_sub = [states_phase[i] for i in states_index]
+
+    # Build the 3D transition matrix
+    # Then subset
+    As_full = calc_trans_mat_s15(t, p_s, w, states_cn, states_phase)  # shape (15,15,len(p_s))
+    As_sub  = As_full[states_index][:, states_index, :]
+
+    # Define allele parameters for each of the 15 states
+    theta_u_1   = 0.5 + theta_min
+    theta_d_1   = 0.5 - theta_min
+    theta_u_2   = 0.9
+    theta_d_2   = 0.1
+    theta_u_neu = 0.5 + theta_neu
+    theta_d_neu = 0.5 - theta_neu
+
+    alpha_states = gamma * np.array([
+        theta_u_neu,
+        theta_u_1,  theta_d_1,  theta_u_2,  theta_d_2,
+        theta_u_1,  theta_d_1,  theta_u_2,  theta_d_2,
+        theta_u_1,  theta_d_1,  theta_u_2,  theta_d_2,
+        theta_u_neu,
+        theta_u_neu
+    ], dtype=float)
+
+    beta_states = gamma * np.array([
+        theta_d_neu,
+        theta_d_1,  theta_u_1,  theta_d_2,  theta_u_2,
+        theta_d_1,  theta_u_1,  theta_d_2,  theta_u_2,
+        theta_d_1,  theta_u_1,  theta_d_2,  theta_u_2,
+        theta_d_neu,
+        theta_d_neu
+    ], dtype=float)
+
+    # Expression fold changes:
+    phi_vec = np.array([
+        1.0,         # neu
+        phi_del,     # del_1_up
+        phi_del,     # del_1_down
+        0.5,         # del_2_up
+        0.5,         # del_2_down
+        1.0,         # loh_1_up
+        1.0,         # loh_1_down
+        1.0,         # loh_2_up
+        1.0,         # loh_2_down
+        phi_amp,     # amp_1_up
+        phi_amp,     # amp_1_down
+        2.5,         # amp_2_up
+        2.5,         # amp_2_down
+        phi_bamp,    # bamp
+        phi_bdel     # bdel
+    ], dtype=float)
+
+    # Subset these to states_index
+    alpha_states_sub = alpha_states[states_index]
+    beta_states_sub  = beta_states[states_index]
+    phi_states_sub   = phi_vec[states_index]
+
+    # Build the final HMM dictionary
+    #    N = len(Y_obs)
+    #    M = number of chosen states
+    pAD = np.array(pAD, dtype=float)  # ensure float or nan
+    DP  = np.array(DP,  dtype=float)
+    Y_obs = np.array(Y_obs, dtype=float)
+    d_total = np.array(d_total, dtype=float)  # library sizes
+
+    N = len(Y_obs)
+    #M = len(states_sub)
+
+    # Expand mu, sig if necessary
+    mu_arr  = np.array(mu,  ndmin=1, dtype=float)
+    sig_arr = np.array(sig, ndmin=1, dtype=float)
+    if mu_arr.size == 1:
+        mu_arr  = np.full(N, mu_arr[0],  dtype=float)
+        sig_arr = np.full(N, sig_arr[0], dtype=float)
+
+    # Expand d_total if needed
+    if d_total.size == 1:
+        d_total = np.full(N, d_total[0], dtype=float)
+
+    # Build alpha/beta as an (N x M) matrix each:
+    alpha_mat = np.tile(alpha_states_sub, (N, 1))  # shape (N, M)
+    beta_mat  = np.tile(beta_states_sub,  (N, 1))  # shape (N, M)
+
+    # Build final logPi by taking log of As_sub
+    As_sub_np = np.array(As_sub)  # shape (M, M, N)
+    As_sub_reordered = np.moveaxis(As_sub_np, 2, 0)  # shape (N, M, M)
+    logPi = np.log(As_sub_reordered, out=np.zeros_like(As_sub_reordered))
+
+    # 8) Construct the HMM dictionary
+    hmm = {"x":      pAD,
+           "d":      DP,
+           "y":      Y_obs,
+           "l":      d_total,
+           "lambda": np.array(lambda_ref, dtype=float),
+           "mu":     mu_arr,
+           "sig":    sig_arr,
+           "logPi":  logPi,         # shape (N, M, M)
+           "phi":    phi_states_sub,
+           "delta":  prior,
+           "alpha":  alpha_mat,     # shape (N, M)
+           "beta":   beta_mat,      # shape (N, M)
+           "states": states_sub,
+           "p_s":    p_s}
+
+    # Call Viterbi routine:
+    #    That function returns a length-N array of 0-based state indices
+    z_idx = viterbi_joint(hmm)
+
+    # Map these indices back to the state names
+    MPC = [states_sub[i] for i in z_idx]
+    return MPC

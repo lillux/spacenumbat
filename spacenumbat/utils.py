@@ -6,6 +6,7 @@ Created on Tue Nov 19 11:35:09 2024
 @author: carlino.calogero
 """
 import string
+import re
 
 import numpy as np
 import pandas as pd
@@ -20,7 +21,7 @@ from scipy.stats import ttest_ind
 import natsort
 from natsort import natsorted
 
-from typing import Dict, List, Union, Sequence, Any, Optional
+from typing import Dict, List, Union, Sequence, Any, Optional, Iterable
 from numpy.typing import NDArray, ArrayLike
 
 from collections import Counter
@@ -421,8 +422,7 @@ def filter_genes(
     retained = [gene for gene, expressed in zip(genes_keep, mut_expressed[0]) if expressed]
 
     if verbose:
-        print(f'number of genes left: {len(retained)}')
-
+        log.info(f'number of genes left: {len(retained)}')
     return retained
 
 
@@ -1053,11 +1053,23 @@ def annot_segs(bulk, var = 'cnv_state'):
     return bulk
 
 
-def t_test_pval(x, y):
+def t_test_pval(x: ArrayLike, y: ArrayLike) -> float:
     """
-    T-test wrapper, handles error for insufficient observations.
-    Returns 1 if either x or y doesn't have more than one element.
-    Otherwise returns the p-value of a two-sample t-test.
+    Two-sample t-test p-value with small-sample guard.
+
+    If either sample has ≤ 1 observation, returns 1.0. Otherwise returns the
+    p-value from a two-sided Welch's t-test **assuming equal variances**
+    and NaNs omitted.
+
+    Parameters
+    ----------
+    x, y : ArrayLike
+        1-D arrays (or array-like) of numeric observations.
+
+    Returns
+    -------
+    float
+        p-value in [0, 1]. Returns 1.0 if `x.size <= 1` or `y.size <= 1`.
     """
     x = np.asarray(x)
     y = np.asarray(y)
@@ -1070,22 +1082,48 @@ def t_test_pval(x, y):
     return pvalue
 
 
-def simes_p(p_vals, n_dim):
+def simes_p(p_vals: ArrayLike, n_dim: int) -> float:
     """
-    Calculate simes' p.
-    p.vals: array-like of p-values
-    n_dim: scalar integer
+    Compute Simes' combined p-value.
+
+    Parameters
+    ----------
+    p_vals : ArrayLike
+        Iterable of individual p-values (expected in [0, 1]).
+    n_dim : int
+        Scaling factor.
+
+    Returns
+    -------
+    float
+        Simes-adjusted p-value.
+
+    Notes
+    -----
+    Classic Simes uses 1-based ranks k=1..m (i.e., ``min(m * p_(k) / k)``).
+    This implementation currently constructs ``indices = np.arange(len(sorted_p))``,
+    which starts at 0 and can cause division by zero. Keep this in mind if you
+    rely on this function; adjust the indexing if you revise the code.
     """
     p_vals = np.asarray(p_vals)
     sorted_p = np.sort(p_vals)
-    indices = np.arange(len(sorted_p))
+    indices = np.arange(1, len(sorted_p)+1) # start at 1
     return n_dim * np.min(sorted_p / indices)
 
-
-def Modes(x):
+def Modes(x: Iterable[Any]) -> List[Any]:
     """
-    Get the modes of a vector.
-    Returns a list of the most frequent values.
+    Return all modes (most frequent values) of a 1-D iterable.
+
+    Parameters
+    ----------
+    x : Iterable[Any]
+        1-D data (hashable elements).
+
+    Returns
+    -------
+    list
+        List of elements achieving the maximum observed frequency. If multiple
+        values tie for the highest count, all are returned (order arbitrary).
     """
     x = np.asarray(x)
     # Count occurrences using Counter
@@ -1241,5 +1279,168 @@ def detect_clonal_loh(
     
     return segs_loh
 
+
+def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
+    """
+    Derive neutral genomic segments across pseudobulks and reduce overlaps.
+
+    Filters rows with ``cnv_state == 'neu'``, computes per-(sample, seg, CHROM)
+    start/end by min/max POS, then reduces overlapping/adjacent intervals using
+    PyRanges.
+
+    Parameters
+    ----------
+    bulks : pd.DataFrame
+        Pseudobulk table with at least the columns:
+        'sample', 'seg', 'CHROM', 'POS', and 'cnv_state'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Reduced neutral segments with columns:
+        - 'CHROM' : chromosome (string),
+        - 'seg_start' : start coordinate (int),
+        - 'seg_end' : end coordinate (int),
+        - 'seg_length' : length in bases (int).
+
+    Notes
+    -----
+    - Reduction is performed via ``PyRanges.merge()``.
+    - Coordinates are taken directly from 'POS' min/max per neutral segment.
+    """
+    neu = bulks[bulks['cnv_state'] == 'neu'].copy()
+
+    neu = neu.groupby(['sample','seg','CHROM'], sort=False, as_index=False, observed=True)
+    segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
+    segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)
+    segs_neu['seg_end'] = neu.max('POS').dropna().loc[:,'POS']
+
+    # Use PyRanges to reduce intervals
+    gr = pr.PyRanges(chromosomes=segs_neu['CHROM'].astype("string"),
+                     starts=segs_neu['seg_start'],
+                     ends=segs_neu['seg_end'])
+    gr_reduced = gr.merge()  # equivalent to reduce in GenomicRanges
+    segs_neu_reduced = gr_reduced.as_df()
+
+    segs_neu_reduced = segs_neu_reduced.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
+    segs_neu_reduced['seg_length'] = segs_neu_reduced['seg_end'] - segs_neu_reduced['seg_start']
+
+    return segs_neu_reduced
+
+
+def fill_neu_segs(segs_consensus: pd.DataFrame, segs_neu: pd.DataFrame) -> pd.DataFrame:
+    """
+    Insert neutral intervals into a consensus set of segments and re-label.
+
+    Computes gaps as "neutral - consensus" via PyRanges subtraction, appends
+    these gaps to the consensus, sets missing "cnv_state" to "neu", and assigns
+    a per-chromosome consensus segment ID 'seg_cons' using an external
+    "generate_postfix" helper.
+
+    Parameters
+    ----------
+    segs_consensus : pd.DataFrame
+        Consensus segments with at least:
+        - 'CHROM' (string-like),
+        - 'seg_start' (int),
+        - 'seg_end' (int),
+        - optional 'cnv_state' (string); if absent, it will be created and filled.
+    segs_neu : pd.DataFrame
+        Neutral segments with:
+        - 'CHROM' (string-like),
+        - 'seg_start' (int),
+        - 'seg_end' (int).
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined segments containing original consensus plus inserted neutral
+        gaps, with columns including:
+        - 'CHROM', 'seg_start', 'seg_end', 'seg_length', 'cnv_state', 'seg_cons'.
+
+    Notes
+    -----
+    - Sorting uses ``natsort.natsort_keygen()`` to produce human-friendly ordering.
+    """
+    # Convert segs_neu and segs_consensus to PyRanges    
+    gr_neu = pr.PyRanges(chromosomes=segs_neu['CHROM'].astype('string'),
+                         starts=segs_neu['seg_start'],
+                         ends=segs_neu['seg_end'])
+    gr_cons = pr.PyRanges(chromosomes=segs_consensus['CHROM'].astype('string'),
+                          starts=segs_consensus['seg_start'],
+                          ends=segs_consensus['seg_end'])
+    
+    gr_gaps = gr_neu.subtract(gr_cons)
+    gaps = gr_gaps.as_df().rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
+    gaps['seg_length'] = gaps['seg_end'] - gaps['seg_start']
+    gaps = gaps[gaps['seg_length']>0]
+    segs_consensus['seg_length'] = segs_consensus['seg_end'] - segs_consensus['seg_start']
+    combined = pd.concat([segs_consensus, gaps], ignore_index=True)
+    if 'cnv_state' not in combined.columns:
+        combined['cnv_state'] = np.nan
+    combined['cnv_state'] = combined['cnv_state'].fillna('neu')
+    # combined.loc[:,'CHROM'] = combined.CHROM.astype('string')
+    combined = combined.sort_values(['CHROM','seg_start'], key=natsort.natsort_keygen()).reset_index(drop=True)
+    
+    combined_group = combined.groupby('CHROM', group_keys=False, observed=True, sort=False)
+    seg_cons = pd.Series(np.repeat(np.nan, combined.shape[0]), dtype='string')
+    for k, group in combined_group:
+        len_group = group.shape[0]
+        postfix = generate_postfix(range(len_group))
+        seg_cons[group.index] = group.CHROM.astype('string') + postfix
+    combined.loc[:,'seg_cons'] = seg_cons
+    # combined.loc[:,'CHROM'] = combined.CHROM.astype('category')
+
+    return combined
+
+
+def remove_up_down(s: str) -> str:
+    """
+    Remove a trailing suffix "_up" or "_down" from a state label.
+
+    Parameters
+    ----------
+    s : str
+        Input state label, e.g. "amp_up", "del_down", "neu".
+
+    Returns
+    -------
+    str
+        The input string with a terminal "_up"/"_down" stripped if present;
+        otherwise the original string unchanged.
+
+    Examples
+    --------
+    >>> remove_up_down("amp_up")
+    'amp'
+    >>> remove_up_down("neu")
+    'neu'
+    """
+    return re.sub(r'(_up|_down)$', '', s)
+
+
+def extract_up_down(s: str) -> Optional[str]:
+    """
+    Extract a trailing direction token ("up" or "down") from a state label.
+
+    Parameters
+    ----------
+    s : str
+        Input state label, e.g. "amp_up", "del_down", "neu".
+
+    Returns
+    -------
+    Optional[str]
+        "up" or "down" if the string ends with that token; otherwise "None".
+
+    Examples
+    --------
+    >>> extract_up_down("amp_up")
+    'up'
+    >>> extract_up_down("neu") is None
+    True
+    """
+    match = re.search(r'(up|down)$', s)
+    return match.group(1) if match else None
 
 
