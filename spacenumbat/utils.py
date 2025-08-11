@@ -28,6 +28,9 @@ import tqdm
 import warnings
 
 from spacenumbat import hmm, dist_prob
+from spacenumbat._log import get_logger
+log = get_logger(__name__)
+#log.info("This is an info message.")
 
 
 ## Prepare bulk data
@@ -1250,3 +1253,6 @@ def detect_clonal_loh(
         segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'snp_rate', 'loh']]
     
     return segs_loh
+
+
+

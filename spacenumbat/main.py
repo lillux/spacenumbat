@@ -7,12 +7,12 @@ Created on Sun Apr  6 19:55:48 2025
 """
 
 import os
-import tempfile
+#import tempfile
 import logging
 
-import numpy as np
+#import numpy as np
 import pandas as pd
-from scipy import sparse
+#from scipy import sparse
 
 import spacenumbat
 from spacenumbat import utils, diagnostics, clustering
@@ -271,13 +271,12 @@ def run_numbat(
     
     
     if random_init:
-        print("")
+        log.info("")
         ## TODO
         
     elif init_k == 1:
         log.info("Initializing with all-cell pseudobulk ...")
         
-        ## TODO
         
     else:
         log.info("Approximating initial clusters using smoothed expression ...")
@@ -286,11 +285,58 @@ def run_numbat(
                            gtf=gtf,
                            sc_refs=sc_refs,
                            ncores=ncores)
+        # save window-smoothed normalized expression profiles as AnnData
+        log.info("Saving clustering results")
+        clust["gexp_roll_wide"].write_h5ad(os.path.join(out_dir, "gexp_roll_wide.h5ad"))
+        pd.DataFrame(clust["hc"]).to_csv(os.path.join(out_dir, "hc_initial_hierarcical_clustering.tsv"), sep="\t")
+        log.info(f"Normalized expression results saved at {os.path.join(out_dir, 'gexp_roll_wide.h5ad')}")
+        log.info(f"Initial hierarchical clustering results saved at {os.path.join(out_dir, 'hc_initial_hierarcical_clustering.tsv')}")
         
-        ## TODO
-            
+        # extract cell groupings
+        nodes_dict = clustering.get_nodes_celltree(clust, init_k)
+        
+        ## TODO: optional plot
+        
+    clones = {k:nodes_dict[str(k)] for k in range(init_k+1) if len(nodes_dict[str(k)]['members'])==1}
     
-            
+    normal_cells = []
+    segs_consensus_old = pd.DataFrame()
     
+
+    ######## Begin iterations #TODO
+    
+    # for i in max_iter:
+    i = 0 # temporary placeholder for iteration
+    log.info(f"Starting iteration {i}")
+    
+    subtrees = {k:v for k,v in nodes_dict.items() if v['size'] > min_cells}
+    
+    bulk_subtrees = utils.make_group_bulks(groups=subtrees,
+                                 count_mat=count_mat,
+                                 df_allele=df_allele,
+                                 lambdas_ref=lambdas_ref,
+                                 gtf=gtf,
+                                 min_depth=min_depth,
+                                 nu=nu,
+                                 filter_hla=filter_hla_hg38,
+                                 filter_segments=filter_chromosome_segments)
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+        
     
     

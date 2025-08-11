@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy
 import anndata as ad
+import natsort
 
 from scipy.cluster.hierarchy import ClusterNode, linkage, fcluster, to_tree
 from sklearn.metrics import pairwise_distances
@@ -448,23 +449,59 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
                      min_depth: int = 0,
                      nu: float = 1,
                      segs_loh: pd.DataFrame = None,
-                     ncores: int = None) -> pd.DataFrame:
+                     ncores: int = None,
+                     filter_hla: bool = True,
+                     filter_segments = None,
+                    ) -> pd.DataFrame:
     """
-    Make a group of pseudobulks using joblib for parallel processing.
+    Build pseudobulk profiles for a collection of groups, in parallel.
 
-    Args:
-        groups: Dictionary where keys are node names and values are dictionaries containing 'sample', 'members', 'cells', 'size'.
-        count_mat: AnnData object or similar containing gene counts.
-        df_allele: DataFrame of allele counts.
-        lambdas_ref: DataFrame of reference expression profiles.
-        gtf: DataFrame of transcript annotations.
-        min_depth: Minimum allele depth to include.
-        nu: A parameter (usage depends on get_bulk implementation).
-        segs_loh: DataFrame of segments with clonal LOH to be excluded.
-        ncores: Number of cores for parallel processing.
+    Parameters
+    ----------
+    groups
+        Mapping from arbitrary group keys to group specifications. Each value must
+        include `sample`, `members`, `cells`, and `size`.
+    count_mat
+        Gene-count container in `anndata.AnnData` format.
+    df_allele
+        Allelic counts table used for allele-mode emissions in the HMM. Must include
+        the columns required by `get_bulk`.
+    lambdas_ref
+        Reference expression profiles (per-gene baseline λ). Columns/indices should
+        match the genes in `count_mat` as expected by `get_bulk`.
+    gtf
+        Gene annotation metadata used by `get_bulk` to align features.
+    min_depth
+        Minimum allele depth (DP) threshold; loci below this are typically excluded.
+    nu
+        Phase switch rate or related parameter consumed by `get_bulk` to compute
+        switch probabilities.
+    segs_loh
+        Optional table of segments with clonal LOH to be excluded from allelic tests.
+    ncores
+        Number of worker processes. Defaults to `min(len(groups), cpu_count())`.
+        The value is clipped to `cpu_count()`.
 
-    Returns:
-        DataFrame containing pseudobulk profiles.
+    Returns
+    -------
+    pd.DataFrame
+        Concatenated pseudobulk profiles for all groups. Rows are sorted
+        “naturally” by `CHROM` and `POS`, then by `sample`, `snp_id`, `POS`. The
+        output includes:
+          - all columns returned by `get_bulk` (must include `CHROM`, `POS`,
+            and `snp_id`),
+          - `n_cells` (from `GroupSpec.size`),
+          - `members` (semicolon-joined),
+          - `sample` (from `GroupSpec.sample`),
+          - `snp_index` (categorical code derived from `snp_id`).
+        If `groups` is empty or all jobs fail, returns an empty DataFrame.
+
+    Notes
+    -----
+    - This function delegates the per-group work to `process_group`, which in turn
+      calls `get_bulk`.
+    - Any group that raises an exception yields an error`; the error is
+      logged via `log.error` and skipped in the final concatenation.
     """
     if not groups:
         return pd.DataFrame()
@@ -483,7 +520,9 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
         gtf=gtf,
         min_depth=min_depth,
         nu=nu,
-        segs_loh=segs_loh
+        segs_loh=segs_loh,
+        filter_hla=filter_hla,
+        filter_segments=filter_segments
     )
 
     # Use joblib's Parallel and delayed for parallel processing
@@ -496,8 +535,8 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     for res in results:
         if isinstance(res, dict) and 'error' in res:
             g = res['group']
-            log_error(f"Job for sample {g['sample']} failed")
-            log_error(str(res['error']))
+            log.error(f"Job for sample {g['sample']} failed")
+            log.error(str(res['error']))
         else:
             bulks_list.append(res)
 
@@ -506,19 +545,16 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
 
     # Combine all bulks into a single DataFrame
     bulks = pd.concat(bulks_list, ignore_index=True)
-
     # Arrange the DataFrame by 'CHROM' and 'POS'
-    bulks.sort_values(['CHROM', 'POS'], inplace=True)
-
+    bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
     # Modify 'snp_id' and 'snp_index' columns
     # Create a categorical type for 'snp_id' with categories in order of appearance
-    bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique(), ordered=True)
-    bulks['snp_index'] = bulks['snp_id'].cat.codes + 1  # +1 to match R's 1-based indexing
-
+    bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
+    bulks['snp_index'] = bulks['snp_id'].cat.codes
     # Arrange by 'sample'
-    # bulks.sort_values('sample', inplace=True)
     bulks = bulks.sort_values(['sample', 'snp_id', 'POS'])
     return bulks
+
 
 def process_group(g: Dict[str, Any],
                   count_mat: Any,
@@ -527,7 +563,46 @@ def process_group(g: Dict[str, Any],
                   gtf: pd.DataFrame,
                   min_depth: int,
                   nu: float,
-                  segs_loh: pd.DataFrame):
+                  segs_loh: pd.DataFrame=None,
+                  filter_hla=True,
+                  filter_segments=None):
+    """
+    Build a single group's pseudobulk by delegating to `get_bulk`, augmenting the
+    result with group metadata.
+
+    Parameters
+    ----------
+    g
+        Group specification (sample, members, cells, size).
+    count_mat
+        Gene-count container in `anndata.AnnData` format, passed through to
+        `get_bulk`.
+    df_allele
+        Allelic counts table passed through to `get_bulk`.
+    lambdas_ref
+        Reference expression profiles passed through to `get_bulk`.
+    gtf
+        Gene annotation metadata passed through to `get_bulk`.
+    min_depth
+        Minimum allele depth (DP) threshold for `get_bulk`.
+    nu
+        Phase switch rate or related parameter for `get_bulk`.
+    segs_loh
+        Optional clonal LOH segments for `get_bulk`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Pseudobulk for the group with additional columns:
+        `n_cells`, `members`, and `sample`.
+    Error
+        If an exception occurs, returns a dict with keys `error` and `group`.
+
+    Notes
+    -----
+    The return value is designed to be consumed by `make_group_bulks`, which will
+    handle errors and concatenate successful results.
+    """
     try:
         # Extract the subset of cells
         subset_cells = g['cells']
@@ -540,7 +615,9 @@ def process_group(g: Dict[str, Any],
             gtf=gtf,
             min_depth=min_depth,
             nu=nu,
-            segs_loh=segs_loh
+            segs_loh=segs_loh,
+            filter_hla=filter_hla,
+            filter_segments=filter_segments
         )
         # Add additional columns
         bulk['n_cells'] = g['size']
@@ -549,6 +626,3 @@ def process_group(g: Dict[str, Any],
         return bulk
     except Exception as e:
         return {'error': e, 'group': g}
-
-def log_error(message):
-    print(f"ERROR: {message}")
