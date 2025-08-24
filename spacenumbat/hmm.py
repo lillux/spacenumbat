@@ -969,3 +969,471 @@ def run_joint_hmm_s15(
     # Map these indices back to the state names
     MPC = [states_sub[i] for i in z_idx]
     return MPC
+
+
+def log_sum_exp(vals: NDArray[np.floating]) -> float:
+    """
+    Compute log(sum(exp(vals))) in a numerically stable way.
+
+    This routine uses the standard trick of subtracting the maximum entry
+    before exponentiation to avoid overflow/underflow:
+
+      log sum_i exp(v_i) = v_max + log sum_i exp(v_i - v_max)
+
+    Special cases:
+    - If vals is empty, returns -np.inf (log of zero).
+    - If the maximum value is non-finite (for example, all entries are -inf),
+      that maximum is returned (for example, -inf).
+
+    Parameters
+    ----------
+    vals : numpy.ndarray, shape (n,)
+        One-dimensional array of real values in log-space.
+
+    Returns
+    -------
+    float
+        The scalar value log(sum(exp(vals))) computed stably.
+    """
+    if len(vals) == 0:
+        return -np.inf
+    max_val = np.max(vals)
+    if not np.isfinite(max_val):
+        return max_val  # e.g. -inf if all -inf
+    cumsum = np.sum(np.exp(vals - max_val))
+    return max_val + np.log(cumsum)
+
+
+def likelihood_compute(logphi: NDArray, logprob: NDArray, logPi: NDArray,) -> float:
+    """
+    Compute the total log-likelihood of a time-inhomogeneous HMM in log-space.
+
+    This implements the forward algorithm with per-time (coordinates), per-state scaling.
+    At each time step i, it:
+      1) (for i > 0) propagates the previous log-forward vector
+         through the time-i transition matrix in log-space;
+      2) adds the emission log-likelihoods logprob[i, :];
+      3) normalizes by subtracting logSumExp to keep numbers stable and
+         accumulates that normalizer into the running total log-likelihood.
+
+    Shapes and semantics
+    --------------------
+    - logphi : shape (m,)
+        Initial log state probabilities at time i = 0 (that is, log(delta)).
+    - logprob : shape (n, m)
+        Emission log-likelihoods where logprob[i, s] is the log-probability
+        of the observation at time i given state s.
+    - logPi : shape (n, m, m)
+        Time-dependent log transition probabilities. For i > 0,
+        logPi[i, r, c] equals log P(S_i = c | S_{i-1} = r).
+        The slice logPi[0, ...] is not used by this implementation.
+
+    Parameters
+    ----------
+    logphi : numpy.ndarray, shape (m,)
+        Initial log state distribution.
+    logprob : numpy.ndarray, shape (n, m)
+        Emission log-likelihoods per time and state.
+    logPi : numpy.ndarray, shape (n, m, m)
+        Log transition matrices per time step.
+
+    Returns
+    -------
+    float
+        The total log-likelihood of the observation sequence under the HMM.
+
+    Notes
+    -----
+    - All computations are performed in log-space for numerical stability.
+    - The per-time normalization and accumulation scheme (subtracting
+      logSumExp from the forward vector and adding it to LL)
+      is equivalent to computing the log-likelihood without scaling.
+    - This function assumes logprob and logPi are consistent in their
+      time (coordinates) indexing and that probabilities (in non-log space) are valid
+      (rows of transition matrices sum to 1, entries are non-negative).
+    """
+    n, m = logprob.shape
+    LL = 0.0
+
+    # keep track of current logphi
+    curr_logphi = logphi.copy()
+
+    for i in range(n):
+        if i > 0:
+            # compute next logphi
+            next_logphi = np.full(m, -np.inf, dtype=float)
+            # subset_logPi = logPi[t, :, :] => shape (m,m)
+            subset_logPi = logPi[i, :, :]
+            # For each c: logphi_new[c] = logSumExp( logphi + subset_logPi[:, c] )
+            for c in range(m):
+                # elementwise sum of logphi[r] + subset_logPi[r, c]
+                sums = curr_logphi + subset_logPi[:, c]
+                next_logphi[c] = log_sum_exp(sums)
+            curr_logphi = next_logphi
+
+        # add the observation log-likelihood:  logprob[i, :]
+        curr_logphi = curr_logphi + logprob[i, :]
+        # normalize
+        logSumPhi = log_sum_exp(curr_logphi)
+        curr_logphi = curr_logphi - logSumPhi
+        # accumulate
+        LL += logSumPhi
+
+    return LL
+
+
+def likelihood_allele(hmm: Mapping[str, Any]) -> float:
+    """
+    Compute the total log-likelihood of a 2-state allele HMM under a
+    Beta-Binomial emission model and time/position-dependent transitions.
+
+    The HMM is passed as a mapping with the following required entries:
+
+    - "x": 1D array (length N)
+      Observed alternate-allele counts per position (k in Binomial).
+    - "d": 1D array (length N)
+      Observed total depths per position (n in Binomial).
+    - "alpha": 2D array of shape (N, M)
+      Alpha parameters of the Beta-Binomial emissions for each position
+      and state.
+    - "beta": 2D array of shape (N, M)
+      Beta parameters of the Beta-Binomial emissions for each position
+      and state.
+    - "logPi": 3D array of shape (N, M, M)
+      Log transition matrices between states at each position (that is,
+      the log of the transition probabilities).
+    - "delta": 1D array of shape (M,)
+      Initial state distribution (sum to 1). Its log is the initial log prior.
+    - "N": int
+      Number of positions (sequence length).
+    - "M": int
+      Number of HMM states (here expected to be 2).
+    - "states": list-like of length M
+      State labels.
+
+    The function forms per-state log-emission probabilities using
+    log_beta_binomial_pmf for each position, replaces any NaNs with 0
+    (neutral contribution), then calls likelihood_compute(logphi, logprob, logPi)
+    to obtain the total log-likelihood.
+
+    Parameters
+    ----------
+    hmm : Mapping[str, Any]
+        Dictionary-like object containing the entries listed above.
+
+    Returns
+    -------
+    float
+        Total log-likelihood of the observed sequence under the HMM.
+    """
+
+    x = hmm["x"]
+    d = hmm["d"]
+    alpha_mat = hmm["alpha"]  # shape (N, M)
+    beta_mat  = hmm["beta"]
+
+    M = hmm["M"]
+    N = hmm["N"]
+
+    # Step 1) build logprob array shape (N, M)
+    logprob = np.zeros((N, M), dtype=float)
+    for m_idx in range(M):
+        l_x = log_beta_binomial_pmf(
+            k = x,
+            n = d,
+            alpha = alpha_mat[:, m_idx],
+            beta = beta_mat[:, m_idx],
+        )
+        # Replace NaN with 0
+        l_x = np.where(np.isnan(l_x), 0, l_x)
+        logprob[:, m_idx] = l_x
+
+    # 2) get logphi = log(hmm$delta)
+    logphi = np.log(hmm["delta"])
+
+    # 3) compute total LL
+    LL = likelihood_compute(logphi, logprob, hmm["logPi"])
+    return LL
+
+
+def get_allele_hmm(
+    pAD: ArrayLike,
+    DP: ArrayLike,
+    p_s: ArrayLike,
+    theta: Union[float, ArrayLike],
+    gamma: float = 20
+    ) -> Dict[str, Any]:
+    """
+    Build a 2-state allele HMM (dictionary) with Beta-Binomial emissions.
+
+    The model comprises two states representing positive/negative allelic
+    imbalance ("theta_up", "theta_down"). Emission parameters are
+    Beta-Binomial with:
+        alpha_up  = (0.5 + theta) * gamma
+        beta_up   = (0.5 - theta) * gamma
+        alpha_down = beta_up
+        beta_down  = alpha_up
+
+    Transitions are position-dependent and derived from the switch probability
+    p_s as:
+        Pi[i] = [[1 - p_s[i], p_s[i]],
+                 [p_s[i],     1 - p_s[i]]]
+
+    Parameters
+    ----------
+    pAD : ArrayLike
+        Alternate-allele counts (length N).
+    DP : ArrayLike
+        Total read depths (length N).
+    p_s : ArrayLike
+        Per-position switch probabilities in [0, 1] (length N).
+    theta : float or ArrayLike
+        Allelic-imbalance parameter. If scalar, it is broadcast to length N.
+    gamma : float, optional
+        Concentration parameter controlling the sharpness of the Beta prior
+        (default 20).
+
+    Returns
+    -------
+    Dict[str, Any]
+        HMM components as a dictionary with keys:
+        - "x" : np.ndarray (N,) - pAD as float
+        - "d" : np.ndarray (N,) - DP as float
+        - "alpha" : np.ndarray (N, 2)
+        - "beta" : np.ndarray (N, 2)
+        - "logPi" : np.ndarray (N, 2, 2) - log transition matrices
+        - "delta" : np.ndarray (2,) - initial state distribution (0.5, 0.5)
+        - "N" : int - sequence length
+        - "M" : int - number of states (=2)
+        - "states" : list[str] - state names (["theta_up", "theta_down"])
+    """
+
+    states = ["theta_up", "theta_down"]
+    N = len(p_s)
+
+    Pi_3d = np.zeros((N,2,2), dtype=float)
+    for i in range(N):
+        psval = p_s[i]
+        Pi_3d[i,0,0] = 1-psval
+        Pi_3d[i,0,1] = psval
+        Pi_3d[i,1,0] = psval
+        Pi_3d[i,1,1] = 1-psval
+
+    if np.isscalar(theta):
+        theta = np.full(N, theta, dtype=float)
+
+    prior = np.array([0.5, 0.5], dtype=float)
+
+    alpha_up = (0.5 + theta) * gamma
+    beta_up  = (0.5 - theta) * gamma
+    alpha_down = beta_up
+    beta_down  = alpha_up
+
+    alpha_mat = np.column_stack([alpha_up, alpha_down])  # shape(N,2)
+    beta_mat  = np.column_stack([beta_up,  beta_down ])  # shape(N,2)
+
+    hmm = {
+        "x": np.asarray(pAD, dtype=float),
+        "logPi": np.log(Pi_3d),  # shape(N,2,2)
+        "delta": prior,          # shape(2,)
+        "alpha": alpha_mat,      # shape(N,2)
+        "beta":  beta_mat,       # shape(N,2)
+        "d":     np.asarray(DP, dtype=float),
+        "N":     N,
+        "M":     2,
+        "states": states
+    }
+    return hmm
+
+
+def calc_allele_lik(
+    pAD: ArrayLike,
+    DP: ArrayLike,
+    p_s: ArrayLike,
+    theta: Union[float, ArrayLike],
+    gamma: float = 20
+    ) -> float:
+    """
+    Wrapper to build the allele HMM and return its total log-likelihood.
+
+    Parameters
+    ----------
+    pAD : ArrayLike
+        Alternate-allele counts (length N).
+    DP : ArrayLike
+        Total read depths (length N).
+    p_s : ArrayLike
+        Per-position switch probabilities in [0, 1] (length N).
+    theta : float or ArrayLike
+        Allelic-imbalance parameter (scalar or length N).
+    gamma : float, optional
+        Concentration parameter for the Beta prior (default 20).
+
+    Returns
+    -------
+    float
+        Total log-likelihood under the constructed HMM, as computed by
+        likelihood_allele.
+    """
+    hmm = get_allele_hmm(pAD, DP, p_s, theta, gamma)
+    LL = likelihood_allele(hmm)
+    return LL
+
+
+def forward_backward_compute(
+    logphi: NDArray,
+    logprob: NDArray,
+    logPi: NDArray,
+    n: int,
+    m: int
+    ) -> NDArray:
+    """
+    Compute posterior state probabilities for a time-inhomogeneous HMM using the
+    forward-backward algorithm in log space.
+
+    This function performs:
+      - Forward pass: builds logalpha with scaling accumulation (lscale).
+      - Backward pass: builds logbeta with reverse recursion and scaling.
+      - Combination: exp(logalpha + logbeta - LL) to obtain posteriors.
+
+    Parameters
+    ----------
+    logphi : numpy.ndarray, shape (m,)
+        Initial log state probabilities.
+    logprob : numpy.ndarray, shape (n, m)
+        Emission log-likelihoods for each time t and state j.
+    logPi : numpy.ndarray, shape (n, m, m)
+        Transition log-probabilities. Entry logPi[t, r, c] is
+        log P(S_{t+1} = c | S_t = r).
+    n : int
+        Number of time steps (length of the sequence).
+    m : int
+        Number of HMM states.
+
+    Returns
+    -------
+    numpy.ndarray
+        Matrix of posterior probabilities with shape (n, m).
+
+    Notes
+    -----
+    - All arithmetic is done in log space to improve numerical stability.
+    - The returned matrix rows sum to approximately 1, subject to rounding.
+    """
+
+    # forward pass: logalpha shape (n x m)
+    logalpha = np.zeros((n, m), dtype=float)
+    lscale = 0.0
+
+    # logphi is the running log-dist over states
+    current_logphi = logphi.copy()
+
+    for t in range(n):
+        if t > 0:
+            # update current_logphi by summing transitions from previous step
+            logphi_new = np.zeros(m, dtype=float)
+            subset_logPi = logPi[t]  # shape (m,m)
+            for j in range(m):
+                arr = current_logphi + subset_logPi[:, j]
+                logphi_new[j] = log_sum_exp(arr)
+            current_logphi = logphi_new
+
+        # add logprob[t,:]
+        current_logphi = current_logphi + logprob[t, :]
+        # normalize
+        logSumPhi = log_sum_exp(current_logphi)
+        current_logphi = current_logphi - logSumPhi
+        lscale += logSumPhi
+        # store in logalpha[t, :]
+        logalpha[t, :] = current_logphi + lscale
+
+    LL = lscale
+
+    # backward pass
+    logbeta = np.zeros((n, m), dtype=float)
+    logphi_ = np.log(np.full(m, 1.0/m))
+    lscale_ = np.log(m)
+
+    for t in range(n-2, -1, -1):
+        logphi_new = np.zeros(m, dtype=float)
+        subset_logPi = logPi[t+1]  # shape(m,m)
+        for j in range(m):
+            arr = logphi_ + logprob[t+1, :] + subset_logPi[j, :]
+            logphi_new[j] = log_sum_exp(arr)
+
+        logphi_ = logphi_new
+        # store in logbeta[t,:]
+        logbeta[t, :] = logphi_ + lscale_
+
+        # normalize
+        logSumPhi = log_sum_exp(logphi_)
+        logphi_ = logphi_ - logSumPhi
+        lscale_ += logSumPhi
+
+    # combine
+    expoutput = np.zeros((n, m), dtype=float)
+    for i in range(n):
+        for j in range(m):
+            sum_ij = logalpha[i,j] + logbeta[i,j] - LL
+            expoutput[i,j] = np.exp(sum_ij)
+
+    return expoutput
+
+
+def forward_back_allele(hmm: Dict[str, Any]) -> Optional[np.ndarray]:
+    """
+    Run a forward-backward computation on an allele HMM and return posterior
+    state probabilities (marginals) for each time step.
+
+    Steps
+    -----
+    1) If hmm["N"] == 1, return None.
+    2) Build the log emission matrix logprob with shape (N, M) using a
+       Beta-Binomial log PMF for each state.
+    3) Initialize logphi = log(hmm["delta"]).
+    4) Call forward_backward_compute to obtain an (N, M) matrix of posterior
+       state probabilities.
+
+    Parameters
+    ----------
+    hmm : dict
+        HMM components with keys:
+        - "N", "M": int lengths N and number of states M
+        - "x", "d": arrays of allele counts and depths (length N)
+        - "alpha", "beta": Beta parameters with shape (N, M)
+        - "logPi": transition log-probabilities with shape (N, M, M)
+        - "delta": initial state distribution with shape (M,)
+        - "states": list of state names (optional)
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Array of shape (N, M) with posterior marginals, or None if N == 1.
+
+    Notes
+    -----
+    - NaN emission values are treated as zero contribution in log space.
+    """
+    if hmm['N'] == 1:
+        return None  # or np.nan
+
+    N = hmm['N']
+    M = hmm['M']
+
+    # Build logprob (N x M)
+    logprob = np.zeros((N, M), dtype=float)
+
+    for m_idx in range(M):
+        # beta binomial probability
+        l_x = log_beta_binomial_pmf(hmm['x'], hmm['d'], hmm['alpha'][:, m_idx], hmm['beta'][:, m_idx])
+        l_x = np.where(np.isnan(l_x), 0.0, l_x)
+        logprob[:, m_idx] = l_x
+
+    # logphi = log(hmm['delta'])
+    logphi = np.log(hmm['delta'])
+
+    #  forward_backward_compute
+    marginals = forward_backward_compute(logphi, logprob, hmm['logPi'], N, M)
+
+    # return posterior
+    return marginals

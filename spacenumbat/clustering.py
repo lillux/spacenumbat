@@ -23,7 +23,7 @@ from typing import Any, Dict, Union, Optional, List
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
-log.info("This is an info message.")
+#log.info("Test clustering")
 
 
 def scale_counts(x: scipy.sparse.spmatrix) -> scipy.sparse.spmatrix:

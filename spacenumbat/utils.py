@@ -5,8 +5,17 @@ Created on Tue Nov 19 11:35:09 2024
 
 @author: carlino.calogero
 """
+
+from typing import Dict, List, Union, Sequence, Any, Optional, Iterable, Literal
+from numpy.typing import NDArray, ArrayLike
+
 import string
 import re
+import itertools
+from collections import Counter
+from functools import reduce
+
+import tqdm
 
 import numpy as np
 import pandas as pd
@@ -21,14 +30,16 @@ from scipy.stats import ttest_ind
 import natsort
 from natsort import natsorted
 
-from typing import Dict, List, Union, Sequence, Any, Optional, Iterable
-from numpy.typing import NDArray, ArrayLike
 
-from collections import Counter
-import tqdm
-import warnings
 
-from spacenumbat import hmm, dist_prob
+
+from statsmodels.stats.multitest import multipletests
+import networkx as nx
+
+from joblib import cpu_count, Parallel, delayed
+
+from spacenumbat import dist_prob
+from spacenumbat import hmm as hmmlib
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
 #log.info("This is an info message.")
@@ -142,9 +153,9 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
         if count_to_int:
             msg = (f'The count matrix in the supplied count_ad is of type {count_ad.X.dtype}. '
                    f'Converting to {np.int32}.')
-            warnings.warn(msg)
+            log.warning(msg)
             count_ad.X = count_ad.X.astype(np.int32)
-            warnings.warn(f'Conversion to {np.int32} completed.')
+            log.warning(f'Conversion to {np.int32} completed.')
         else:
             msg = (f'Supplied matrix is not of dtype integer, but it is {count_ad.X.dtype}. '
                    'Please supply an integer count matrix.')
@@ -1008,21 +1019,71 @@ def generate_postfix(n:List):
     return postfixes
 
 
-def annot_segs(bulk, var = 'cnv_state'):
+def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
+    """
+    Annotate contiguous segments along each chromosome based on a state column.
+
+    This function scans rows within each chromosome in their existing order and
+    starts a new segment whenever the value in `var` changes from the previous row.
+    It then assigns a segment identifier per row and computes per-segment attributes.
+
+    Parameters
+    ----------
+    bulk : pandas.DataFrame
+        Long-form table containing at least the following columns:
+          - "CHROM" : chromosome identifier (will be cast to pandas "string" dtype)
+          - "POS" : genomic coordinate (integer-like)
+          - "snp_index" : monotone index along the chromosome (integer-like)
+          - "gene" : gene symbol (string-like or NA)
+          - "pAD" : allele depth for the “alternate” allele (numeric, may be NA)
+          - "{var}" : state used to split segments (e.g., "cnv_state")
+        Rows are assumed to be already ordered by genomic position within each
+        chromosome.
+
+    var : str, default 'cnv_state'
+        Name of the column in "bulk" that defines segment boundaries; a new
+        segment starts whenever this value changes across adjacent rows within
+        a chromosome.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of "bulk" with the following additional columns:
+          - "boundary" : 0/1 indicator; 1 where a new segment starts
+          - "seg" : segment identifier (string) per row
+          - "seg_start" / "seg_end" : min/max "POS" within the segment (int64)
+          - "seg_start_index" / "seg_end_index" : min/max "snp_index" in the segment
+          - "n_genes" : number of unique, non-null genes in the segment
+          - "n_snps" : number of rows in the segment with non-null "pAD"
+
+    Notes
+    -----
+    - The algorithm does NOT sort rows; it treats the current row order within each
+      chromosome as the traversal order for segmenting. An input sorted by "['CHROM', 'POS']" is expected.
+    - The return value is a new DataFrame (input is not modified in place).
+
+    Examples
+    --------
+    >>> df = df.sort_values(["CHROM", "POS"])
+    >>> out = annot_segs(df, var="cnv_state")
+    >>> out[["CHROM", "POS", "cnv_state", "seg"]].head()
+    """
+
     # you need to reset index so you can pass portion of list (groups)
-    bulk = bulk.copy().reset_index(drop=True) 
+    bulk = bulk.copy().reset_index(drop=True)
+    bulk.CHROM = bulk.CHROM.astype('string')
     boundary = []
     postfix = []
+    cum_sum_test = 0
     for chrom in bulk.CHROM.unique():
         temp_sorted = bulk[bulk.loc[:, 'CHROM'] == chrom]
+        cum_sum_test += temp_sorted.shape[0]
         boundary += [0]+[1 if temp_sorted.loc[:,var].iloc[i] != temp_sorted.loc[:,var].iloc[i - 1] else 0 for i in range(1,temp_sorted.shape[0])]
         current_postfix = generate_postfix(np.cumsum(boundary[temp_sorted.index[0]:temp_sorted.index[-1]+1]))
         postfix += [str(chrom)+i for i in current_postfix]
+    
     # Natural sorting and cast to Categorical to avoid warnings
     postfix = pd.Series(postfix)
-    unique_segs = natsorted(postfix.unique())
-    bulk['seg'] = pd.Categorical(postfix, categories=unique_segs)
-    
     bulk.loc[:,'boundary'] = boundary
     bulk.loc[:,'seg'] = postfix
     
@@ -1042,16 +1103,15 @@ def annot_segs(bulk, var = 'cnv_state'):
         seg_end_index += list(np.repeat(current_seg.snp_index.max(), seg_len))
         n_genes += list(np.repeat(current_seg.gene[~current_seg.gene.isnull()].unique().shape[0], seg_len))
         n_snps += list(np.repeat(np.count_nonzero(~current_seg.pAD.isna()), seg_len))
-
-    bulk.loc[:, 'seg_start'] = seg_start
-    bulk.loc[:, 'seg_end'] = seg_end
+    
+    bulk.loc[:, 'seg_start'] = np.array(seg_start, dtype=np.int64)
+    bulk.loc[:, 'seg_end'] = np.array(seg_end, dtype=np.int64)
     bulk.loc[:, 'seg_start_index'] = seg_start_index
     bulk.loc[:, 'seg_end_index'] = seg_end_index
     bulk.loc[:, 'n_genes'] = n_genes
     bulk.loc[:, 'n_snps'] = n_snps
 
     return bulk
-
 
 def t_test_pval(x: ArrayLike, y: ArrayLike) -> float:
     """
@@ -1246,7 +1306,7 @@ def detect_clonal_loh(
     'states': ['neu', 'loh']
     }
     
-    vtb = hmm.viterbi_loh(HMM)
+    vtb = hmmlib.viterbi_loh(HMM)
     bulk_snps_df.loc[:,'cnv_state'] = vtb
     
     bulk_snps_df.loc[:,'snp_index'] = bulk_snps_df.index
@@ -1444,3 +1504,1753 @@ def extract_up_down(s: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def find_common_diploid(
+    bulks: pd.DataFrame,
+    grouping: Literal["clique", "component"] = "clique",
+    gamma: float = 20.0,
+    theta_min: float = 0.08,
+    theta_max: float = 0.4,
+    t: float = 1e-5,
+    fc_min: float = 2 ** 0.25,
+    alpha: float = 1e-4,
+    min_genes: int = 10,
+    ncores: int = 1,
+    debug: bool = False,
+    verbose: bool = True,
+    ) -> pd.DataFrame:
+    
+    """
+    Infer common diploid segments across samples from bulk allele data.
+
+    The procedure runs a per-chromosome allelic HMM for each sample, smooths and
+    annotates CNV segments, unions imbalanced segments across samples, fills
+    neutral regions, and then identifies a common diploid baseline by comparing
+    log fold-changes across segments and constructing a graph of mutually
+    “similar” segments. The final output flags rows belonging to diploid segments.
+
+    Parameters
+    ----------
+    bulks : pandas.DataFrame
+        Long-form bulk table. Expected columns include:
+        - 'sample': sample/group identifier (created as '1' if absent)
+        - 'CHROM', 'seg', 'seg_start', 'seg_end'
+        - 'pAD', 'DP', 'p_s' (allelic balance, depth, switch probability)
+        - 'state', 'cnv_state' (will be created/overwritten)
+        - 'loh' (optional, boolean; if present and True, overrides `cnv_state` to 'loh')
+        - 'gene', 'POS', 'lnFC' (used for baseline selection)
+    grouping : {'clique', 'component'}, default 'clique'
+        How to aggregate the inter-segment similarity graph when choosing the
+        diploid baseline:
+        - 'component': use connected components
+        - 'clique'   : use maximal cliques
+    gamma : float, default 20.0
+        HMM prior/penalty parameter forwarded to `run_allele_hmm_s5`.
+    theta_min : float, default 0.08
+        Lower bound of allelic imbalance (theta) used by the HMM.
+    theta_max : float, default 0.4
+        Upper bound of allelic imbalance (theta) used by the HMM.
+    t : float, default 1e-5
+        HMM state transition probability.
+    fc_min : float, default 2**0.25
+        Threshold on the maximum inter-segment FC ratio (after exponentiation) to
+        optionally enable a “quadruploid state” choice for the baseline.
+    alpha : float, default 1e-4
+        FDR threshold (after BH correction) used when testing segment similarity
+        across samples (kept if q > alpha).
+    min_genes : int, default 10
+        Minimum number of genes for segment smoothing (`smooth_segs`).
+    ncores : int, default 1
+        Maximum number of parallel workers (parallelized across samples).
+    debug : bool, default False
+        Debug flag passed through to internal utilities.
+    verbose : bool, default True
+        Verbosity flag passed through to internal utilities.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The input table with updated columns. In particular:
+        - 'cnv_state' : per-row segment state after HMM + smoothing (+ LOH override)
+        - 'seg'       : consensus segment IDs
+        - 'diploid'   : boolean flag, True for rows in the inferred diploid segments
+
+    Notes
+    -----
+    - Parallelization is performed over samples using `joblib.Parallel`. Any
+      exception raised within a worker is propagated to the caller.
+    - If no balanced segments are detected, all segments are used as baseline,
+      and a warning is emitted. If exactly one balanced segment is found, that
+      segment is used.
+
+    Raises
+    ------
+    Exception
+        Any error encountered during parallel processing (e.g., within a per-sample
+        HMM run) is caught and re-raised to halt the workflow.
+
+    Examples
+    --------
+    >>> out = find_common_diploid(bulks_df, grouping="component", ncores=8)
+    >>> out['diploid'].value_counts()
+    """
+    
+    # Ensure 'sample' column exists
+    if 'sample' not in bulks.columns:
+        bulks = bulks.copy()
+        bulks['sample'] = '1'
+    
+    # Define balanced regions in each sample
+    sample_groups = [df for _, df in bulks.groupby('sample', observed=True, sort=False)]
+    
+    def process_bulk(bulk):
+        bulk = bulk.copy()
+        # Apply the HMM to each chromosome
+        bulk['state'] = ''
+        for chrom, group in bulk.groupby('CHROM', observed=True, sort=False):
+            indices = group.index
+            pAD = group['pAD'].values
+            DP = group['DP'].values
+            p_s = group['p_s'].values
+    
+            # Run HMM
+            states = hmmlib.run_allele_hmm_s5(
+                pAD=pAD,
+                DP=DP,
+                p_s=p_s,
+                t=t,
+                theta_min=theta_min,
+                theta_max=theta_max,
+                gamma=gamma
+            )
+            bulk.loc[indices, 'state'] = states
+    
+        # Process states to obtain CNV states
+        bulk['cnv_state'] = bulk['state'].str.replace('_down|_up', '', regex=True)
+        # Annotate and smooth segments
+        bulk = annot_segs(bulk, var='cnv_state')
+        bulk = hmmlib.smooth_segs(bulk, min_genes=min_genes)
+        bulk = annot_segs(bulk, var='cnv_state')
+        return bulk
+    
+    ncores = np.min((len(sample_groups), cpu_count(), ncores))
+    print(f'Running diploid inference on {ncores} core')
+    
+    # Parallel processing with joblib
+    if ncores > 1:
+        try:
+            results_list = Parallel(n_jobs=ncores)(
+                delayed(process_bulk)(bulk) for bulk in sample_groups
+            )
+        except Exception as e:
+            log.error(str(e))
+            raise e
+    else:
+        results_list = [process_bulk(bulk) for bulk in sample_groups]
+    
+    # Combine results
+    bulks = pd.concat(results_list)
+    # If there's any loh:
+    if 'loh' in bulks.columns and bulks['loh'].any():
+        # Replace cnv_state with 'loh' where loh is True
+        bulks['cnv_state'] = np.where(bulks['loh'], 'loh', bulks['cnv_state'])
+        # Re-annotate segments per sample
+        new_results = []
+        for idx, group in bulks.groupby('sample', observed=True, sort=False):
+            group = annot_segs(group, var='cnv_state')
+            new_results.append(group)
+        bulks = pd.concat(new_results, ignore_index=True)
+    
+    # Unionize imbalanced segs
+    # Extract imbalanced segments:
+    imbal = bulks[bulks['cnv_state'] != 'neu'].drop_duplicates(
+        subset=['sample', 'CHROM', 'seg', 'seg_start', 'seg_end']
+    )
+    
+    if imbal.shape[0] > 0:
+    
+        # Convert to PyRanges for union (reduce)
+        gr = pr.PyRanges(pd.DataFrame({
+            'Chromosome': imbal['CHROM'],
+            'Start': imbal['seg_start'],
+            'End': imbal['seg_end']
+        }))
+        
+        reduced = gr.merge(slack=1)  # Union of imbalanced segments
+        segs_imbal = reduced.df.rename(columns={'Chromosome': 'CHROM', 'Start': 'seg_start', 'End': 'seg_end'})
+        segs_imbal['seg_length'] = segs_imbal['seg_end'] - segs_imbal['seg_start']
+        
+        # Assign segment names and cnv_state
+        segs_imbal = segs_imbal.sort_values(['CHROM', 'seg_start'], key=natsort.natsort_keygen())
+        segs_imbal['seg'] = segs_imbal.groupby('CHROM', sort=False, observed=True).cumcount() + 1
+        segs_imbal['seg'] = segs_imbal['CHROM'] + '_' + segs_imbal['seg'].astype("string")
+        segs_imbal['cnv_state'] = 'theta_1'
+        
+        segs_consensus = fill_neu_segs(segs_imbal, get_segs_neu(bulks))
+        segs_consensus.loc[:,'seg'] = segs_consensus.loc[:,'seg_cons']
+        
+        bulks = annot_consensus(bulks, segs_consensus)
+    
+    segs_bal = bulks[bulks.cnv_state == 'neu']
+    segs_bal_groups = segs_bal.groupby(['seg', 'sample'], observed=True, sort=False)
+    
+    seg = []
+    sample = []
+    n_snps = []
+    n_genes = []
+    for name, group in segs_bal_groups:
+        seg.append(name[0])
+        sample.append(name[1])
+        n_snps.append(group[(group.DP >= 5) & (~group.DP.isna())].DP.shape[0])
+        n_genes.append(group[(~group.gene.isna())].gene.shape[0])
+        
+    segs_bal_df = pd.DataFrame({'seg':seg,
+                                'sample':sample,
+                                'n_snps':n_snps,
+                                'n_genes':n_genes})
+    seg = []
+    for name, group in segs_bal_df.groupby('seg', sort=False, observed=True):
+        if (np.any(group.n_genes > 50)) & (np.any(group.n_snps > 50)):
+            seg.append(name)
+    segs_bal = natsorted(np.unique(seg))
+    
+    bulks_bal = bulks[(np.array([seg in segs_bal for seg in bulks.seg])) & (~bulks.lnFC.isna())]
+    
+    if len(segs_bal) == 0:
+        msg = 'No balanced segments, using all segments as baseline'
+        log.warning(msg)
+        diploid_segs = bulks.seg.unique()
+        bamp = True
+    elif len(segs_bal) == 1:
+        diploid_segs = segs_bal
+        bamp = False
+    else:
+        bulk_temp = bulks_bal.loc[:,['gene', 'seg', 'POS', 'lnFC', 'sample']].copy()
+        seg = []
+        gene = []
+        pos = []
+        samples = {}
+        for name, group in bulk_temp.groupby(by=['seg','gene','POS'], sort=False, observed=True):
+            seg.append(name[0])
+            gene.append(name[1])
+            pos.append(name[2])
+            for idx, row in group.iterrows():
+                try:
+                    samples[name[1]][row.loc['sample']] = row.lnFC
+                except:
+                    samples[name[1]] = {}
+                    samples[name[1]][row.loc['sample']] = row.lnFC
+    
+        test_dat = pd.DataFrame({'seg':seg, 'gene':gene, 'POS':pos}).merge(pd.DataFrame(samples).T, left_on='gene', right_index=True)
+        test_dat = test_dat.sort_values(['seg','POS'], key=natsort.natsort_keygen())
+        test_dat = test_dat.drop_duplicates('gene').reset_index(drop=True)
+        test_dat = test_dat.dropna()
+        test_dat.seg = test_dat.seg.astype('string')
+        test_dat = test_dat.drop(['gene', 'POS'], axis=1)
+    
+        samples = bulks_bal.loc[:,'sample'].unique()
+    
+        # Generate all (i, j, s) combos:
+        combos = []
+        for s in samples:
+            for (i, j) in itertools.combinations(segs_bal, 2):
+                combos.append((i, j, s))
+        
+        # Convert to DataFrame
+        tests_df = pd.DataFrame(combos, columns=['i','j','s'])
+        
+        def compute_row(row):
+                i = row['i']
+                j = row['j']
+                s = row['s']
+                # filter from bulks_bal
+                x = bulks_bal.loc[(bulks_bal['seg']==i) & (bulks_bal['sample']==s), 'lnFC']
+                y = bulks_bal.loc[(bulks_bal['seg']==j) & (bulks_bal['sample']==s), 'lnFC']
+                pval = t_test_pval(x, y)
+                lnFC_i = x.mean() if len(x)>0 else np.nan
+                lnFC_j = y.mean() if len(y)>0 else np.nan
+                return pd.Series({'p': pval, 'lnFC_i': lnFC_i, 'lnFC_j': lnFC_j})
+            
+        results = tests_df.apply(compute_row, axis=1)
+        tests_df = pd.concat([tests_df, results], axis=1)
+        
+        grouped = tests_df.groupby(['i','j'], as_index=False, observed=True, sort=False)
+        def group_summarize(df):
+            # simes_p of p
+            p_simes = simes_p(df['p'].values, len(samples))
+            lnFC_max_i = df['lnFC_i'].max()
+            lnFC_max_j = df['lnFC_j'].max()
+            delta_max = abs(lnFC_max_i - lnFC_max_j)
+            return pd.Series({
+                'p': p_simes,
+                'lnFC_max_i': lnFC_max_i,
+                'lnFC_max_j': lnFC_max_j,
+                'delta_max': delta_max
+            })
+        
+        summary_df = grouped.apply(group_summarize, include_groups=False)
+        reject, qvals, _, _ = multipletests(summary_df.loc[:,'p'].values, alpha=0.05, method='fdr_bh')
+        summary_df.loc[:,'q'] = qvals
+        
+        V = segs_bal
+        E = summary_df[summary_df.loc[:,'q'] > alpha].copy()
+        G = nx.Graph()
+        G.add_nodes_from(V)
+        for idx, row in E.iterrows():
+            G.add_edge(row.i, row.j)
+        
+        if grouping == 'component':
+            comps = list(nx.connected_components(G))
+            fc_list = []
+            for idx, seg_set in enumerate(comps):
+                sub = bulks_bal[bulks_bal.loc[:,'seg'].isin(seg_set)]
+                sub_group = sub.groupby('sample', as_index=False, observed=True, sort=False)['lnFC'].mean()
+                sub_group.loc[:,'component'] = idx
+                fc_list.append(sub_group)
+                
+            fc_df = pd.concat(fc_list, ignore_index=True)
+            fc = fc_df.pivot(index='sample', columns='component', values='lnFC')
+        
+        else:
+            all_cliques = list(nx.algorithms.clique.find_cliques(G))
+            fc_list = []
+            for idx, clique_set in enumerate(all_cliques):
+                sub = bulks_bal[bulks_bal.loc[:,'seg'].isin(clique_set)]
+                sub_group = sub.groupby('sample', as_index=False, observed=True, sort=False)['lnFC'].mean()
+                sub_group = sub_group.rename(columns={'lnFC':idx})
+                fc_list.append(sub_group)
+            
+            fc = reduce(lambda df1,df2: pd.merge(df1,df2,on='sample'), fc_list)
+            fc = fc.set_index('sample')
+        
+        # Calculate diploid_cluster and fc_max
+        rowmins = fc.apply(np.argmin, axis=1)
+        c = Counter(rowmins)
+        diploid_cluster = c.most_common(1)[0][0]
+        fc_diff = fc.subtract(fc[diploid_cluster], axis=0)
+        fc_max = fc_diff.values.ravel().max()
+        fc_exp = np.exp(fc_max)
+        
+        if fc_exp > fc_min:
+            log.info(1,"quadruploid state enabled") # check if logging level is correct
+            print("quadruploid state enabled")
+            if grouping=='component':
+                # find which segs are in that cluster
+                comp_idx = diploid_cluster if diploid_cluster > 0 else 0
+                diploid_segs = list(comps[comp_idx])
+            else:
+                # cliques
+                comp_idx = diploid_cluster if diploid_cluster > 0 else 0
+                diploid_segs = list(all_cliques[comp_idx])
+            #bamp=True
+        else:
+            diploid_segs = segs_bal
+            #bamp=False
+    
+    print(f"Diploid regions: {', '.join(natsort.natsorted(diploid_segs))}")
+    
+    bulks['diploid'] = bulks['seg'].isin(diploid_segs)
+
+    return bulks
+
+
+def theta_hat_seg(major_count: NDArray, minor_count: NDArray) -> float:
+    """
+    Estimate allelic-imbalance (theta) for a single segment.
+
+    Theta is defined here as ``MAF - 0.5`` where
+    ``MAF = major_total / (major_total + minor_total)``.
+
+    Parameters
+    ----------
+    major_count : numpy.ndarray
+        1-D array of non-negative counts for the *major* haplotype in the segment.
+    minor_count : numpy.ndarray
+        1-D array of non-negative counts for the *minor* haplotype in the segment.
+
+    Returns
+    -------
+    float
+        ``(major_total / (major_total + minor_total)) - 0.5``.
+        Returns ``0.0`` if the total depth in the segment is zero.
+
+    Notes
+    -----
+    - The result is negative when the minor haplotype dominates,
+      positive when the major haplotype dominates, and 0 at balance.
+    """
+    major_total = major_count.sum()
+    minor_total = minor_count.sum()
+    denom = major_total + minor_total
+    if denom == 0:
+        # if no reads: define as 0
+        return 0.0
+    MAF = major_total / denom
+    return MAF - 0.5
+
+
+def theta_hat_roll(major_count: NDArray, minor_count: NDArray, h: int = 100) -> NDArray:
+    """
+    Rolling estimate of allelic-imbalance (theta) along a sequence.
+
+    For each position ``c``, computes ``theta_hat_seg`` over a local window
+    centered near ``c`` (clipped at the array boundaries). The window covers
+    approximately ``2*h + 1`` positions around ``c``.
+
+    Parameters
+    ----------
+    major_count : numpy.ndarray
+        1-D array of non-negative counts for the *major* haplotype (length ``n``).
+    minor_count : numpy.ndarray
+        1-D array of non-negative counts for the *minor* haplotype (length ``n``).
+    h : int, optional
+        Half-window size controlling the local neighborhood used around each
+        position, by default ``100``.
+
+    Returns
+    -------
+    numpy.ndarray
+        1-D array of length ``n`` with the rolling theta estimates.
+    """
+    n = len(major_count)
+    out = np.zeros(n, dtype=float)
+    for c in range(n):
+        left_idx = max(c - h - 1, 0)
+        right_idx = min(c + h, n - 1)
+        seg_major = major_count[left_idx : right_idx + 1]
+        seg_minor = minor_count[left_idx : right_idx + 1]
+        out[c] = theta_hat_seg(seg_major, seg_minor)
+    return out
+    
+
+
+def annot_theta_roll(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Annotate haplotype major/minor counts and compute a per–chromosome rolling
+    allelic-imbalance statistic (``theta_hat_roll``).
+
+    The function:
+      1) infers, for each SNP, which haplotype is *major* vs *minor*,
+         using the optional Viterbi state when available and otherwise falling
+         back to B-allele frequency;
+      2) derives per-SNP ``major_count`` and ``minor_count`` from (pAD, DP);
+      3) computes a rolling imbalance measure ``theta_hat_roll`` within each
+         chromosome on rows with non-missing pAD, then merges it back and
+         forward-fills missing values within each chromosome.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Long-form allele table with at least the following columns:
+        - ``CHROM`` : chromosome identifier (grouping key)
+        - ``snp_id`` : SNP identifier (merge key)
+        - ``pAD`` : alternate-allele count (numeric; NaN allowed)
+        - ``DP`` : total read depth (numeric)
+        - ``pBAF`` : B-allele frequency in [0, 1] (numeric)
+        Optional:
+        - ``state`` : string labels *without NaNs* used to define haplotype
+          direction; values must end with "_up" or "_down" if present
+          (e.g., "theta_1_up" / "theta_1_down"). If provided, it is
+          used to assign major/minor; otherwise assignment is based on
+          ``pBAF > 0.5`` (major) vs ``<= 0.5`` (minor).
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of the input with the following additional columns:
+        - ``haplo_theta_min`` : 'major' / 'minor' assignment per SNP
+        - ``major_count`` : per-SNP count for the major haplotype
+        - ``minor_count`` : per-SNP count for the minor haplotype
+        - ``theta_hat_roll`` : rolling imbalance statistic (forward-filled
+          within each chromosome)
+
+    Notes
+    -----
+    - The rolling statistic is computed only on rows where ``pAD`` is non-missing
+      and uses an external helper ``theta_hat_roll(major, minor, h=100)`` with a
+      fixed window parameter ``h=100``.
+    - Forward-filling is performed *within* each chromosome to propagate nearby
+      estimates to missing positions.
+
+    Raises
+    ------
+    AttributeError
+        If a ``state`` column is present but contains non-strings/NaNs, due to
+        the required string parsing (``*_up`` / ``*_down``).
+    KeyError
+        If required columns are missing.
+
+    Examples
+    --------
+    >>> out = annot_theta_roll(df)
+    >>> out[['CHROM', 'snp_id', 'major_count', 'minor_count', 'theta_hat_roll']].head()
+    """
+
+    # If Viterbi was run, define 'haplo_theta_min' from 'state',
+    # else fallback to pBAF to decide major/minor.
+    annot_test = pd.Series(np.repeat(np.nan, df.shape[0]), index=df.index, dtype='string')
+    annot_test[df[[i.split('_')[-1] == 'up' for i in df.state]].index] = 'major'
+    annot_test[df[[i.split('_')[-1] == 'down' for i in df.state]].index] = 'minor'
+    annot_test[(annot_test.isna()) & (df.pBAF > 0.5)] = 'major'
+    annot_test[(annot_test.isna()) & (df.pBAF <= 0.5)] = 'minor'
+    df.loc[:,'haplo_theta_min'] = annot_test
+    
+    # Define major_count, minor_count
+    major_count = pd.Series(np.repeat(np.nan, df.shape[0]), index=df.index, dtype=np.float64)
+    major_count_idx = df[df.haplo_theta_min == 'major'].index
+    minor_count_idx = df[df.haplo_theta_min == 'minor'].index
+    major_count[major_count_idx] = df.pAD[major_count_idx].values
+    major_count[minor_count_idx] = df.DP[minor_count_idx] - df.pAD[minor_count_idx]
+    df.loc[:,'major_count'] = major_count
+    df.loc[:,'minor_count'] = df.DP - df.major_count
+    
+    # Drop 'theta_hat_roll' if it exists
+    if 'theta_hat_roll' in df.columns:
+        df = df.drop(columns=['theta_hat_roll'])
+    
+    # We want to compute a rolling measure within each CHROM group,
+    # only for rows with pAD != NaN
+    def compute_theta_roll_for_group(grp):
+        # Filter out rows where pAD is NaN
+        sub = grp[grp['pAD'].notna()].copy()
+        # Compute rolling measure
+        major_arr = sub['major_count'].values
+        minor_arr = sub['minor_count'].values
+        # we define a new col
+        sub['theta_hat_roll'] = theta_hat_roll(major_arr, minor_arr, h=100)
+        # Return only the columns we want to merge on
+        return sub[['CHROM', 'snp_id', 'theta_hat_roll']]
+    
+    # group by CHROM, apply the rolling measure
+    df_roll = df.groupby('CHROM', group_keys=False, observed=True, sort=False)[df.columns].apply(compute_theta_roll_for_group)
+    # Merge (left_join) on ['CHROM', 'snp_id']
+    df_merged = df.merge(df_roll, on=['CHROM','snp_id'], how='left')
+    # Perform forward fill each CHROM
+    df_merged_groups = df_merged.groupby('CHROM', observed=True, sort=False)
+    theta_hat_fill = pd.concat([v.theta_hat_roll.ffill() for k, v in df_merged_groups]).rename('theta_hat_roll')
+    df_merged = df_merged.drop('theta_hat_roll', axis=1).merge(theta_hat_fill, left_index=True, right_index=True)
+
+    return df_merged
+
+
+def approx_theta_post(pAD, DP, p_s, lower=0.001, upper=0.499, start=0.25, gamma=20, disp=False):
+    """
+    Performs a Laplace approximation by optimizing -calc_allele_lik(),
+    uses L-BFGS-B, and extracts the Hessian approx for variance.
+    
+    Parameters
+    ----------
+    pAD : array-like (list or np.ndarray)
+        Variant allele depths (length n).
+    DP : array-like
+        Total allele depths (same length as pAD).
+    p_s : array-like
+        Variant allele frequency or phase switch probabilities (same length).
+    lower : float
+        Lower bound for theta.
+    upper : float
+        Upper bounds for theta.
+    start : float
+        Initial guess for theta.
+    gamma : float
+        Overdispersion param for Beta-binomial.
+
+    Returns
+    -------
+    A dict with keys:
+        'theta_mle': float, the MLE of theta
+        'theta_sigma': float, the approximate stdev from Laplace approx
+    """
+
+    if len(pAD) <= 10:
+        return {"theta_mle": 0.0, "theta_sigma": 0.0}
+    
+    # negative log-likelihood
+    def objective(theta):
+        return -hmmlib.calc_allele_lik(pAD, DP, p_s, theta, gamma)
+    
+    res = scipy.optimize.minimize(
+        objective,
+        x0=[start],    # initial guess
+        method='L-BFGS-B',
+        bounds=[(lower, upper)],  # single param => single tuple bound
+        options={"maxiter": 1000,
+                 "disp": disp}
+    )
+    
+    mu = res.x[0]  # best param
+    # Approx Hessian stuffs
+    hess_inv_approx = getattr(res, 'hess_inv', None)
+    if hess_inv_approx is not None:
+        var_est = res.hess_inv.todense() # this is just res.hess_inv @ np.array([1.])
+    else:
+        # we can do a numerical approximation of second derivative if needed
+        var_est = 0.0
+    
+    # var_est is actually the approximate inverse of the Hessian, sigma = sqrt(var_est)
+    sigma = np.sqrt(var_est)
+
+    return {
+        "theta_mle": mu,
+        "theta_sigma": sigma.ravel()[0]
+    }
+
+
+def l_bbinom(AD, DP, alpha, beta):
+    """
+    Calculate beta-binomial log-likelihood.
+    Get log PMFs, then sums them.
+
+    Parameters
+    ----------
+    AD : np.ndarray (or list)
+        Variant (paternal) allele depths
+    DP : np.ndarray (or list)
+        Total allele depths
+    alpha : float or np.ndarray
+        Alpha parameter(s)
+    beta : float or np.ndarray
+        Beta parameter(s)
+
+    Returns
+    -------
+    float
+        The total (joint) log-likelihood under the beta-binomial model.
+    """
+
+    # Compute log PMF for each observation
+    log_pmf = dist_prob.log_beta_binomial_pmf(k=AD,
+                                              n=DP, 
+                                              alpha=alpha,
+                                              beta=beta)
+    # Sum up the log PMF values
+    total_log_lik = np.sum(log_pmf)
+
+    return total_log_lik
+
+
+def calc_allele_LLR(
+    pAD: ArrayLike,
+    DP: ArrayLike,
+    p_s: ArrayLike,
+    theta_mle: float,
+    theta_0: float = 0.0,
+    gamma: float = 20,
+    ) -> float:
+    """
+    Compute the log-likelihood ratio (LLR) for allelic imbalance using a 2-state allele HMM.
+
+    The LLR compares:
+      - Alternative model (L1): Beta-Binomial emission HMM with imbalance set to theta_mle.
+      - Null model (L0): independent Beta-Binomial with symmetric prior alpha = beta = 0.5 * gamma.
+
+    By construction, LLR = L1 - L0.
+    A positive LLR supports allelic imbalance relative to the null.
+
+    Parameters
+    ----------
+    pAD : ArrayLike
+        Phased alternate-allele depths per position (length N).
+    DP : ArrayLike
+        Total read depths per position (length N).
+    p_s : ArrayLike
+        Phase switch probabilities per position (length N). Used by the alternative
+        HMM through calc_allele_lik. Not used in the null model.
+    theta_mle : float
+        Maximum likelihood estimate of the allelic imbalance parameter for the
+        alternative hypothesis.
+    theta_0 : float, optional
+        Allelic imbalance under the null hypothesis. This parameter is accepted
+        for API compatibility but is not used by the current implementation, which
+        fixes the null to alpha = beta = 0.5 * gamma (default 0.0).
+    gamma : float, optional
+        Concentration parameter of the Beta-Binomial emissions. Larger values make
+        the Beta prior more concentrated around its mean (default 20).
+
+    Returns
+    -------
+    float
+        Log-likelihood ratio L1 - L0. Returns 0.0 when there is only one or
+        no observations.
+
+    Examples
+    --------
+    >>> llr = calc_allele_LLR(pAD=[5, 8, 10], DP=[10, 16, 20], p_s=[0.01, 0.01, 0.01], theta_mle=0.1)
+    >>> isinstance(llr, float)
+    True
+    """
+
+    # If there's only 1 or fewer observations, return 0
+    if len(pAD) <= 1:
+        return 0.0
+
+    # Alternative model log-likelihood
+    l_1 = hmmlib.calc_allele_lik(pAD=pAD,
+                          DP=DP,
+                          p_s=p_s,
+                          theta=theta_mle,
+                          gamma=gamma)
+
+    # Null model
+    alpha_0 = gamma * 0.5
+    beta_0  = gamma * 0.5
+
+    l_0 = l_bbinom(AD=pAD,
+                   DP=DP,
+                   alpha=alpha_0,
+                   beta=beta_0)
+
+    # Return difference
+    return l_1 - l_0
+
+
+def log1mexp(x: float) -> float:
+    """
+    Compute log(1 - exp(-x)) in a numerically stable way for x >= 0.
+
+    This chooses between two algebraically equivalent forms to reduce loss of precision:
+      - if x <= log(2): use log(1 - exp(-x))
+      - else:           use log1p(-exp(-x))
+
+    Parameters
+    ----------
+    x : float
+        Non-negative scalar input. Values must satisfy x >= 0.
+
+    Returns
+    -------
+    float
+        The value of log(1 - exp(-x)). As x -> 0+, the result -> -inf.
+        As x -> +inf, the result -> 0.
+
+    Raises
+    ------
+    ValueError
+        If x < 0.
+    """
+
+    if x < 0:
+        raise ValueError("Inputs need to be non-negative!")
+
+    if x <= np.log(2):
+        return np.log(1.0 - np.exp(-x))
+    else:
+        return np.log1p(-np.exp(-x))
+
+
+def pnorm_range_log(lower: float, upper: float, mu: float, sd: float) -> float:
+    """
+    Return log P(lower <= X <= upper) for X ~ Normal(mu, sd^2).
+
+    This function computes the log of the probability mass of a normal
+    distribution over a closed interval using log-CDFs for numerical
+    stability. It handles the degenerate case sd == 0 by treating the
+    distribution as a point mass at mu.
+
+    Algorithm
+    ---------
+    1) If sd == 0, return 0.0 if mu is in [lower, upper], else return -np.inf.
+    2) Compute l_upper = log CDF(upper; mu, sd).
+    3) Compute l_lower = log CDF(lower; mu, sd).
+    4) Combine them using a stable log-difference identity via log1mexp:
+         log_prob = l_upper + log1mexp(l_upper - l_lower)
+
+    Parameters
+    ----------
+    lower : float
+        Lower bound of the interval. May be -np.inf.
+    upper : float
+        Upper bound of the interval. May be np.inf. Must satisfy lower <= upper.
+    mu : float
+        Mean of the normal distribution.
+    sd : float
+        Standard deviation of the normal distribution. Must be non-negative.
+
+    Returns
+    -------
+    float
+        Log probability that a Normal(mu, sd^2) random variable lies in
+        [lower, upper]. Returns -np.inf if the probability is exactly zero.
+    """
+
+    if sd == 0:
+        # If standard deviation is 0, the distribution is degenerate at mu.
+        return 0.0 if (lower <= mu <= upper) else -np.inf # This is consistent in log space
+
+    l_upper = scipy.stats.norm.logcdf(upper, loc=mu, scale=sd)
+    l_lower = scipy.stats.norm.logcdf(lower, loc=mu, scale=sd)
+    # Calculate log-prob
+    log_prob = l_upper + log1mexp(l_upper - l_lower)
+    return log_prob
+
+
+def approx_phi_post(Y_obs, lambda_ref, d, mu=None, sig=None, lower_val=0.2, upper_val=10, start=1.0, disp=False):
+    """
+    Perform Laplace approximation for the parameter phi in a Poisson-lognormal model.
+
+    This function finds the MLE of phi by minimizing the negative log-likelihood, and
+    then extracts an approximate variance from the L-BFGS-B inverted Hessian operator.
+
+    Parameters
+    ----------
+    Y_obs : array-like
+        Gene expression counts.
+    lambda_ref : array-like
+        Reference expression levels, same length as Y_obs.
+    d : float or array
+        Total library size.
+    mu : float or array, optional
+        Mean(s) for the Poisson-lognormal model.
+    sig : float or array, optional
+        Standard deviation(s) for the Poisson-lognormal model.
+    lower_val : float, optional
+        Lower bound for phi (defaults to 0.2).
+    upper_val : float, optional
+        Upper bound for phi (defaults to 10).
+    start : float, optional
+        Starting guess for phi (defaults to 1.0).
+
+    Returns
+    -------
+    dict
+        A dictionary with two keys:
+        - 'phi_mle': float, the maximum-likelihood estimate of phi.
+        - 'phi_sigma': float, the approximate standard deviation from the inverse Hessian.
+    """
+    
+    if len(Y_obs) == 0:
+        return {"phi_mle": 1.0, "phi_sigma": 0.0}
+    
+    # Ensure start is within [lower, upper]
+    start = max(min(start, upper_val), lower_val)
+    
+    # negative log-likelihood
+    def objective(phi):
+        return -dist_prob.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=phi)
+    
+    # Optimize with L-BFGS-B
+    res = scipy.optimize.minimize(
+        objective,
+        x0=[start],
+        method='L-BFGS-B',
+        bounds=[(lower_val, upper_val)],
+        options={'maxiter': 1000,
+                 'disp': disp}
+        )
+    
+    mu = res.x[0]  # best param
+    # Approx Hessian stuffs
+    hess_inv_approx = getattr(res, 'hess_inv', None)
+    if hess_inv_approx is not None:
+        var_est = res.hess_inv.todense() # this is just res.hess_inv @ np.array([1.])
+    else:
+        # we can do a numerical approximation of second derivative if needed
+        var_est = 0.0
+    
+    # var_est is actually the approximate inverse of the Hessian, sigma = sqrt(var_est)
+    sigma = np.sqrt(var_est).ravel()[0]
+
+    return {
+        "phi_mle": mu,
+        "phi_sigma": sigma
+    }
+
+
+def calc_exp_LLR(
+    Y_obs: ArrayLike,
+    lambda_ref: ArrayLike,
+    d: ArrayLike | float,
+    phi_mle: float,
+    mu: Optional[float | NDArray] = None,
+    sig: Optional[float | NDArray] = None,
+    alpha: Optional[float | NDArray] = None,
+    beta: Optional[float | NDArray] = None,
+) -> float:
+    """
+    Compute the expression log-likelihood ratio (LLR) between an alternative
+    overdispersion model and a null model.
+
+    The alternative uses the Poisson lognormal likelihood with phi = phi_mle.
+    The null uses the same likelihood with phi = 1. The function returns:
+        LLR = l_lnpois(phi = phi_mle) - l_lnpois(phi = 1.0)
+
+    Parameters
+    ----------
+    Y_obs : ArrayLike
+        Observed counts per gene or feature (1-D).
+    lambda_ref : ArrayLike
+        Reference expression frequencies for the same genes or features (1-D).
+        Must align with Y_obs.
+    d : ArrayLike or float
+        Library depth or scaling factor. May be a scalar or a vector aligned
+        with Y_obs.
+    phi_mle : float
+        Maximum likelihood estimate of the overdispersion multiplier for the
+        alternative model.
+    mu : float or numpy.ndarray, optional
+        Location parameter(s) of the lognormal component. If a scalar is given,
+        it is applied to all entries. If an array is given, it must align with Y_obs.
+    sig : float or numpy.ndarray, optional
+        Scale parameter(s) (standard deviation) of the lognormal component.
+        Scalar or array aligned with Y_obs.
+    alpha : float or numpy.ndarray, optional
+        Unused. Present for API compatibility.
+    beta : float or numpy.ndarray, optional
+        Unused. Present for API compatibility.
+
+    Returns
+    -------
+    float
+        Log-likelihood ratio. Returns 0.0 if Y_obs has length 0.
+    """
+
+    if len(Y_obs) == 0:
+        return 0.0
+
+    # Alternative model: phi=phi_mle
+    l1 = hmmlib.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=phi_mle)
+    # Null model: phi=1
+    l0 = hmmlib.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=1.0)
+    return l1 - l0
+
+
+def classify_alleles(bulk: pd.DataFrame) -> pd.DataFrame:
+    """
+    Classify SNP haplotypes as major or minor using an allele HMM and a naive rule,
+    and attach the results to the input table.
+
+    Workflow
+    --------
+    1) Subset rows where:
+       - cnv_state_post != "neu"
+       - AD is not NA
+       Then keep only groups (CHROM, seg) that contain more than one SNP.
+    2) If the subset is empty, return the original DataFrame unchanged.
+    3) For each (CHROM, seg) group in the subset:
+       - Build an HMM with get_allele_hmm using pAD, DP, p_s and a single
+         theta value per group (theta_mle must be constant within group).
+       - Run forward_back_allele(hmm) to get posterior state probabilities
+         per SNP; take the first column as p_up (posterior for the "up" state).
+       - Define haplo_post per SNP by combining p_up with phased genotype GT:
+           if p_up >= 0.5 and GT == "1|0" -> "major"
+           if p_up >= 0.5 and GT == "0|1" -> "minor"
+           if p_up <  0.5 and GT == "1|0" -> "minor"
+           if p_up <  0.5 and GT == "0|1" -> "major"
+         otherwise None.
+       - Define haplo_naive as "minor" if AR < 0.5, else "major".
+       - Return only columns [snp_id, p_up, haplo_post, haplo_naive] for that group.
+    4) Left-join these outputs back to the original bulk on snp_id.
+
+    Parameters
+    ----------
+    bulk : pandas.DataFrame
+        Input table with at least the following columns:
+        - cnv_state_post, AD, CHROM, seg, snp_id, GT, AR
+        - pAD, DP, p_s, theta_mle (needed to build and run the HMM)
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of bulk with three added columns for the relevant SNPs:
+        - p_up: posterior probability of the "up" state
+        - haplo_post: posterior-based haplotype label ("major" or "minor")
+        - haplo_naive: naive AR-based haplotype label
+
+    Notes
+    -----
+    - Groups with only a single SNP are excluded from HMM classification.
+    """
+
+    # Create 'allele_bulk'
+    allele_bulk = bulk[
+        (bulk['cnv_state_post'] != 'neu')
+        & (bulk['AD'].notna())
+    ].copy()
+
+    # group by (CHROM, seg) and keep only groups with len >1
+    group_counts = allele_bulk.groupby(['CHROM','seg'], observed=True, sort=False).size()
+    valid_groups = group_counts[group_counts > 1].index 
+    allele_bulk = allele_bulk.set_index(['CHROM','seg'])
+    allele_bulk = allele_bulk.loc[valid_groups].reset_index()
+
+    # If allele_bulk is empty, return original
+    if allele_bulk.shape[0] == 0:
+        return bulk
+
+    def aggregator(df_group: pd.DataFrame) -> pd.DataFrame:
+
+        unique_theta = df_group['theta_mle'].unique()
+        theta_val = unique_theta[0]
+
+        # Build the HMM dict
+        hmm = hmmlib.get_allele_hmm(
+            pAD = df_group['pAD'].values,
+            DP  = df_group['DP'].values,
+            p_s = df_group['p_s'].values,
+            theta=theta_val,
+            gamma=20
+        )
+        post_matrix = hmmlib.forward_back_allele(hmm)
+       
+        p_up = post_matrix[:, 0]
+
+        # define haplo_post
+        def define_haplo_post(row, pval):
+            gt = row['GT']
+            if pval >= 0.5 and gt=='1|0':
+                return 'major'
+            elif pval >=0.5 and gt=='0|1':
+                return 'minor'
+            elif pval < 0.5 and gt=='1|0':
+                return 'minor'
+            elif pval < 0.5 and gt=='0|1':
+                return 'major'
+            else:
+                return None  # or handle other GT
+
+        #p_up_array = []
+        #haplo_post_array = []
+        #haplo_naive_array= []
+        #for i, row in df_group.iterrows():
+        #    val_p_up = p_up_array.append(p_up[len(p_up_array)])
+        
+        # we get the next p_up
+        df_out = df_group.copy()
+        df_out['p_up'] = p_up
+        # define haplo_post rowwise
+        df_out['haplo_post'] = [
+            define_haplo_post(r, pu)
+            for r, pu in zip(df_out.to_dict('records'), df_out['p_up'])
+        ]
+        # define haplo_naive
+        df_out['haplo_naive'] = np.where(df_out['AR']<0.5, 'minor','major')
+        
+        return df_out[['snp_id','p_up','haplo_post','haplo_naive']]
+
+    # apply aggregator
+    allele_post = allele_bulk.groupby(['CHROM','seg'], as_index=False, observed=True, sort=False)[allele_bulk.columns].apply(aggregator)
+    # This yields a multi-level index. Flatten:
+    allele_post = allele_post.reset_index(drop=True)
+
+    # remove from 'bulk' any col from allele_post except 'snp_id'.
+    drop_cols = [c for c in allele_post.columns if c not in ['snp_id']]
+    to_remove = [c for c in drop_cols if c in bulk.columns]
+    bulk = bulk.drop(columns=to_remove, errors='ignore')
+
+    # do a merge on 'snp_id'
+    bulk = bulk.merge(allele_post, on='snp_id', how='left')
+
+    return bulk
+
+
+
+def retest_cnv(bulk:pd.DataFrame,
+               theta_min:float = 0.08,
+               logphi_min:float = 0.25,
+               gamma:float = 20,
+               allele_only:bool = False,
+               exclude_neu:bool = True) -> pd.DataFrame:
+    """
+    Retest copy-number variations (CNVs) in a pseudobulk profile. This function
+    computes segment-level statistics and posterior estimates for CNVs, optionally
+    using only allele-based data or including expression-based data.
+
+    Parameters
+    ----------
+    bulk : pd.DataFrame
+        A pseudobulk dataframe containing, at minimum, the following columns:
+          - 'cnv_state' : str or categorical, e.g. 'neu', 'loh', etc.
+          - 'CHROM' : chromosome indicator (numeric or string)
+          - 'seg' : segment identifier
+          - 'POS' : genomic position
+          - 'gene' : optional gene identifier for counting distinct genes
+          - 'pAD', 'DP', 'p_s' : allele data (pAD = paternal allele depth, DP = total
+            allele depth, p_s = variant allele frequency or phase switch)
+          - 'major_count', 'minor_count' : major/minor allele counts
+          - 'Y_obs', 'lambda_ref', 'd_obs', 'mu', 'sig' : for expression-based modeling
+            (if allele_only=False, used in expression-based computations)
+        The dataframe can have additional columns as needed.
+
+    theta_min : float, optional
+        Minimum threshold for the allele imbalance parameter when calculating
+        certain likelihood terms (default = 0.08).
+
+    logphi_min : float, optional
+        Parameter controlling expression fold-change range. For example, used when
+        bounding phi in pnorm_range_log calls (default = 0.25).
+
+    gamma : float, optional
+        Dispersion parameter for the Beta-Binomial allele model (default = 20).
+
+    allele_only : bool, optional
+        If True, retesting uses only allele-based computations (summaries, LLR for allele).
+        If False, includes expression-based computations as well (default = False).
+
+    exclude_neu : bool, optional
+        If True, filters out rows where 'cnv_state' == 'neu' before grouping. This can
+        remove neutral segments from retesting (default = True).
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing summarized segment-level information
+        and posterior estimates. Depending on whether `allele_only` is True or False,
+        columns may include (but are not limited to):
+          - 'CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state'
+          - 'n_genes', 'n_snps'
+          - 'theta_hat', 'theta_mle', 'theta_sigma'
+          - 'p_loh', 'p_amp', 'p_del', 'p_bamp', 'p_bdel'
+          - 'LLR_x', 'LLR_y', 'LLR'
+          - 'phi_mle', 'phi_sigma' (if not allele_only)
+          - Additional posterior probabilities, log-likelihood metrics, etc.
+          - 'cnv_state_post' column indicates the post-retesting
+            classification of the segment (e.g. 'loh', 'amp', 'del', 'bamp', 'bdel', or 'neu').
+    """
+    
+    bulk = annot_theta_roll(bulk.copy())
+    
+    if exclude_neu:
+        bulk = bulk[bulk.cnv_state != 'neu'].copy()
+        bulk = bulk.reset_index(drop=True)
+    
+    G = {'11': 0.5,
+         '20': 0.1,
+         '10': 0.1,
+         '21': 0.05,
+         '31': 0.05,
+         '22': 0.1,
+         '00': 0.1}
+    
+    if allele_only:
+        
+        bulk_group = bulk.groupby(['CHROM', 'seg', 'cnv_state'], observed=True, sort=False)
+        group_len = len(bulk_group)
+        # chroms = np.zeros(group_len)
+        chroms = []
+        segs = []
+        cnv_state = []
+        n_genes = np.zeros(group_len)
+        n_snps = np.zeros(group_len)
+        seg_start = np.zeros(group_len)
+        seg_end = np.zeros(group_len)
+        theta_hat = np.zeros(group_len)
+        theta_mle = np.zeros(group_len)
+        theta_sigma = np.zeros(group_len)
+        p_loh = np.repeat(1, group_len)
+        p_amp = np.repeat(0, group_len)
+        p_del = np.repeat(0, group_len)
+        p_bamp = np.repeat(0, group_len)
+        p_bdel = np.repeat(0, group_len)
+        LLR_x = np.repeat(0, group_len)
+        LLR_y = np.zeros(group_len)
+        LLR = np.zeros(group_len)
+        phi_mle = np.repeat(1, group_len)
+        phi_sigma = np.repeat(0, group_len)
+        
+        for idx, curr_group in enumerate(bulk_group):
+            
+            group = curr_group[1]
+            chroms.append(curr_group[0][0])
+            segs.append(curr_group[0][1])
+            cnv_state.append(curr_group[0][2])
+            
+            n_genes[idx] = group.gene[group.gene.notna()].unique().shape[0]
+            n_snps[idx] = group.pAD[group.pAD.notna()].shape[0]
+            seg_start[idx] = group.POS.min()
+            seg_end[idx] = group.POS.max()
+            theta_hat[idx] = theta_hat_seg(group.major_count[group.major_count.notna()], group.minor_count[group.minor_count.notna()])
+            current_approx_theta_post = approx_theta_post(pAD=group.pAD[group.pAD.notna()].values,
+                                                          DP=group.DP[group.pAD.notna()].values,
+                                                          p_s=group.p_s[group.pAD.notna()].values,
+                                                          gamma=gamma,
+                                                          start=theta_hat[idx])
+            theta_mle[idx] = current_approx_theta_post['theta_mle']
+            theta_sigma[idx] = current_approx_theta_post['theta_sigma']
+            LLR_y[idx] = calc_allele_LLR(group.pAD[group.pAD.notna()].values,
+                                         group.DP[group.pAD.notna()].values,
+                                         group.p_s[group.pAD.notna()].values,
+                                         theta_mle[idx],
+                                         gamma = gamma)
+            LLR[idx] = LLR_x[idx] + LLR_y[idx]
+        
+        segs_post = pd.DataFrame({
+            'CHROM':chroms,
+            'seg':segs,
+            'cnv_state':cnv_state,
+            'n_genes':n_genes,
+            'n_snps':n_snps,
+            'seg_start':seg_start,
+            'seg_end':seg_end,
+            'theta_hat':theta_hat,
+            'theta_mle':theta_mle,
+            'theta_sigma':theta_sigma,
+            'p_loh':p_loh,
+            'p_amp':p_amp,
+            'p_del':p_del,
+            'p_bamp':p_bamp,
+            'p_bdel':p_bdel,
+            'LLR_x':LLR_x,
+            'LLR_y':LLR_y,
+            'LLR':LLR,
+            'phi_mle':phi_mle,
+            'phi_sigma':phi_sigma
+        })
+    
+    else:
+        bulk_group = bulk.groupby(['CHROM','seg', 'seg_start', 'seg_end', 'cnv_state'], observed=True, sort=False)
+        group_len = len(bulk_group)
+        # chroms = np.zeros(group_len)
+        chroms = []
+        segs = []
+        cnv_state = []
+        
+        n_genes = np.zeros(group_len)
+        n_snps = np.zeros(group_len)
+        seg_start = np.zeros(group_len)
+        seg_end = np.zeros(group_len)
+        theta_hat = np.zeros(group_len)
+        theta_mle = np.zeros(group_len)
+        theta_sigma = np.zeros(group_len)
+        L_y_n = np.zeros(group_len)
+        L_y_d = np.zeros(group_len)
+        L_y_a = np.zeros(group_len)
+        phi_mle = np.zeros(group_len)
+        phi_sigma = np.zeros(group_len)
+        L_x_n = np.zeros(group_len)
+        L_x_d = np.zeros(group_len)
+        L_x_a = np.zeros(group_len)
+        Z_cnv = np.zeros(group_len)
+        Z_n = np.zeros(group_len)
+        Z = np.zeros(group_len)
+        logBF = np.zeros(group_len)
+        p_neu = np.zeros(group_len)
+        p_loh = np.zeros(group_len)
+        p_amp = np.zeros(group_len)
+        p_del = np.zeros(group_len)
+        p_bamp = np.zeros(group_len)
+        p_bdel = np.zeros(group_len)
+        LLR_x = np.zeros(group_len)
+        LLR_y = np.zeros(group_len)
+        LLR = np.zeros(group_len)
+        
+        for idx, curr_group in enumerate(bulk_group):
+            
+            group = curr_group[1]
+            chroms.append(curr_group[0][0])
+            segs.append(curr_group[0][1])
+            cnv_state.append(curr_group[0][-1])
+            
+            n_genes[idx] = group.gene[group.gene.notna()].unique().shape[0]
+            n_snps[idx] = group.pAD[group.pAD.notna()].shape[0]
+            seg_start[idx] = group.seg_start.min()
+            seg_end[idx] = group.seg_end.max()
+            theta_hat[idx] = theta_hat_seg(major_count = group.major_count[group.major_count.notna()],
+                                           minor_count = group.minor_count[group.minor_count.notna()])
+            current_approx_theta_post = approx_theta_post(pAD   = group.pAD[group.pAD.notna()].values,
+                                                          DP    = group.DP[group.pAD.notna()].values,
+                                                          p_s   = group.p_s[group.pAD.notna()].values,
+                                                          gamma = gamma,
+                                                          start = theta_hat[idx])
+            theta_mle[idx] = current_approx_theta_post['theta_mle']
+            theta_sigma[idx] = current_approx_theta_post['theta_sigma']
+            L_y_n[idx] = pnorm_range_log(0, theta_min, theta_mle[idx], theta_sigma[idx])
+            L_y_d[idx] = pnorm_range_log(theta_min, 0.499, theta_mle[idx], theta_sigma[idx])
+            L_y_a[idx] = pnorm_range_log(theta_min, 0.375, theta_mle[idx], theta_sigma[idx])
+            current_approx_phi_post = approx_phi_post(Y_obs      = group.Y_obs[group.Y_obs.notna()].values,
+                                                      lambda_ref = group.lambda_ref[group.Y_obs.notna()].values,
+                                                      d          = group.d_obs[group.Y_obs.notna()].unique(),
+                                                      mu         = group.mu[group.Y_obs.notna()].values,
+                                                      sig        = group.sig[group.Y_obs.notna()].values)
+            phi_mle[idx] = current_approx_phi_post['phi_mle']
+            phi_sigma[idx] = current_approx_phi_post['phi_sigma']
+            L_x_n[idx] = pnorm_range_log(2**(-logphi_min), 2**logphi_min, phi_mle[idx], phi_sigma[idx])
+            L_x_d[idx] = pnorm_range_log(0.1, 2**(-logphi_min), phi_mle[idx], phi_sigma[idx])
+            L_x_a[idx] = pnorm_range_log(2**logphi_min, 3, phi_mle[idx], phi_sigma[idx])
+            Z_cnv[idx] = hmmlib.log_sum_exp((np.log(G['20']) + L_x_n[idx] + L_y_d[idx],
+                                      np.log(G['10']) + L_x_d[idx] + L_y_d[idx],
+                                      np.log(G['21']) + L_x_a[idx] + L_y_a[idx],
+                                      np.log(G['31']) + L_x_a[idx] + L_y_a[idx],
+                                      np.log(G['22']) + L_x_a[idx] + L_y_n[idx], 
+                                      np.log(G['00']) + L_x_d[idx] + L_y_n[idx]))
+            Z_n[idx] = np.log(G['11']) + L_x_n[idx] + L_y_n[idx]
+            Z[idx] = hmmlib.log_sum_exp((Z_n[idx], Z_cnv[idx]))
+            logBF[idx] = Z_cnv[idx] - Z_n[idx]
+            p_neu[idx] = np.exp(Z_n[idx] - Z[idx])
+            p_loh[idx] = np.exp(np.log(G['20']) + L_x_n[idx] + L_y_d[idx] - Z_cnv[idx])
+            p_amp[idx] = np.exp(np.log(G['31'] + G['21']) + L_x_a[idx] + L_y_a[idx] - Z_cnv[idx])
+            p_del[idx] = np.exp(np.log(G['10']) + L_x_d[idx] + L_y_d[idx] - Z_cnv[idx])
+            p_bamp[idx] = np.exp(np.log(G['22']) + L_x_a[idx] + L_y_n[idx] - Z_cnv[idx])
+            p_bdel[idx] = np.exp(np.log(G['00']) + L_x_d[idx] + L_y_n[idx] - Z_cnv[idx])
+            LLR_x[idx] = calc_exp_LLR(Y_obs      = group.Y_obs[group.Y_obs.notna()],
+                                      lambda_ref = group.lambda_ref[group.Y_obs.notna()],
+                                      d          = group.d_obs[group.Y_obs.notna()].unique(),
+                                      phi_mle    = phi_mle[idx],
+                                      mu         = group.mu[group.Y_obs.notna()],
+                                      sig        = group.sig[group.Y_obs.notna()])
+            LLR_y[idx] = calc_allele_LLR(pAD       = group.pAD[group.pAD.notna()].values,
+                                         DP        = group.DP[group.pAD.notna()].values,
+                                         p_s       = group.p_s[group.pAD.notna()].values,
+                                         theta_mle = theta_mle[idx],
+                                         gamma     = gamma)
+    
+        segs_post = pd.DataFrame({
+            'CHROM':chroms,
+            'seg':segs,
+            'seg_start':seg_start,
+            'seg_end':seg_end,
+            'cnv_state':cnv_state,
+            'n_genes':n_genes,
+            'n_snps':n_snps,
+            'theta_hat':theta_hat,
+            'theta_mle':theta_mle,
+            'theta_sigma':theta_sigma,
+            'L_y_n':L_y_n,
+            'L_y_d':L_y_d,
+            'L_y_a':L_y_a,
+            'phi_mle':phi_mle,
+            'phi_sigma':phi_sigma,
+            'L_x_n':L_x_n,
+            'L_x_d':L_x_d,
+            'L_x_a':L_x_a,
+            'Z_cnv':Z_cnv,
+            'Z_n':Z_n,
+            'Z':Z,
+            'logBF':logBF,
+            'p_neu':p_neu,
+            'p_loh':np.where(np.isnan(p_loh), 0, p_loh),
+            'p_amp':np.where(np.isnan(p_amp), 0, p_amp),
+            'p_del':np.where(np.isnan(p_del), 0, p_del),
+            'p_bamp':np.where(np.isnan(p_bamp), 0, p_bamp),
+            'p_bdel':np.where(np.isnan(p_bdel), 0, p_bdel),
+            'LLR_x':LLR_x,
+            'LLR_y':LLR_y,
+            'LLR': LLR_x + LLR_y,
+            #'LLR': logBF # This is in the original implementation, overwriting 'LLR' as defined before. I guess it is wrong.
+        })
+    
+        segs_post.loc[:,'cnv_state_post'] = segs_post.loc[:,['p_loh', 'p_amp', 'p_del', 'p_bamp', 'p_bdel']].idxmax(axis=1).apply(lambda x: x.split('_')[-1])
+        segs_post.loc[:,'cnv_state_post'] = ['neu' if segs_post.p_neu[i] >= 0.5 else segs_post.cnv_state_post[i] for i in segs_post.index]
+        segs_post = segs_post.astype({'CHROM':"string", #np.int64,
+                  'seg':'string',
+                  'seg_start':np.int64,
+                  'seg_end':np.int64,
+                  'cnv_state':'string',
+                  'n_genes':np.int64,
+                  'n_snps':np.int64,
+                  'theta_hat':np.float64,
+                  'theta_mle':np.float64,
+                  'theta_sigma':np.float64,
+                  'L_y_n':np.float64,
+                  'L_y_d':np.float64,
+                  'L_y_a':np.float64,
+                  'phi_mle':np.float64,
+                  'phi_sigma':np.float64,
+                  'L_x_n':np.float64,
+                  'L_x_d':np.float64,
+                  'L_x_a':np.float64,
+                  'Z_cnv':np.float64,
+                  'Z_n':np.float64,
+                  'Z':np.float64,
+                  'logBF':np.float64,
+                  'p_neu':np.float64,
+                  'p_loh':np.float64,
+                  'p_amp':np.float64,
+                  'p_del':np.float64,
+                  'p_bamp':np.float64,
+                  'p_bdel':np.float64,
+                  'LLR_x':np.float64,
+                  'LLR_y':np.float64,
+                  'LLR':np.float64,
+                  'cnv_state_post':'string'})
+    return segs_post
+
+
+def phi_hat_seg(
+    Y_obs: ArrayLike,
+    lambda_ref: ArrayLike,
+    d: float | ArrayLike,
+    mu: ArrayLike,
+    sig: ArrayLike,
+    ) -> float:
+    """
+    Estimate a segment-level expression fold change (phi) under a Poisson lognormal view.
+
+    The estimator is:
+        phi = exp( mean( log(Y_obs / d) - log(lambda_ref) - mu ) )
+
+    It computes the average log fold change between the observed rate
+    (Y_obs divided by depth d) and the reference rate lambda_ref, centers by mu,
+    and then returns the value in linear space.
+
+    Parameters
+    ----------
+    Y_obs : array-like
+        Observed counts for all genes in the segment. Must be positive where
+        log is applied.
+    lambda_ref : array-like
+        Reference expression frequencies for the same genes. Must be positive
+        where log is applied.
+    d : float or array-like
+        Library size or scaling factor. May be a scalar or broadcastable to
+        the shape of Y_obs.
+    mu : array-like
+        Log-scale mean term. Must be indexable and broadcastable to the shape
+        of Y_obs. This function slices mu, so it should be a one-dimensional
+        array for use with rolling callers.
+    sig : array-like
+        Log-scale standard deviation term. Present for signature consistency;
+        not used in the computation here.
+
+    Returns
+    -------
+    float
+        The estimated fold change phi for the segment.
+    """
+    
+    logFC = np.log(Y_obs / d) - np.log(lambda_ref)
+    val = np.exp(np.mean(logFC - mu))
+
+    return val
+
+
+def phi_hat_roll(
+    Y_obs: NDArray[np.floating],
+    lambda_ref: NDArray[np.floating],
+    d_obs: pd.Series | ArrayLike,
+    mu: NDArray[np.floating],
+    sig: NDArray[np.floating],
+    h: int,
+    ) -> NDArray[np.floating]:
+    """
+    Compute a rolling estimate of expression fold change (phi) across positions.
+
+    For each position c in [0, n-1], the function forms a window
+    [max(c - h - 1, 0), ..., min(c + h, n - 1)], computes phi_hat_seg on that
+    slice, and stores the result at index c. The output is a length-n array of
+    rolling phi estimates.
+
+    Parameters
+    ----------
+    Y_obs : numpy.ndarray of shape (n,)
+        Observed counts per position. Must be positive where log is applied.
+    lambda_ref : numpy.ndarray of shape (n,)
+        Reference expression frequencies per position. Must be positive where
+        log is applied.
+    d_obs : pandas.Series or array-like
+        Library size or scaling factor.
+    mu : numpy.ndarray of shape (n,)
+        Log-scale mean per position. Must be indexable and aligned with Y_obs.
+    sig : numpy.ndarray of shape (n,)
+        Log-scale standard deviation per position. Present for signature
+        consistency; not used by phi_hat_seg but sliced here to match mu.
+    h : int
+        Half-window size.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of length n with rolling phi estimates.
+
+    Examples
+    --------
+    >>> n = 5
+    >>> Y = np.array([10, 12, 9, 11, 13], dtype=float)
+    >>> lam = np.array([0.01, 0.012, 0.009, 0.011, 0.013], dtype=float)
+    >>> d = np.sum(Y)
+    >>> mu = np.zeros(n, dtype=float)
+    >>> sig = np.ones(n, dtype=float)
+    >>> phi_hat_roll(Y, lam, d, mu, sig, h=1).shape
+    (5,)
+    """
+
+    n = Y_obs.size
+    if mu.size == 1 and sig.size == 1:
+        mu  = np.full(n, mu.item(), dtype=float)
+        sig = np.full(n, sig.item(), dtype=float)
+
+    # Store results
+    out = np.zeros(n, dtype=float)
+
+    for c in range(n):
+
+        left = max((c - h - 1), 0)
+        right = min((c + h), n - 1)
+        Y_slice       = Y_obs[left : right+1]
+        lambda_slice  = lambda_ref[left : right+1]
+        mu_slice      = mu[left : right+1]
+        sig_slice     = sig[left : right+1]
+
+        out[c] = phi_hat_seg(Y_slice, lambda_slice, np.unique(d_obs[~d_obs.isna()]), mu_slice, sig_slice)
+
+    return out
+
+
+def analyze_bulk(
+    bulk: pd.DataFrame,
+    t: float = 1e-5,
+    gamma: float = 20,
+    theta_min: float = 0.08,
+    logphi_min: float = 0.25,
+    nu: float = 1,
+    min_genes: int = 10,
+    exp_only: bool = False,
+    allele_only: bool = False,
+    bal_cnv: bool = True,
+    retest: bool = True,
+    find_diploid: bool = True,
+    diploid_chroms: list = None,
+    classify_allele: bool = False,
+    run_hmm: bool = True,
+    prior=None,
+    exclude_neu: bool = True,
+    # phasing: bool = True,
+    verbose: bool = True
+    ) -> pd.DataFrame:
+    """
+    Call joint HMM to infer CNVs in a pseudobulk profile.
+
+    Parameters
+    ----------
+    bulk : pd.DataFrame
+        Pseudobulk profile with columns (e.g., DP, pAD, CHROM, Y_obs, lambda_ref, d_obs, etc.).
+    t : float
+        Transition probability.
+    gamma : float
+        Dispersion parameter for the Beta-Binomial allele model.
+    theta_min : float
+        Minimum imbalance threshold.
+    logphi_min : float
+        Minimum log expression deviation threshold.
+    nu : float
+        Phase switch rate.
+    min_genes : int
+        Minimum number of genes to call an event.
+    exp_only : bool
+        Whether to run expression-only HMM.
+    allele_only : bool
+        Whether to run allele-only HMM.
+    bal_cnv : bool
+        Whether to call balanced amplifications/deletions.
+    retest : bool
+        Whether to retest CNVs after Viterbi decoding (not shown in snippet).
+    find_diploid : bool
+        Whether to run diploid region identification routine.
+    diploid_chroms : list
+        Chromosomes known to be diploid.
+    classify_allele : bool
+        Whether to only classify allele states (internal use).
+    run_hmm : bool
+        Whether to run HMM (internal use).
+    prior : np.ndarray or list or None
+        Prior probabilities of states (internal use).
+    exclude_neu : bool
+        Whether to exclude neutral segments from retesting (internal use).
+    # phasing : bool
+    #     Whether to use phasing information (internal use).
+    verbose : bool
+        Verbosity.
+
+    Returns
+    -------
+    pd.DataFrame
+        Updated pseudobulk DataFrame with CNV calls and states.
+    """
+    
+    # checks
+    if not isinstance(t, (int, float)):
+        raise ValueError("Transition probability (t) is not numeric")
+    if bulk['DP'].isna().all():
+        raise ValueError("No allele data (all DP are NA)")
+    if 'gamma' in bulk.columns:
+        bulk = bulk.drop(columns=['gamma'])
+        
+    # Update transition probability 'p_s'
+    if 'inter_snp_cm' not in bulk.columns:
+        raise ValueError("'bulk' is missing required column 'inter_snp_cm'")
+    bulk = bulk.loc[:,[col != 'p_s' for col in bulk.columns]].copy()
+    bulk.loc[:,'p_s'] = switch_prob(bulk['inter_snp_cm'], nu=nu)
+
+    # Determine diploid regions
+    if exp_only or allele_only:
+        bulk['diploid'] = True
+    elif diploid_chroms is not None:
+        if verbose:
+            log.info(f"Using diploid chromosomes given: {', '.join(diploid_chroms)}")
+        bulk['diploid'] = bulk['CHROM'].isin(diploid_chroms)
+    else:
+        # print(find_diploid)
+        if find_diploid:
+            bulk = find_common_diploid(
+                bulk,
+                gamma=gamma,
+                t=t,
+                theta_min=theta_min,
+                min_genes=min_genes,
+                fc_min=2**logphi_min
+            )
+        else:
+            if 'diploid' not in bulk.columns:
+                raise ValueError("Must define diploid region if not given and not found automatically.")
+
+    # Fit expression baseline if not allele_only
+    if not allele_only:
+        cond = (
+            ~bulk['Y_obs'].isna() &
+            (bulk['logFC'] < 8) &
+            (bulk['logFC'] > -8) &
+            (bulk['diploid'])
+        )
+        bulk_baseline = bulk[cond].copy()
+
+        if len(bulk_baseline) == 0:
+            if verbose:
+                log.warning("No genes left in diploid regions, using all genes as baseline")
+            bulk_baseline = bulk[~bulk['Y_obs'].isna()].copy()
+
+        d_obs_unique = bulk_baseline['d_obs'].dropna().unique()
+
+        fit = dist_prob.fit_lnpois(
+            bulk_baseline['Y_obs'].values,
+            bulk_baseline['lambda_ref'].values,
+            d_obs_unique
+        )
+        # fit is (mu, sig)
+        mu_hat, sig_hat = fit
+
+        # save mu, sig in DataFrame
+        bulk.loc[:,'mu'] = mu_hat
+        bulk.loc[:,'sig'] = sig_hat
+    else:
+        bulk[:,'mu'] = np.nan
+        bulk[:,'sig'] = np.nan
+
+    # Run the HMM if run_hmm is True
+    if run_hmm:
+
+        def apply_run_hmm(df_group):
+            # gamma_val might be per-chrom or use the arg 'gamma'
+            gamma_val = gamma
+
+            # run_joint_hmm_s15 returns states for each row
+            states = hmmlib.run_joint_hmm_s15(
+                pAD            = df_group['pAD'].values,
+                DP             = df_group['DP'].values,
+                p_s            = df_group['p_s'].values,
+                Y_obs          = df_group['Y_obs'].values,
+                lambda_ref     = df_group['lambda_ref'].values,
+                d_total        = df_group['d_obs'].dropna().unique(),
+                phi_amp        = 2**(logphi_min),
+                phi_del        = 2**(-logphi_min),
+                mu             = df_group['mu'].values,
+                sig            = df_group['sig'].values,
+                t              = t,
+                gamma          = gamma_val,
+                theta_min      = theta_min,
+                prior          = prior,
+                bal_cnv        = bal_cnv,
+                exp_only       = exp_only,
+                allele_only    = allele_only,
+                classify_allele= classify_allele,
+                # phasing        = phasing
+            )
+            return pd.Series(states, index=df_group.index, name='state')
+
+        bulk.loc[:,'state'] = bulk.groupby('CHROM', group_keys=False, observed=True, sort=False).apply(apply_run_hmm, include_groups=False)
+
+        if 'loh' in bulk.columns:
+            bulk.loc[bulk['loh'] == True, 'state'] = 'del_up'
+
+        bulk.loc[:,'cnv_state'] = bulk['state'].str.replace(r'_down|_up', '', regex=True)
+
+        # Then annotate, smooth, re-annotate
+        bulk = annot_segs(bulk, var='cnv_state')
+        bulk = hmmlib.smooth_segs(bulk, min_genes=min_genes)
+        bulk = annot_segs(bulk, var='cnv_state')
+
+    if retest and not exp_only:
+
+        if verbose:
+            print('Retesting CNVs..')    
+        bulk_temp = bulk.copy()
+        segs_post = retest_cnv(bulk_temp,
+                               gamma=gamma,
+                               theta_min=theta_min,
+                               logphi_min=logphi_min,
+                               exclude_neu=exclude_neu,
+                               allele_only=allele_only
+                              )
+ 
+        col_to_discard = set(segs_post.columns.difference(('seg', 'CHROM', 'seg_start', 'seg_end')))
+        bulk = bulk.loc[:,[i not in col_to_discard for i in bulk.columns]]
+        bulk = bulk.merge(segs_post, on=('seg', 'CHROM', 'seg_start', 'seg_end'), how='left')
+        bulk.loc[:,'cnv_state_post'] = np.where(bulk.cnv_state_post.isna(), 'neu', bulk.cnv_state_post)
+        bulk.loc[:,'cnv_state'] = np.where(bulk.cnv_state.isna(), 'neu', bulk.cnv_state)
+        
+        # Force segments with clonal LOH to be deletion
+        bulk.loc[:,'cnv_state_post'] = np.where(bulk['loh'], 'del', bulk['cnv_state_post'])
+        bulk.loc[:,'cnv_state']      = np.where(bulk['loh'], 'del', bulk['cnv_state'])
+        bulk.loc[:,'p_del']          = np.where(bulk['loh'], 1, bulk['p_del'])
+        bulk.loc[:,'p_amp']          = np.where(bulk['loh'], 0, bulk['p_amp'])
+        bulk.loc[:,'p_neu']          = np.where(bulk['loh'], 0, bulk['p_neu'])
+        bulk.loc[:,'p_loh']          = np.where(bulk['loh'], 0, bulk['p_loh'])
+        bulk.loc[:,'p_bdel']         = np.where(bulk['loh'], 0, bulk['p_bdel'])
+        bulk.loc[:,'p_bamp']         = np.where(bulk['loh'], 0, bulk['p_bamp'])
+        
+        events = bulk.cnv_state_post.isin(set(('amp','del','loh'))) & ~bulk.cnv_state.isin(set(('bamp','bdel')))
+        state_suffix = r'(up_1|down_1|up_2|down_2|up|down|1_up|2_up|1_down|2_down)'
+        def tryextract(pattern, x):
+            try: 
+                return re.search(pattern, x).group(1)
+            except AttributeError:
+                return np.nan
+        suffix_out = bulk.state[events].apply(lambda x : tryextract(state_suffix, x))
+        naindex = suffix_out[suffix_out.isna()].index
+        suffix_out[naindex] = bulk.cnv_state_post[naindex]
+        new_sp = pd.Series(np.repeat(np.nan, bulk.shape[0]), dtype='string')
+        new_sp[events] = ['_'.join((sp, su)) for sp, su in zip(bulk.cnv_state_post[suffix_out.index].values, suffix_out.values)]
+        new_sp[~events] = bulk.cnv_state_post[~events].astype('string')
+        bulk.loc[:,'state_post'] = new_sp
+        bulk['state_post'] = bulk['state_post'].str.replace(r'_NA$', '', regex=True)
+        bulk = classify_alleles(bulk)
+        bulk = annot_theta_roll(bulk)
+    
+    else:
+        bulk.loc[:,'state_post'] = bulk.state
+        bulk.loc[:,'cnv_state_post'] = bulk.cnv_state  ## OK 'till here
+    
+    
+    if not allele_only:
+        
+        bulk_groups = bulk.groupby(['seg'], observed=True, sort = False)
+        phi_post_dict = pd.DataFrame({'phi_mle':np.zeros(bulk.shape[0]), 'phi_sigma':np.zeros(bulk.shape[0])}, index=bulk.index) # recently added index
+        for k, group in bulk_groups:
+            phi_current = approx_phi_post(Y_obs = group.Y_obs[~group.Y_obs.isna()],
+                                          lambda_ref = group.lambda_ref[~group.Y_obs.isna()],
+                                          d = group.d_obs[~group.d_obs.isna()].unique(),
+                                          mu = group.mu[~group.Y_obs.isna()],
+                                          sig = group.sig[~group.Y_obs.isna()]
+                                         )
+            for phi_status, val in phi_current.items():
+                phi_post_dict.loc[group.index, phi_status] = val
+        bulk = bulk.loc[:,[i not in set(('phi_mle', 'phi_sigma')) for i in bulk.columns]]
+        bulk = bulk.merge(phi_post_dict, left_index=True, right_index=True)
+        
+        bulk = bulk.loc[:,[i != 'phi_mle_roll' for i in bulk.columns]]
+        bulk_groups = bulk.groupby('CHROM', observed=True, sort=False)
+        phi_mle_roll = pd.Series(np.repeat(np.nan, bulk.shape[0]), name='phi_mle_roll')
+        
+        for k, group in bulk_groups:
+            tmp_group = group[(~group.Y_obs.isna()) & (group.Y_obs > 0)].copy()
+            phi_mle_roll[tmp_group.index] = phi_hat_roll(Y_obs = tmp_group.Y_obs,
+                                                         lambda_ref = tmp_group.lambda_ref,
+                                                         d_obs = tmp_group.d_obs,
+                                                         mu = tmp_group.mu,
+                                                         sig = tmp_group.sig,
+                                                         h = 50)
+        
+        bulk = bulk.merge(phi_mle_roll, left_index=True, right_index=True)
+        bulk.loc[:,'phi_mle_roll'] = bulk.phi_mle_roll.ffill()
+    
+    bulk.loc[:,'nu'] = nu
+    bulk.loc[:,'gamma'] = gamma
+
+    return bulk

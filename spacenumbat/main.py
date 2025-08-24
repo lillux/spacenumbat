@@ -325,7 +325,23 @@ def run_numbat(
     
     # if i == 0:
         
+    bulk_subtrees0 = bulk_subtrees[bulk_subtrees["sample"] == "0"].copy()
+    
+    diagnostics.check_contam(bulk_subtrees0)
+    diagnostics.check_exp_noise(bulk_subtrees0)
+    
     #if segs_consensus_fix is None:
+        
+    bulk_test = run_group_hmms(bulk_subtrees,
+                           t = t,
+                           gamma = gamma,
+                           alpha = alpha,
+                           nu = nu,
+                           min_genes = min_genes,
+                           common_diploid = common_diploid,
+                           diploid_chroms = diploid_chroms,
+                           ncores = ncores,
+                           verbose = verbose)
         
     
     

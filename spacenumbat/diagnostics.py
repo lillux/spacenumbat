@@ -16,6 +16,10 @@ import natsort
 from typing import Optional, Union
 from pathlib import Path
 
+from spacenumbat._log import get_logger
+log = get_logger(__name__)
+#log.info("Test diagnostics")
+
 
 def load_and_validate_annotation(file_path: str, sep: str = "\t") -> pd.DataFrame:
     """
@@ -255,4 +259,76 @@ def check_filter_segments(filter_segments_path: Union[Path, None]) -> pd.DataFra
                 raise ValueError(f"Column '{col}' cannot be converted to integer")
 
     return df
+
+
+def check_contam(bulk: pd.DataFrame) -> None:
+    """
+    Check inter-individual contamination by estimating the homozygous SNP rate.
+
+    Parameters
+    ----------
+    bulk : pd.DataFrame
+        Pseudobulk profile with columns:
+        - 'DP' : read depth per SNP (numeric)
+        - 'AR' : allele ratio per SNP in [0, 1] (numeric)
+
+    Notes
+    -----
+    Computes the proportion of SNPs with DP ≥ 8 whose allele ratio is exactly 0 or 1.
+    If this homozygous rate exceeds 40%, a warning is logged.
+    """
+
+    ar_filter = bulk[bulk.DP >= 8].AR.dropna()
+    hom_rate = ((ar_filter == 0) | (ar_filter == 1)).mean()
+    log.info(f"Homology rate of the sample is: {hom_rate*100:.2f}%")
+
+    if hom_rate > 0.4:
+        msg = (f"High SNP contamination detected ({hom_rate*100:.2f}%).\n"
+                "Please make sure that cells from only one individual are included in the genotyping step.")
+        log.warning(msg)
+
+    return
+
+
+def check_exp_noise(bulk: pd.DataFrame) -> None:
+    """
+    Check expression noise level based on MSE.
+
+    Parameters
+    ----------
+    bulk : pd.DataFrame
+        Pseudobulk profile containing a column:
+        - 'mse' : model mean squared error (numeric).
+
+    Notes
+    -----
+    Noise levels:
+      - high   : mse > 1.5  -> suggests using a custom expression reference profile
+      - medium : 0.5 < mse ≤ 1.5
+      - low    : mse ≤ 0.5
+
+    Logs a single-line summary with the noise level and MSE.
+    """
+    mse = bulk.mse.dropna().mean()
+    if mse.size == 0:
+        # Nothing to report
+        log.info("Expression noise level (MSE): unavailable (no non-NA values).")
+        return
+
+    if np.any(mse > 1.5):
+        noise_level  = "high"
+        noise_msg = "Consider using a custom expression reference profile."
+    elif np.any(mse > 0.5):
+        noise_level = "medium"
+        noise_msg = ""
+    else:
+        noise_level = "low"
+        noise_msg = ""
+    
+    msg = (f"Expression noise level (MSE): {noise_level}.\n "
+           f"MSE of the sample gene expression vs the reference profile is: {mse:.2f}.\n"
+           f"{noise_msg}")
+    log.info(msg)
+
+    return
 
