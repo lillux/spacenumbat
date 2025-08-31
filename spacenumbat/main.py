@@ -15,7 +15,7 @@ import pandas as pd
 #from scipy import sparse
 
 import spacenumbat
-from spacenumbat import utils, diagnostics, clustering
+from spacenumbat import utils, diagnostics, clustering, operations
 
 from spacenumbat._log import configure, get_logger
 
@@ -150,7 +150,7 @@ def run_numbat(
     configure(level="INFO", log_dir=out_dir)
     logging.getLogger('numba').setLevel(logging.WARNING)
     log = get_logger(__name__)
-    log.info("Starting pypeline!")
+    log.info("Starting pipeline!")
     
     if not gtf:
         if genome == "hg38":
@@ -247,7 +247,7 @@ def run_numbat(
     f"Filter HLA region = {filter_hla_hg38}",
     f"Filtering custom chromosomal region = {filter_chromosome_segments}",
     "Input metrics:",
-    f"{count_mat.shape[0]} cells"  # assuming AnnData or DataFrame (columns = cells)
+    f"{count_mat.shape[0]} cells"
     ]
 
     log.info('\n'.join(log_lines))
@@ -332,7 +332,7 @@ def run_numbat(
     
     #if segs_consensus_fix is None:
         
-    bulk_test = run_group_hmms(bulk_subtrees,
+    bulk_test = operations.run_group_hmms(bulk_subtrees,
                            t = t,
                            gamma = gamma,
                            alpha = alpha,
@@ -342,7 +342,8 @@ def run_numbat(
                            diploid_chroms = diploid_chroms,
                            ncores = ncores,
                            verbose = verbose)
-        
+    
+    bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees{i}.tsv"), sep="\t")
     
     
     

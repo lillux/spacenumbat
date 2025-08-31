@@ -975,7 +975,7 @@ def log_sum_exp(vals: NDArray[np.floating]) -> float:
     """
     Compute log(sum(exp(vals))) in a numerically stable way.
 
-    This routine uses the standard trick of subtracting the maximum entry
+    This function uses the standard trick of subtracting the maximum entry
     before exponentiation to avoid overflow/underflow:
 
       log sum_i exp(v_i) = v_max + log sum_i exp(v_i - v_max)
@@ -1135,7 +1135,7 @@ def likelihood_allele(hmm: Mapping[str, Any]) -> float:
     M = hmm["M"]
     N = hmm["N"]
 
-    # Step 1) build logprob array shape (N, M)
+    # build logprob array shape (N, M)
     logprob = np.zeros((N, M), dtype=float)
     for m_idx in range(M):
         l_x = log_beta_binomial_pmf(
@@ -1148,10 +1148,9 @@ def likelihood_allele(hmm: Mapping[str, Any]) -> float:
         l_x = np.where(np.isnan(l_x), 0, l_x)
         logprob[:, m_idx] = l_x
 
-    # 2) get logphi = log(hmm$delta)
     logphi = np.log(hmm["delta"])
 
-    # 3) compute total LL
+    # compute total LL
     LL = likelihood_compute(logphi, logprob, hmm["logPi"])
     return LL
 
