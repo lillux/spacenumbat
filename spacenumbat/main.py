@@ -10,12 +10,13 @@ import os
 #import tempfile
 import logging
 
-#import numpy as np
+import numpy as np
 import pandas as pd
 #from scipy import sparse
+import matplotlib.pyplot as plt
 
 import spacenumbat
-from spacenumbat import utils, diagnostics, clustering, operations
+from spacenumbat import utils, diagnostics, clustering, operations, plot
 
 from spacenumbat._log import configure, get_logger
 
@@ -345,16 +346,40 @@ def run_numbat(
     
     bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees{i}.tsv"), sep="\t")
     
+    if plot:
+        with plt.ioff():  # disables live rendering inside the block
+
+            plot_subtrees = plot.plot_bulks(bulk_test, 
+                                              exp_limit=4, 
+                                              text_size=10, 
+                                              title_size=14,
+                                              panel_vspace=1)
+            plot_subtrees.savefig(os.path.join(out_dir, "bulk_subtrees{i}.jpg"), dpi=200)
+            
+    segs_consensus = operations.get_segs_consensus(bulk_test,
+                                   min_LLR = 0.1,
+                                   min_overlap = min_overlap,
+                                   retest = True)
+            
+    # check termination
+    if np.all(segs_consensus.cnv_state_post == 'neu'):
+        msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+        log.info(msg)
+        return msg
+    
+    bulk_retest = operations.retest_bulks(bulk_test, segs_consensus, ncores=ncores)
+    bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest{i}.tsv"), sep="\t")
     
     
-    
-    
-    
-    
-    
-    
-    
-    
+
+            
+            
+            
+            
+            
+            
+            
+            
     
     
     
