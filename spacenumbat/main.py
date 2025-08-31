@@ -319,8 +319,10 @@ def run_numbat(
                                  gtf=gtf,
                                  min_depth=min_depth,
                                  nu=nu,
+                                 segs_loh=segs_loh,
                                  filter_hla=filter_hla_hg38,
-                                 filter_segments=filter_chromosome_segments)
+                                 filter_segments=filter_chromosome_segments,
+                                 ncores=ncores)
     
     ### Diagnostics ##TODO
     
@@ -344,7 +346,7 @@ def run_numbat(
                            ncores = ncores,
                            verbose = verbose)
     
-    bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees{i}.tsv"), sep="\t")
+    bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
     
     if plot:
         with plt.ioff():  # disables live rendering inside the block
@@ -357,7 +359,7 @@ def run_numbat(
             plot_subtrees.savefig(os.path.join(out_dir, "bulk_subtrees{i}.jpg"), dpi=200)
             
     segs_consensus = operations.get_segs_consensus(bulk_test,
-                                   min_LLR = 0.1,
+                                   min_LLR = min_LLR,
                                    min_overlap = min_overlap,
                                    retest = True)
             
@@ -367,8 +369,13 @@ def run_numbat(
         log.info(msg)
         return msg
     
-    bulk_retest = operations.retest_bulks(bulk_test, segs_consensus, ncores=ncores)
-    bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest{i}.tsv"), sep="\t")
+    bulk_retest = operations.retest_bulks(bulk_test,
+                                          segs_consensus,
+                                          diploid_chroms=diploid_chroms,
+                                          gamma=gamma,
+                                          min_LLR=min_LLR,
+                                          ncores=ncores)
+    bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
     
     
 
