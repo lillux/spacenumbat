@@ -357,7 +357,8 @@ def run_numbat(
                                               title_size=14,
                                               panel_vspace=1)
             plot_subtrees.savefig(os.path.join(out_dir, "bulk_subtrees{i}.jpg"), dpi=200)
-            
+       
+    # define consensus CNVs
     segs_consensus = operations.get_segs_consensus(bulk_test,
                                    min_LLR = min_LLR,
                                    min_overlap = min_overlap,
@@ -377,12 +378,46 @@ def run_numbat(
                                           ncores=ncores)
     bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
     
+    # define consensus CNVs again
+    segs_consensus_retest = operations.get_segs_consensus(bulk_retest, 
+                                               min_LLR=min_LLR, 
+                                               min_overlap=min_overlap, 
+                                               retest=False) 
     
+    # check termination again
+    if np.all(segs_consensus_retest.cnv_state_post == 'neu'):
+        msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+        log.info(msg)
+        return msg
+    
+    # else: # if seg_consensus_fix #TODO
+    
+#    log.info('Using fixed consensus CNVs')
+#    segs_consensus = segs_consensus_fix
+    
+#    bulk_subtrees = utils.classify_alleles(
+#        utils.annot_theta_mle(
+#        utils.annot_consensus(
+#            bulk_subtrees, 
+#            segs_consensus)
+#        ))
 
-            
-            
-            
-            
+    clones_filt = {k:v for k, v in clones.items() if v['size'] > min_cells}
+    
+    if len(clones_filt) == 0:      
+        msg = 'No clones remain after filtering by size. Consider reducing min_cells.'
+        log.info(msg)
+        return(msg)
+    
+    bulk_clones = utils.make_group_bulks(groups = clones_filt,
+                               count_mat = count_mat,
+                               df_allele = df_allele,
+                               lambdas_ref = lambdas_ref,
+                               gtf = gtf,
+                               min_depth = min_depth,
+                               nu = nu,
+                               segs_loh = None,
+                               ncores = ncores)
             
             
             
