@@ -2592,9 +2592,9 @@ def calc_exp_LLR(
         return 0.0
 
     # Alternative model: phi=phi_mle
-    l1 = hmmlib.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=phi_mle)
+    l1 = dist_prob.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=phi_mle)
     # Null model: phi=1
-    l0 = hmmlib.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=1.0)
+    l0 = dist_prob.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=1.0)
     return l1 - l0
 
 
