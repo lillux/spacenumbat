@@ -277,7 +277,7 @@ def exp_hclust(
         lambdas_bar,
         gtf,
         window=window,
-        verbose=verbose,
+        #verbose=verbose,
         filter_hla=filter_hla
     )
 
