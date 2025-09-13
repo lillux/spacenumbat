@@ -6,6 +6,7 @@ from . import hmm
 from . import clustering
 from . import data
 from . import _log
+from . import _progressbar
 from . import diagnostics
 from . import plot
 from . import operations

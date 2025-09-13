@@ -459,7 +459,7 @@ def dnbinom(
     x: Union[int, np.ndarray],
     mu: Union[float, np.ndarray],
     size: Union[float, np.ndarray]
-) -> Union[float, np.ndarray]:
+    ) -> Union[float, np.ndarray]:
     """
     Compute the log-probability mass function of the Negative Binomial distribution
     parameterized by mean (`mu`) and dispersion (`size`), evaluated at `x`.

@@ -183,7 +183,7 @@ def run_numbat(
     # filter 0 coverage cells
     zero_cov = count_mat[count_mat.X.sum(1) == 0].obs_names.to_list()
     if len(zero_cov) > 0:
-        print(f"Filtering out {len(zero_cov)} cells with 0 coverage")
+        log.info(f"Filtering out {len(zero_cov)} cells with 0 coverage")
         count_mat = count_mat[~count_mat.obs_names.isin(zero_cov),:]
         df_allele[~df_allele.cell.isin(zero_cov)]
     
@@ -357,6 +357,7 @@ def run_numbat(
                                               title_size=14,
                                               panel_vspace=1)
             plot_subtrees.savefig(os.path.join(out_dir, "bulk_subtrees{i}.jpg"), dpi=200)
+            plt.close("all")
        
     # define consensus CNVs
     segs_consensus = operations.get_segs_consensus(bulk_test,
@@ -416,15 +417,80 @@ def run_numbat(
                                gtf = gtf,
                                min_depth = min_depth,
                                nu = nu,
-                               segs_loh = None,
+                               segs_loh = segs_loh,
                                ncores = ncores)
+    
+    bulk_clones_group = operations.run_group_hmms(bulks = bulk_clones,
+                                   t = t,
+                                   gamma = gamma,
+                                   alpha = alpha,
+                                   nu = nu,
+                                   min_genes = min_genes,
+                                   common_diploid = common_diploid,
+                                   diploid_chroms = diploid_chroms,
+                                   ncores = ncores,
+                                   verbose = verbose,
+                                   retest = False)
+    
+    bulk_clones_retest = utils.retest_bulks(bulks = bulk_clones_group,
+                                  segs_consensus = segs_consensus_retest,
+                                  gamma = gamma,
+                                  use_loh = use_loh,
+                                  min_LLR = min_LLR,
+                                  diploid_chroms = diploid_chroms,
+                                  ncores = ncores)
+    
+    bulk_clones_retest.to_csv(os.path.join(out_dir, f"bulk_clones_{i}.tsv"), sep="\t")
+
+    if plot:
+        with plt.ioff():  # disables live rendering inside the block
+
+            plot_subtrees = plot.plot_bulks(bulk_clones_retest, 
+                                              exp_limit=4, 
+                                              text_size=10, 
+                                              title_size=14,
+                                              panel_vspace=1)
+            plot_subtrees.savefig(os.path.join(out_dir, "bulk_clones_{i}.jpg"), dpi=200)
+            plt.close("all")
             
-            
-            
-            
+    # test for multi-allelic CNVs
+    if multi_allelic:
+        segs_consensus_retest = operations.test_multi_allelic(bulk_clones_retest, segs_consensus_retest, min_LLR = min_LLR, p_min = p_multi)
+    
+    segs_consensus_retest.to_csv(os.path.join(out_dir, f"segs_consensus_retest_{i}.tsv"), sep="\t")
+
+    ######## Evaluate CNV per cell ########
+    log.info("Evaluating CNV per cell")
+    segs_consensus_retest_corrected = segs_consensus_retest.copy()
+    segs_consensus_retest_corrected.loc[:,'cnv_state'] = [row.cnv_state if row.cnv_state == 'neu' else row.cnv_state_post for idx, row in segs_consensus_retest_corrected.iterrows()]
+    
+    exp_post = operations.get_exp_post(segs_consensus_retest_corrected,
+                        count_mat=count_mat,
+                        gtf=gtf,
+                        lambdas_ref=lambdas_ref,
+                        use_loh = use_loh,
+                        segs_loh = segs_loh,
+                        sc_refs=sc_refs,
+                        ncores=ncores,
+                        verbose=True)
     
     
     
-        
+    haplotype = operations.get_haplotype_post(bulk_retest, segs_consensus_retest_corrected)
+    
+    allele_post = operations.get_allele_post(df_allele=df_allele, haplotypes=haplotype, segs_consensus=segs_consensus_retest_corrected)
+    
+    
+    return exp_post, allele_post, segs_consensus_retest, count_mat
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     
     
