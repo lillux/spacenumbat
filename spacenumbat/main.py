@@ -432,7 +432,7 @@ def run_numbat(
                                    verbose = verbose,
                                    retest = False)
     
-    bulk_clones_retest = utils.retest_bulks(bulks = bulk_clones_group,
+    bulk_clones_retest = operations.retest_bulks(bulks = bulk_clones_group,
                                   segs_consensus = segs_consensus_retest,
                                   gamma = gamma,
                                   use_loh = use_loh,
