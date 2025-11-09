@@ -461,6 +461,7 @@ def run_numbat(
 
     ######## Evaluate CNV per cell ########
     log.info("Evaluating CNV per cell")
+    
     segs_consensus_retest_corrected = segs_consensus_retest.copy()
     segs_consensus_retest_corrected.loc[:,'cnv_state'] = [row.cnv_state if row.cnv_state == 'neu' else row.cnv_state_post for idx, row in segs_consensus_retest_corrected.iterrows()]
     
@@ -476,9 +477,12 @@ def run_numbat(
     
     
     
-    haplotype = operations.get_haplotype_post(bulk_retest, segs_consensus_retest_corrected)
+    haplotype = operations.get_haplotype_post(bulk_retest, 
+                                              segs_consensus_retest_corrected)
     
-    allele_post = operations.get_allele_post(df_allele=df_allele, haplotypes=haplotype, segs_consensus=segs_consensus_retest_corrected)
+    allele_post = operations.get_allele_post(df_allele=df_allele,
+                                             haplotypes=haplotype,
+                                             segs_consensus=segs_consensus_retest_corrected)
     
     
     return exp_post, allele_post, segs_consensus_retest, count_mat

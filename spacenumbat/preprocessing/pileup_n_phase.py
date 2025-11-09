@@ -81,7 +81,6 @@ def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = 
             out.write("\t".join(line) + "\n")
 
 def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
-    """Python port of numbat:::genotype."""
     dfs = [load_vcf(v) for v in vcfs]
     snps = pd.concat(dfs)
     snps = snps.groupby(["CHROM", "POS", "REF", "ALT", "snp_id"], as_index=False).agg({"AD": "sum", "DP": "sum", "OTH": "sum"})
@@ -107,7 +106,6 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
         write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
 
 def preprocess_allele(sample: str, vcf_pu: pd.DataFrame, vcf_phased: pd.DataFrame, AD, DP, barcodes: List[str]) -> pd.DataFrame:
-    """Simplified version of numbat:::preprocess_allele."""
     vcf_pu = vcf_pu.copy()
     vcf_pu["snp_id"] = vcf_pu.CHROM.astype(str) + "_" + vcf_pu.POS.astype(str) + "_" + vcf_pu.REF + "_" + vcf_pu.ALT
 
