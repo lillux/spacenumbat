@@ -91,7 +91,7 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
     snps = snps.sort_values(["CHROM", "POS"])
 
     for chr_num in range(1, 23):
-        chr_snps = snps[snps.CHROM.astype(int) == chr_num].copy()
+        chr_snps = snps[snps.CHROM.astype("string") == str(chr_num)].copy()
         if chr_snps.empty:
             continue
         chr_snps["het"] = (chr_snps.AR >= 0.1) & (chr_snps.AR <= 0.9)
