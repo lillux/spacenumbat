@@ -135,11 +135,11 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
         out_file = os.path.join(outdir, f"{label}_chr{chr_num}.vcf")
         write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
 
-        # --- NEW: compress to .vcf.gz and tabix-index ---
+        # compress to .vcf.gz and tabix-index ---
         gz_path = out_file + ".gz"
         try:
             import pysam
-            # compress (creates gz_path), then index; remove uncompressed file for parity with bgzip -f
+            # compress then index; remove uncompressed file
             pysam.tabix_compress(out_file, gz_path, force=True)
             pysam.tabix_index(gz_path, preset="vcf", force=True)
             try:
@@ -288,7 +288,7 @@ def main():
             " ".join([
                 args.eagle,
                 f"--numThreads {args.ncores}",
-                f"--vcfTarget {os.path.join(args.outdir, 'phasing', args.label)}_chr{chr_num}.vcf",
+                f"--vcfTarget {os.path.join(args.outdir, 'phasing', args.label)}_chr{chr_num}.vcf.gz",
                 f"--vcfRef {os.path.join(args.paneldir, f'chr{chr_num}.genotypes.bcf')}",
                 f"--geneticMapFile={args.gmap}",
                 f"--outPrefix {os.path.join(args.outdir, 'phasing', args.label)}_chr{chr_num}.phased",
