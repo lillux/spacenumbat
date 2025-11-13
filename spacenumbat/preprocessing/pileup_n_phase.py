@@ -83,6 +83,32 @@ def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = 
             out.write("\t".join(line) + "\n")
             
 
+#def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
+#    dfs = [load_vcf(v) for v in vcfs]
+#    snps = pd.concat(dfs)
+#    snps = snps.groupby(["CHROM", "POS", "REF", "ALT", "snp_id"], as_index=False).agg({"AD": "sum", "DP": "sum", "OTH": "sum"})
+#    snps["AR"] = snps.AD / snps.DP.replace({0: pd.NA})
+#    snps = snps.sort_values(["CHROM", "POS"])
+
+#    for chr_num in range(1, 23):
+#        chr_snps = snps[snps.CHROM.astype("string") == str(chr_num)].copy()
+#        if chr_snps.empty:
+#            continue
+#        chr_snps["het"] = (chr_snps.AR >= 0.1) & (chr_snps.AR <= 0.9)
+#        chr_snps["hom_alt"] = (chr_snps.AR == 1) & (chr_snps.DP >= 10)
+#        chr_snps["hom_ref"] = (chr_snps.AR == 0) & (chr_snps.DP >= 10)
+#        chr_snps = chr_snps[chr_snps.het | chr_snps.hom_alt]
+#        chr_snps.loc[chr_snps.het, "GT"] = "0/1"
+#        chr_snps.loc[chr_snps.hom_alt, "GT"] = "1/1"
+#        chr_snps.loc[chr_snps.hom_ref, "GT"] = "0/0"
+#        if het_only:
+#            chr_snps = chr_snps[chr_snps.het]
+#        if chr_snps.empty:
+#            continue
+#        out_file = os.path.join(outdir, f"{label}_chr{chr_num}.vcf")
+#        write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
+
+
 def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
     dfs = [load_vcf(v) for v in vcfs]
     snps = pd.concat(dfs)
@@ -105,8 +131,26 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
             chr_snps = chr_snps[chr_snps.het]
         if chr_snps.empty:
             continue
+
         out_file = os.path.join(outdir, f"{label}_chr{chr_num}.vcf")
         write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
+
+        # --- NEW: compress to .vcf.gz and tabix-index ---
+        gz_path = out_file + ".gz"
+        try:
+            import pysam
+            # compress (creates gz_path), then index; remove uncompressed file for parity with bgzip -f
+            pysam.tabix_compress(out_file, gz_path, force=True)
+            pysam.tabix_index(gz_path, preset="vcf", force=True)
+            try:
+                os.remove(out_file)
+            except OSError:
+                pass
+        except Exception:
+            # fallback to system bgzip/tabix
+            subprocess.run(["bgzip", "-f", out_file], check=True)
+            subprocess.run(["tabix", "-f", "-p", "vcf", gz_path], check=True)
+    return
 
 
 def preprocess_allele(sample: str, vcf_pu: pd.DataFrame, vcf_phased: pd.DataFrame, AD, DP, barcodes: List[str]) -> pd.DataFrame:
