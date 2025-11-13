@@ -16,6 +16,7 @@ from typing import List
 
 import pandas as pd
 
+
 # Utility functions
 def parse_info(info: str) -> dict:
     """Parse INFO field from cellsnp-lite VCF."""
@@ -51,6 +52,7 @@ def load_vcf(path: str) -> pd.DataFrame:
     df = df.dropna(subset=["AR"])
     return df
 
+
 def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = True) -> None:
     """Write per-chromosome VCF."""
     header = [
@@ -79,6 +81,7 @@ def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = 
                 row.GT,
             ]
             out.write("\t".join(line) + "\n")
+            
 
 def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
     dfs = [load_vcf(v) for v in vcfs]
@@ -104,6 +107,7 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
             continue
         out_file = os.path.join(outdir, f"{label}_chr{chr_num}.vcf")
         write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
+
 
 def preprocess_allele(sample: str, vcf_pu: pd.DataFrame, vcf_phased: pd.DataFrame, AD, DP, barcodes: List[str]) -> pd.DataFrame:
     vcf_pu = vcf_pu.copy()
@@ -139,6 +143,7 @@ def preprocess_allele(sample: str, vcf_pu: pd.DataFrame, vcf_phased: pd.DataFram
     df = df.merge(vcf_phased[["snp_id", "GT"]], on="snp_id", how="left")
     df = df[df.GT.isin(["1|0", "0|1"])]
     return df[["cell", "snp_id", "CHROM", "POS", "REF", "ALT", "AD", "DP", "GT"]]
+
 
 # Main entry
 def main():

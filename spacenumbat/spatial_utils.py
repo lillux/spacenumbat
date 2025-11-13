@@ -194,20 +194,29 @@ def _pagerank_diffuse(
     max_iter: int = 30,
     ) -> np.ndarray:
     """
-    Personalized PageRank diffusion with Coifman–Lafon density correction.
+    Personalized PageRank diffusion with Coifman density correction.
+    
+    Reference:
+    1) R.R. Coifman, S. Lafon, A.B. Lee, M. Maggioni, B. Nadler, F. Warner, & S.W. Zucker, 
+    Geometric diffusions as a tool for harmonic analysis and structure definition of data: Diffusion maps.
+    Proc. Natl. Acad. Sci. U.S.A. 102 (21) 7426-7431, https://doi.org/10.1073/pnas.0500334102 (2005)
+    
+    2) Page, L., Brin, S., Motwani, R. & Winograd, T. (1998).
+    The PageRank Citation Ranking: Bringing Order to the Web. 
+    Stanford Digital Library Technologies Project 
 
     Parameters
     ----------
     X : (n, d) array
-        Input features/signals for n nodes (e.g., spatial spots) and d channels.
+        Input features/signals for n nodes and d channels.
         Teleportation pushes the diffusion back to X at every step.
     A : sparse matrix (n, n)
         Symmetric, nonnegative affinity/adjacency (e.g., kNN with weights).
-    alpha : float, default 0.85
+    alpha : float, default 0.75
         PageRank continuation (walk) probability. (1 - alpha) is the teleport
-        probability to X. Larger alpha -> stronger smoothing; smaller -> crisper boundaries.
+        probability to X. Larger alpha -> stronger smoothing; smaller -> sharp boundaries.
     coifman_alpha : float, default 0.5
-        Coifman–Lafon density correction exponent. 0 -> random-walk on raw graph;
+        Coifman density correction exponent. 0 -> random-walk on raw graph;
         0.5 -> normalized Laplacian geometry; 1 -> strong de-biasing against density.
     lazy : float, default 0.1
         Laziness parameter for boundary preservation. P_lazy = (1 - lazy) P + lazy I
@@ -217,33 +226,20 @@ def _pagerank_diffuse(
         iterate until ||Z_{t+1}-Z_t||_F / ||Z_t||_F < tol or max_iter reached.
     tol : float, default 1e-6
         Relative tolerance for early stopping when steps is None.
-    max_iter : int, default 200
+    max_iter : int, default 30
         Safety cap on iterations when steps is None.
 
     Returns
     -------
     Z : (n, d) array
         Diffused signals. Same shape as X.
-
-    Notes
-    -----
-    - Transition is built as:
-        W = D^{-coifman_alpha} A D^{-coifman_alpha}
-        P = row_normalize(W)
-        P_lazy = (1 - lazy) * P + lazy * I
-      Then iterate: Z_{t+1} = alpha * P_lazy @ Z_t + (1 - alpha) * X
-      This is the classic personalized PageRank fixed point with a density-corrected,
-      lazy random walk that preserves boundaries and reduces bias from sampling density.
-    - Works with multi-channel X; uses sparse ops and is memory-safe for large graphs.
-    - If A has disconnected components, the method acts independently per component,
-      while teleportation to X prevents drift in empty parts.
     """
 
     n = A.shape[0]
     X = np.asarray(X)
     A = A.tocsr()
 
-    # Coifman–Lafon density correction: W = D^{-cf} A D^{-cf}
+    # Coifman diffusion: W = D^{-cf} A D^{-cf}
     deg = np.asarray(A.sum(axis=1)).ravel()
     eps = 1e-12
     d_pow = np.power(np.maximum(deg, eps), -coifman_alpha)
