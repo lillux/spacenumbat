@@ -54,12 +54,26 @@ def load_vcf(path: str) -> pd.DataFrame:
 
 
 def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = True) -> None:
-    """Write per-chromosome VCF."""
+    """Write per-chromosome VCF with proper INFO/FORMAT header lines."""
+    # declare the contigs that may be emitted
+    contigs = [f"chr{i}" for i in range(1, 23)] if chr_prefix else [str(i) for i in range(1, 23)]
+
     header = [
         "##fileformat=VCFv4.2",
         "##source=numbat",
-        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + label,
+        # INFO field definitions
+        '##INFO=<ID=AD,Number=1,Type=Integer,Description="Alt read count across all cells/samples">',
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total read depth across all cells/samples">',
+        '##INFO=<ID=OTH,Number=1,Type=Integer,Description="Other reads (non-REF/ALT) across all cells/samples">',
+        # FORMAT field definitions
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Unphased genotype">',
     ]
+    # Add contig lines (optional)
+    header += [f"##contig=<ID={c}>" for c in contigs]
+
+    # Column header line with sample label
+    header.append("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + label)
+
     with open(path, "w") as out:
         for h in header:
             out.write(h + "\n")
@@ -82,31 +96,7 @@ def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = 
             ]
             out.write("\t".join(line) + "\n")
             
-
-#def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
-#    dfs = [load_vcf(v) for v in vcfs]
-#    snps = pd.concat(dfs)
-#    snps = snps.groupby(["CHROM", "POS", "REF", "ALT", "snp_id"], as_index=False).agg({"AD": "sum", "DP": "sum", "OTH": "sum"})
-#    snps["AR"] = snps.AD / snps.DP.replace({0: pd.NA})
-#    snps = snps.sort_values(["CHROM", "POS"])
-
-#    for chr_num in range(1, 23):
-#        chr_snps = snps[snps.CHROM.astype("string") == str(chr_num)].copy()
-#        if chr_snps.empty:
-#            continue
-#        chr_snps["het"] = (chr_snps.AR >= 0.1) & (chr_snps.AR <= 0.9)
-#        chr_snps["hom_alt"] = (chr_snps.AR == 1) & (chr_snps.DP >= 10)
-#        chr_snps["hom_ref"] = (chr_snps.AR == 0) & (chr_snps.DP >= 10)
-#        chr_snps = chr_snps[chr_snps.het | chr_snps.hom_alt]
-#        chr_snps.loc[chr_snps.het, "GT"] = "0/1"
-#        chr_snps.loc[chr_snps.hom_alt, "GT"] = "1/1"
-#        chr_snps.loc[chr_snps.hom_ref, "GT"] = "0/0"
-#        if het_only:
-#            chr_snps = chr_snps[chr_snps.het]
-#        if chr_snps.empty:
-#            continue
-#        out_file = os.path.join(outdir, f"{label}_chr{chr_num}.vcf")
-#        write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
+    return
 
 
 def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
@@ -306,3 +296,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    
