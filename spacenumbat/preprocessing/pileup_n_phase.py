@@ -15,6 +15,9 @@ import subprocess
 from typing import List
 
 import pandas as pd
+import numpy as np
+from pathlib import Path
+from scipy.io import mmread
 
 
 # Utility functions
@@ -141,6 +144,47 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
             subprocess.run(["bgzip", "-f", out_file], check=True)
             subprocess.run(["tabix", "-f", "-p", "vcf", gz_path], check=True)
     return
+
+
+def read_vcf_table(path: str) -> pd.DataFrame:
+    """Fast VCF body reader into a DataFrame (no parsing of INFO/FORMAT)."""
+    df = pd.read_csv(path, sep="\t", comment="#", header=None, low_memory=False)
+    # Standard VCF columns + trailing samples (we need CHROM..ALT and sample GT column)
+    # If your phased VCF has multiple samples or extra FORMATs, we still keep columns by index below.
+    return df
+
+def load_phased_concat(outdir: str, label: str) -> pd.DataFrame:
+    """Concatenate {label}_chr*.phased.vcf.gz into one DataFrame with CHROM stripped of 'chr'."""
+    dfs = []
+    for chr_num in range(1, 23):
+        vcf_gz = os.path.join(outdir, "phasing", f"{label}_chr{chr_num}.phased.vcf.gz")
+        if not os.path.exists(vcf_gz):
+            raise FileNotFoundError(f"Phased VCF not found: {vcf_gz}")
+        df = pd.read_csv(vcf_gz, sep="\t", comment="#", header=None, low_memory=False)
+        dfs.append(df)
+    phased = pd.concat(dfs, axis=0, ignore_index=True)
+    # Standard VCF: 0..8 fixed cols, 9: FORMAT, 10+: samples
+    phased = phased.rename(columns={0: "CHROM", 1: "POS", 3: "REF", 4: "ALT"})
+    phased["CHROM"] = phased["CHROM"].astype(str).str.replace("^chr", "", regex=True)
+    return phased
+
+def load_pileup_body(pu_dir: str) -> pd.DataFrame:
+    """Read cellSNP.base.vcf and strip 'chr' from CHROM."""
+    vcf_pu = pd.read_csv(os.path.join(pu_dir, "cellSNP.base.vcf"),
+                         sep="\t", comment="#", header=None, low_memory=False)
+    vcf_pu = vcf_pu.rename(columns={0: "CHROM", 1: "POS", 3: "REF", 4: "ALT"})
+    vcf_pu["CHROM"] = vcf_pu["CHROM"].astype(str).str.replace("^chr", "", regex=True)
+    return vcf_pu
+
+def read_cellsnp_mtx(pu_dir: str):
+    """Load AD/DP as CSR matrices and cell barcodes list."""
+    ad_path = os.path.join(pu_dir, "cellSNP.tag.AD.mtx")
+    dp_path = os.path.join(pu_dir, "cellSNP.tag.DP.mtx")
+    bc_path = os.path.join(pu_dir, "cellSNP.samples.tsv")
+    AD = mmread(ad_path).tocsr()
+    DP = mmread(dp_path).tocsr()
+    barcodes = pd.read_csv(bc_path, header=None, sep="\t")[0].astype(str).tolist()
+    return AD, DP, barcodes
 
 
 def preprocess_allele(sample: str, vcf_pu: pd.DataFrame, vcf_phased: pd.DataFrame, AD, DP, barcodes: List[str]) -> pd.DataFrame:
@@ -290,6 +334,43 @@ def main():
             fh.write(c + "\n")
     subprocess.run(["chmod", "+x", script])
     subprocess.run(script, shell=True, stdout=open(os.path.join(args.outdir, "phasing.log"), "w"))
+    
+   # === Generate allele-count dataframes (mirror of the R post-phasing section) ===
+    print("Generating allele count dataframes...")
+
+    # Concatenate all phased chromosomes once (same phased VCF used for all samples)
+    vcf_phased_all = load_phased_concat(args.outdir, args.label)
+    # Put the single target-sample phased GT column into a named column for convenience
+    # FORMAT is column 8, sample is column 9 if a single target sample
+    # If Eagle produced exactly one sample (the target), its GT is in column 10 (0-based index=9)
+    # We keep only CHROM, POS, REF, ALT, and sample GT
+    if vcf_phased_all.shape[1] < 11:
+        # FORMAT + one sample expected; if not, raise for clarity
+        raise RuntimeError("Unexpected phased VCF structure: FORMAT/sample columns missing.")
+    vcf_phased_all = vcf_phased_all.rename(columns={9: "FORMAT", 10: args.label})
+    vcf_phased_all = vcf_phased_all.loc[:, ["CHROM", "POS", "REF", "ALT", args.label]]
+
+    for sample in samples:
+        pu_dir = os.path.join(args.outdir, "pileup", sample)
+
+        # pileup VCF (strip 'chr' to match phased table)
+        vcf_pu = load_pileup_body(pu_dir)
+
+        # matrices and barcodes
+        AD, DP, barcodes = read_cellsnp_mtx(pu_dir)
+
+        # preprocess allele counts (filters to GT in {'1|0','0|1'} inside the function)
+        df_allele = preprocess_allele(
+            sample=args.label,
+            vcf_pu=vcf_pu.rename(columns={7: "INFO"}),
+            vcf_phased=vcf_phased_all.copy(),
+            AD=AD,
+            DP=DP,
+            barcodes=barcodes
+        )
+
+        out_tsv_gz = os.path.join(args.outdir, f"{sample}_allele_counts.tsv.gz")
+        df_allele.to_csv(out_tsv_gz, sep="\t", index=False, compression="gzip")
 
     print("All done!")
 
