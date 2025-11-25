@@ -344,10 +344,10 @@ def main():
     # FORMAT is column 8, sample is column 9 if a single target sample
     # If Eagle produced exactly one sample (the target), its GT is in column 10 (0-based index=9)
     # We keep only CHROM, POS, REF, ALT, and sample GT
-    if vcf_phased_all.shape[1] < 11:
+    if vcf_phased_all.shape[1] < 10:
         # FORMAT + one sample expected; if not, raise for clarity
         raise RuntimeError("Unexpected phased VCF structure: FORMAT/sample columns missing.")
-    vcf_phased_all = vcf_phased_all.rename(columns={9: "FORMAT", 10: args.label})
+    vcf_phased_all = vcf_phased_all.rename(columns={8: "FORMAT", 9: args.label})
     vcf_phased_all = vcf_phased_all.loc[:, ["CHROM", "POS", "REF", "ALT", args.label]]
 
     for sample in samples:
