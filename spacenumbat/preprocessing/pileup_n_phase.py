@@ -149,8 +149,6 @@ def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, c
 def read_vcf_table(path: str) -> pd.DataFrame:
     """Fast VCF body reader into a DataFrame (no parsing of INFO/FORMAT)."""
     df = pd.read_csv(path, sep="\t", comment="#", header=None, low_memory=False)
-    # Standard VCF columns + trailing samples (we need CHROM..ALT and sample GT column)
-    # If your phased VCF has multiple samples or extra FORMATs, we still keep columns by index below.
     return df
 
 def load_phased_concat(outdir: str, label: str) -> pd.DataFrame:
@@ -163,7 +161,7 @@ def load_phased_concat(outdir: str, label: str) -> pd.DataFrame:
         df = pd.read_csv(vcf_gz, sep="\t", comment="#", header=None, low_memory=False)
         dfs.append(df)
     phased = pd.concat(dfs, axis=0, ignore_index=True)
-    # Standard VCF: 0..8 fixed cols, 9: FORMAT, 10+: samples
+    # Standard VCF format
     phased = phased.rename(columns={0: "CHROM", 1: "POS", 3: "REF", 4: "ALT"})
     phased["CHROM"] = phased["CHROM"].astype(str).str.replace("^chr", "", regex=True)
     return phased
@@ -223,7 +221,6 @@ def preprocess_allele(sample: str, vcf_pu: pd.DataFrame, vcf_phased: pd.DataFram
     return df[["cell", "snp_id", "CHROM", "POS", "REF", "ALT", "AD", "DP", "GT"]]
 
 
-# Main entry
 def main():
     parser = argparse.ArgumentParser(description="Run SNP pileup and phasing with 1000G")
     parser.add_argument("--label", default="subject")
@@ -253,7 +250,9 @@ def main():
     os.makedirs(os.path.join(args.outdir, "phasing"), exist_ok=True)
     for s in samples:
         os.makedirs(os.path.join(args.outdir, "pileup", s), exist_ok=True)
-
+    
+    
+    ## Pileup
     cmds = []
     if args.bulk:
         for sample, bam in zip(samples, bams):
@@ -305,6 +304,8 @@ def main():
                 "--cellTAG", args.cellTAG,
             ]
             cmds.append(" ".join(cmd))
+            
+    print("Running pileup\n")
 
     script = os.path.join(args.outdir, "run_pileup.sh")
     with open(script, "w") as fh:
@@ -316,6 +317,9 @@ def main():
     vcfs = [os.path.join(args.outdir, "pileup", s, "cellSNP.base.vcf") for s in samples]
     genotype(args.label, vcfs, os.path.join(args.outdir, "phasing"), chr_prefix=True)
 
+
+    ## Phasing
+    print("Running phasing\n")
     phasing_cmds = []
     for chr_num in range(1, 23):
         phasing_cmds.append(
@@ -335,7 +339,7 @@ def main():
     subprocess.run(["chmod", "+x", script])
     subprocess.run(script, shell=True, stdout=open(os.path.join(args.outdir, "phasing.log"), "w"))
     
-   # === Generate allele-count dataframes (mirror of the R post-phasing section) ===
+   # Generate allele-count dataframes
     print("Generating allele count dataframes...")
 
     # Concatenate all phased chromosomes once (same phased VCF used for all samples)
