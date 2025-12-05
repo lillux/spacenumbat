@@ -22,6 +22,8 @@ from scipy.io import mmread
 import scipy.sparse as sp
 import pyranges as pr
 
+import spacenumbat
+
 
 # Utility functions
 def parse_info(info: str) -> dict:
@@ -548,7 +550,9 @@ def main():
             vcf_phased=vcf_phased_all.copy(),
             AD=AD,
             DP=DP,
-            barcodes=barcodes
+            barcodes=barcodes,
+            gmap=args.gmap, 
+            gtf=spacenumbat.data.hg38 # TODO: Hardcoded hg38. Make it generic
         )
 
         out_tsv_gz = os.path.join(args.outdir, f"{sample}_allele_counts.tsv.gz")
