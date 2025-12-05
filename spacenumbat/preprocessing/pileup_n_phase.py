@@ -356,8 +356,12 @@ def preprocess_allele(
         vcf_phased["gene_end"] = np.nan
 
     # Annotate SNPs with genetic map cM
-    gmap_tmp = gmap.reset_index(drop=True).copy()
+    gmap_tmp = pd.read_csv(gmap, sep=" ")
+    gmap_tmp.columns = ["CHROM", "POS", "rate", "cM"]
+    gmap_tmp = gmap_tmp.reset_index(drop=True).copy()
     gmap_tmp["map_index_tmp"] = np.arange(len(gmap_tmp))
+    gmap_tmp["start"] = gmap_tmp["POS"]
+    gmap_tmp["end"] = (gmap_tmp.groupby("CHROM", sort=False)["POS"].transform(lambda s: s.shift(-1).fillna(s.iloc[-1])))
 
     pr_snps2 = pr.PyRanges(
         pd.DataFrame({"Chromosome": vcf_phased["CHROM"].astype(str),
@@ -388,7 +392,6 @@ def preprocess_allele(
                   on="snp_id",
                   how="left",
                   )
-    #df["CHROM"] = pd.Categorical(df["CHROM"], categories=pd.unique(df["CHROM"]), ordered=True)
 
     df_out = df[["cell", "snp_id", "CHROM", "POS", "cM", "REF", "ALT", "AD", "DP", "GT", "gene"]]
     df_out = df_out[df_out["GT"].isin(["1|0", "0|1"])].reset_index(drop=True)
