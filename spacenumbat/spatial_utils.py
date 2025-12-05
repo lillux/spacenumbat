@@ -12,6 +12,10 @@ import scipy.sparse as sp
 import pandas as pd
 import anndata as ad
 
+from spacenumbat._log import get_logger
+log = get_logger(__name__)
+#log.info("Test operations")
+
 
 def build_distance_weights(
     A: sp.spmatrix,
@@ -90,7 +94,7 @@ def build_distance_weights(
     if radius is not None:
         w *= (d <= radius)
 
-    # Build W with same sparsity as D (and A); optionally merge weights with A
+    # Build W with same sparsity as D (and A)
     w[np.isnan(w)] = 0
     W = sp.csr_matrix((w, D.indices, D.indptr), shape=D.shape)
     if include_A_weight:
@@ -113,7 +117,7 @@ def _get_graph(
     Extract a subgraph for a given set of cells from an AnnData object.
 
     The function subsets adata to the provided cells, fetches the connectivity
-    matrix from .obsp[connectivity_key], symmetrizes it defensively, and
+    matrix from .obsp[connectivity_key], symmetrizes it, and
     optionally fetches the distance matrix from .obsp[distance_key] if present.
 
     Parameters
@@ -147,7 +151,7 @@ def _random_walk_diffuse(
     X: np.ndarray,
     A: sp.spmatrix,
     alpha: float = 0.7,
-    steps: int = 15,
+    steps: int = 8,
     ) -> np.ndarray:
     """
     Diffuse features over a graph via an iterated random-walk update.
@@ -161,10 +165,10 @@ def _random_walk_diffuse(
     X : ndarray, shape (n_nodes, n_features)
         Input features to diffuse.
     A : sparse matrix, shape (n_nodes, n_nodes)
-        Sparse adjacency (weights allowed). Need not be row-stochastic.
+        Sparse adjacency (weights allowed).
     alpha : float, default 0.7
         Mixing parameter between propagated features and the original signal.
-    steps : int, default 15
+    steps : int, default 8
         Number of diffusion iterations.
 
     Returns
@@ -188,10 +192,8 @@ def _pagerank_diffuse(
     alpha: float = 0.75,
     *,
     coifman_alpha: float = 0.5,
-    lazy: float = 0.1,
-    steps: int | None = None,
-    tol: float = 1e-6,
-    max_iter: int = 30,
+    lazy: float = 0.0,
+    steps: int | None = 4,
     ) -> np.ndarray:
     """
     Personalized PageRank diffusion with Coifman density correction.
@@ -218,16 +220,13 @@ def _pagerank_diffuse(
     coifman_alpha : float, default 0.5
         Coifman density correction exponent. 0 -> random-walk on raw graph;
         0.5 -> normalized Laplacian geometry; 1 -> strong de-biasing against density.
-    lazy : float, default 0.1
+    lazy : float, default 0.0
         Laziness parameter for boundary preservation. P_lazy = (1 - lazy) P + lazy I
         reduces “leakage” across weak boundaries and stabilizes the iteration.
-    steps : int or None, default None
-        If provided, run exactly this many iterations (power method). If None,
-        iterate until ||Z_{t+1}-Z_t||_F / ||Z_t||_F < tol or max_iter reached.
-    tol : float, default 1e-6
-        Relative tolerance for early stopping when steps is None.
-    max_iter : int, default 30
-        Safety cap on iterations when steps is None.
+        Not required in regular lattice.
+    steps : int or None, default 4
+        If provided, run exactly this many iterations (power method).
+        If None, return X unaltered.
 
     Returns
     -------
@@ -246,18 +245,19 @@ def _pagerank_diffuse(
     Dcf_inv = sp.diags(d_pow)
     W = Dcf_inv @ A @ Dcf_inv
 
-    # Row-normalize to Markov matrix P
+    # Row-normalize W
     row_sum = np.asarray(W.sum(axis=1)).ravel()
     with np.errstate(divide='ignore'):
         inv_row = 1.0 / np.maximum(row_sum, eps)
     P = sp.diags(inv_row) @ W
 
-    # Lazy walk for boundary preservation
+    # Lazy walk (attempt to boundary preservation)
+    # Not required in regular lattice
     if lazy > 0.0:
         I = sp.eye(n, format="csr")
         P = (1.0 - lazy) * P + lazy * I
 
-    # Iterative personalized PageRank with teleportation to X
+    # Iterative personalized PageRank with teleportation rate to X
     Z = X.copy()
     walk = float(alpha)
     tele = 1.0 - walk
@@ -266,17 +266,12 @@ def _pagerank_diffuse(
         for _ in range(int(steps)):
             Z = walk * (P @ Z) + tele * X
         return Z
+    
+    else:
+        msg = f"Spatial algorithm have not been applied because steps value was: {steps}\n"
+        log.warning(msg)
 
-    # Converge by tol
-    denom_floor = np.linalg.norm(Z, ord="fro")
-    denom_floor = denom_floor if denom_floor > 0 else 1.0
-    for _ in range(max_iter):
-        Z_next = walk * (P @ Z) + tele * X
-        rel = np.linalg.norm(Z_next - Z, ord="fro") / max(np.linalg.norm(Z, ord="fro"), denom_floor)
-        Z = Z_next
-        if rel < tol:
-            break
-    return Z #if X.ndim == 2 else Z.ravel()
+    return Z
 
 
 
@@ -356,7 +351,7 @@ def neighbors_average(
     --------
     >>> neighbors_average(
     ...     df=table, adata=adata, columns=["score1", "score2"],
-    ...     by=["sample"], method="degree"
+    ...     by=["sample"], method="cpr"
     ... )
     """
     
@@ -396,13 +391,15 @@ def neighbors_average(
             Z = num / den
 
         elif m == "diffuse":
-            Z = _random_walk_diffuse(X, A, **{"alpha": 0.75, "steps": 15, **method_kwargs})
+            Z = _random_walk_diffuse(X, A, **method_kwargs)
 
         elif m == "cpr":
             Z = _pagerank_diffuse(X, A, **method_kwargs)
 
         else:
-            raise ValueError(f"Unknown method: {method}")
+            msg = (f'Unknown method: {method}. Accepted methods are:\n'
+                   f'"degree", "weighted", "diffuse", "cpr"')
+            raise ValueError(msg)
 
         collector.append(pd.DataFrame(Z, columns=columns, index=group.index))
 
