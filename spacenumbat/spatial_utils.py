@@ -276,7 +276,7 @@ def _pagerank_diffuse(
         Z = Z_next
         if rel < tol:
             break
-    return Z if X.ndim == 2 else Z.ravel()
+    return Z #if X.ndim == 2 else Z.ravel()
 
 
 
@@ -326,8 +326,14 @@ def neighbors_average(
         Key in adata.obsp containing the sparse distance matrix. Required when method="weighted".
     method_kwargs : dict, optional
         Extra method-specific parameters. Examples:
-          • diffuse: {"alpha": float, "steps": int}
-          • cpr: arguments expected by _pagerank_diffuse (e.g., {"alpha": float})
+          • diffuse: {"alpha": float, 
+                      "steps": int}
+          • cpr: {"alpha": float, 
+                  "coifman_alpha":float, 
+                  "lazy":float,
+                  "steps": int, 
+                  "tol":float, 
+                  "max_iter":int} 
 
     Returns
     -------
