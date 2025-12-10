@@ -10,11 +10,63 @@ from typing import Optional, Literal, Tuple, Sequence, List, Dict, Any
 import numpy as np
 import scipy.sparse as sp
 import pandas as pd
+from sklearn.metrics import pairwise_distances
+
 import anndata as ad
+import squidpy as sq
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
 #log.info("Test operations")
+
+def get_spatial_info(
+    counts_mat: ad.AnnData,
+    ncores: int = 1,
+    kind: str = "gaussian",
+    distance_key: str = "weighted_adjacency",
+    connectivity_key: str = "spatial_connectivities"
+    ) -> ad.AnnData:
+    """
+    Compute spatial neighbors, Euclidean distances, and a weighted adjacency matrix.
+
+    Parameters
+    ----------
+    counts_mat : AnnData
+        Spatial count matrix. Modified in place by adding entries to obsp.
+    ncores : int, optional
+        Number of CPU cores for pairwise distance computation, by default 1.
+    kind : str, optional
+        Weighting scheme passed to build_distance_weights, by default gaussian.
+
+    Returns
+    -------
+    AnnData
+        The input object with euclidean_distances and weighted_adj stored in obsp.
+    """
+    # Ensure spatial_connectivities exists
+    if connectivity_key not in counts_mat.obsp:
+        sq.gr.spatial_neighbors(counts_mat)
+    if connectivity_key not in counts_mat.obsp:
+        raise KeyError(
+            f"{connectivity_key} is not found in counts_mat.obsp "
+            f"after calling sq.gr.spatial_neighbors.\nCurrent keys are: "
+            f"{counts_mat.obsp.keys()}"
+        )
+
+    dist_test = pairwise_distances(
+        counts_mat[:, counts_mat.var_names[counts_mat.X.toarray().sum(0) > 0]].X,
+        n_jobs=ncores,
+    )
+    counts_mat.obsp[distance_key] = sp.csr_matrix(dist_test)
+
+    W = build_distance_weights(
+        counts_mat.obsp[connectivity_key],
+        counts_mat.obsp[distance_key],
+        kind=kind,
+    )
+    counts_mat.obsp[distance_key] = W
+
+    return counts_mat
 
 
 def build_distance_weights(
@@ -151,7 +203,7 @@ def _random_walk_diffuse(
     X: np.ndarray,
     A: sp.spmatrix,
     alpha: float = 0.7,
-    steps: int = 8,
+    steps: int = 5,
     ) -> np.ndarray:
     """
     Diffuse features over a graph via an iterated random-walk update.
@@ -282,7 +334,7 @@ def neighbors_average(
     by: Optional[List[str]] = None,
     method: Literal["degree", "weighted", "diffuse", "cpr"] = "cpr",
     connectivity_key: str = "spatial_connectivities",
-    distance_key: str = "spatial_distances",
+    distance_key: str = "weighted_adjacency",
     method_kwargs: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
     """

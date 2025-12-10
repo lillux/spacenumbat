@@ -6,7 +6,7 @@ Created on Sun Aug 24 00:33:04 2025
 @author: lillux
 """
 
-from typing import Any, Dict, Union, Optional, List, Tuple
+from typing import Any, Dict, Union, Optional, List, Tuple, Literal
 import math
 
 import pandas as pd
@@ -24,8 +24,8 @@ import natsort
 import anndata as ad
 
 import tqdm
-from . import utils, dist_prob, clustering, _progressbar
-
+from . import utils, dist_prob, clustering, _progressbar, spatial_utils
+import warnings
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -1674,4 +1674,182 @@ def get_allele_post(
     allele_post['seg_label'] = allele_post['seg'].astype("string") + "(" + allele_post['cnv_state'].astype("string") + ")"
     
     return allele_post
+
+
+def get_joint_post(
+    exp_post: pd.DataFrame,
+    allele_post: pd.DataFrame,
+    segs_consensus: pd.DataFrame,
+    count_mat: Optional[ad.AnnData] = None,
+    spatial: bool = True,
+    method: Literal["degree", "weighted", "diffuse", "cpr"] = "cpr",
+    distance_key: str = "weighted_adjacency",
+    method_kwargs: Dict[str, Any] = None,
+) -> pd.DataFrame:
+    """
+    Build a joint CNV posterior by combining expression- and allele-level posteriors,
+    with optional spatial smoothing on a per-segment basis.
+
+    Workflow
+    --------
+    1) Select and copy relevant columns from `exp_post` (excluding 'neu' states)
+       and from `allele_post`.
+    2) (Optional) Perform neighborhood smoothing within each segment (`by=['seg']`)
+       using `neighbors_average`, operating on the columns needed to recompute
+       posteriors.
+    3) Outer-merge the (smoothed) expression and allele tables on
+       ['cell','CHROM','seg','cnv_state'] and fill NaNs for *_x/*_y with zeros.
+    4) Left-join per-segment priors and metadata from `segs_consensus`.
+    5) Sum *_x and *_y into joint log-likelihoods (l11, l20, l10, l21, l31, l22, l00),
+       recompute posterior probabilities via `compute_posterior`, and derive
+       MLE and MAP CNV states.
+    6) Add a state label 'seg_label' as "{seg}({cnv_state})".
+
+    Parameters
+    ----------
+    exp_post
+        Expression-level posterior DataFrame. Expected to contain at least:
+        {'cell','CHROM','seg','cnv_state','l11','l20','l10','l21','l31','l22','l00',
+         'Z','Z_cnv','Z_n','logBF'}. Rows with 'cnv_state' == 'neu' are removed. CHECK THIS BY NOT REMOVING NEUTRALS
+    allele_post
+        Allele-level posterior DataFrame. Expected columns include the above plus
+        {'MAF','major','total'} (where 'total' is renamed to 'n_snp' later).
+    segs_consensus
+        Per-segment consensus/prior information. Expected columns include:
+        {'seg_cons','seg_start','seg_end'} and optionally
+        {'n_genes','n_snps','p_loh','p_amp','p_del','p_bamp','p_bdel','LLR','LLR_x','LLR_y'}.
+        The probabilities are renamed to {'prior_loh','prior_amp','prior_del',
+        'prior_bamp','prior_bdel'}.
+    count_mat
+        AnnData holding spatial neighbor graphs in `obsp`. Required if `spatial=True`
+        and the chosen `method` in `neighbors_average` needs access to those graphs.
+    spatial
+        If True, apply neighborhood smoothing within each segment before merging.
+    method
+        Smoothing method passed to `neighbors_average` when `spatial=True`.
+        One of {"degree","weighted","diffuse","cpr"}.
+    distance_key
+        Key in `count_mat.obsp` for the distance matrix (used by certain methods).
+    method_kwargs
+        Extra keyword arguments forwarded to `neighbors_average`. For example,
+        for diffuse/cpr you might pass {'alpha': 0.75, 'steps': 15, ...}.
+        (Note: this function keeps the provided default unchanged.)
+
+    Returns
+    -------
+    joint_post_sp
+        DataFrame with joint posteriors and derived states. Includes:
+        - Joint log-likelihoods: {l11,l20,l10,l21,l31,l22,l00}
+        - Posterior probabilities from `compute_posterior`: e.g., p_neu, p_loh, ...
+        - Logistic transforms of logBF_x/logBF_y: {p_cnv_x, p_cnv_y}
+        - State calls: {'cnv_state_mle','cnv_state_map'}
+        - Seg labels: 'seg_label' as "{seg}({cnv_state})"
+        - Segment metadata/priors from `segs_consensus`.
+
+    Caveats / Potential Improvements
+    --------------------------------
+
+    - Key column presence is not validated explicitly; adding schema checks could
+      yield clearer errors when inputs are missing required fields.
+    - The per-row `apply(compute_states, axis=1)` can be a bottleneck; vectorizing
+      the MLE/MAP computation would speed up large datasets.
+    """
+
+    # Process expression posteriors
+    exp_sel = exp_post[exp_post['cnv_state'] != 'neu'].copy()
+    exp_col_select = {'cell', 'CHROM', 'seg', 'cnv_state', 'l11', 'l20', 'l10', 'l21', 
+                      'l31', 'l22', 'l00', 'Z', 'Z_cnv', 'Z_n', 'logBF'}
+    exp_sel = exp_sel.loc[:,[col for col in exp_sel.columns if col in exp_col_select]].copy()
+    
+    # Process allele posteriors
+    allele_col_select = {'cell', 'CHROM', 'seg', 'cnv_state', 'l11', 'l20', 'l10', 'l21', 'l31',
+                        'l22', 'l00', 'Z', 'Z_cnv', 'Z_n', 'logBF', 'MAF', 'major', 'total'}
+    allele_sel = allele_post.loc[:, [col for col in allele_post.columns if col in allele_col_select]].copy()
+    allele_sel = allele_sel.rename({'total' : 'n_snp'})
+    
+    if spatial:
+
+        exp_sel = spatial_utils.neighbors_average(
+            df=exp_sel,
+            adata=count_mat,
+            columns=['l11', 'l20', 'l10', 'l21', 'l31', 'l22', 'l00','Z', 'Z_cnv', 'Z_n', 'logBF'],
+            by=['seg'],
+            method=method,
+            method_kwargs=method_kwargs,
+            distance_key=distance_key)
+    
+        allele_sel = spatial_utils.neighbors_average(
+            df=allele_sel,
+            adata=count_mat,
+            columns=['l11', 'l20', 'l10', 'l21', 'l31', 'l22', 'l00',
+                     'Z', 'Z_cnv', 'Z_n', 'logBF', 'MAF', 'major', 'total'],
+            by=['seg'],
+            method=method,
+            method_kwargs=method_kwargs,
+            distance_key=distance_key)
+    
+    # join exp_sel and allele_sel on keys: cell, CHROM, seg, cnv_state.
+    joint_post_sp = pd.merge(exp_sel, allele_sel, on=['cell', 'CHROM', 'seg', 'cnv_state'], how='outer')
+    # Replace NA values in all columns ending with _x or _y with 0. These are {'l*', 'Z*', 'logBF' }
+    for col in joint_post_sp.columns:
+       if col.endswith('_x') or col.endswith('_y'):
+           joint_post_sp[col] = joint_post_sp[col].fillna(0)
+    
+    # Left join with segs_consensus
+    segs_sel = segs_consensus.loc[:,['seg_cons', 'seg_start', 'seg_end'] +
+                                                 [col for col in segs_consensus if col in {'n_genes',
+                                                                                           'n_snps',
+                                                                                           'p_loh',
+                                                                                           'p_amp',
+                                                                                           'p_del',
+                                                                                           'p_bamp',
+                                                                                           'p_bdel',
+                                                                                           'LLR', 
+                                                                                           'LLR_x', 
+                                                                                           'LLR_y'}]].copy()
+    
+    segs_sel = segs_sel.rename(columns={'seg_cons':'seg',
+                                                       'p_loh':'prior_loh',
+                                                       'p_amp':'prior_amp',
+                                                       'p_del':'prior_del',
+                                                       'p_bamp':'prior_bamp',
+                                                       'p_bdel':'prior_bdel'})
+    
+    joint_post_sp = pd.merge(joint_post_sp, segs_sel, on='seg', how='left')
+    
+    ## ADD SPATIAL CONTEXT    
+    # Compute new joint log-likelihood columns by summing the _x and _y columns
+    for col in ['l11', 'l20', 'l10', 'l21', 'l31', 'l22', 'l00']:
+       joint_post_sp[col] = joint_post_sp[f'{col}_x'] + joint_post_sp[f'{col}_y']
+    
+    # Compute the joint posterior # TODO: fix warnings
+    warnings.filterwarnings('ignore')
+    joint_post_sp = compute_posterior(joint_post_sp)
+    warnings.filterwarnings('always')
+    
+    # Compute logistic transformations for logBF values.
+    joint_post_sp['p_cnv_x'] = 1 / (1 + np.exp(-joint_post_sp['logBF_x']))
+    joint_post_sp['p_cnv_y'] = 1 / (1 + np.exp(-joint_post_sp['logBF_y']))
+    
+    # For each row, compute maximum likelihood CNV state and MAP CNV state.
+    # Define state labels for MLE and MAP.
+    state_labels_mle = ['neu', 'loh', 'del', 'amp', 'amp', 'bamp']
+    state_labels_map = ['neu', 'loh', 'del', 'amp', 'bamp']
+    
+    def compute_states(row):
+        # MLE
+        values_mle = [row['l11'], row['l20'], row['l10'], row['l21'], row['l31'], row['l22']]
+        idx_mle = np.argmax(values_mle)
+        row['cnv_state_mle'] = state_labels_mle[idx_mle]
+        # MAP
+        values_map = [row.get('p_neu', 0), row.get('p_loh', 0), row.get('p_del', 0), row.get('p_amp', 0), row.get('p_bamp', 0)]
+        idx_map = np.argmax(values_map)
+        row['cnv_state_map'] = state_labels_map[idx_map]
+        return row
+    
+    joint_post_sp = joint_post_sp.apply(compute_states, axis=1) # bottleneck
+    # Create seg_label from seg and cnv_state.
+    joint_post_sp['seg_label'] = joint_post_sp['seg'].astype(str) + "(" + joint_post_sp['cnv_state'].astype(str) + ")"
+
+    return joint_post_sp
 

@@ -5,7 +5,7 @@ Created on Sun Apr  6 19:55:48 2025
 
 @author: lillux
 """
-
+from typing import Mapping
 import os
 #import tempfile
 import logging
@@ -16,7 +16,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 import spacenumbat
-from spacenumbat import utils, diagnostics, clustering, operations, plot
+from spacenumbat import (utils, diagnostics, clustering, 
+                         operations, plot, spatial_utils)
 
 from spacenumbat._log import configure, get_logger
 
@@ -61,6 +62,11 @@ def run_numbat(
     exclude_neu=True,
     filter_hla_hg38=True, #Just added
     filter_chromosome_segments=None, # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
+    spatial=False,
+    spatial_method="cpr",
+    spatial_method_kwargs: Mapping = None,
+    connectivity_key: str ="spatial_connectivities",
+    distance_key: str = "weighted_adjacency"
     ):
     """
     Run workflow to decompose tumor subclones.
@@ -137,8 +143,18 @@ def run_numbat(
         Whether to initiate phylogeny using a random tree (internal use only). Default is False.
     exclude_neu : bool, optional
         Whether to exclude neutral segments from CNV retesting (internal use only). Default is True.
-    filter_hla_hg38 : bool. Filter HLA region, comprised =True, #Just added
-    filter_chromosome_segments=None
+    filter_hla_hg38 : bool.
+        Filter HLA region, comprised =True, #Just added
+    filter_chromosome_segments=None. 
+        .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
+    spatial : bool
+        Flag to activate spatial mode to take in account spatial context in the analysis
+    spatial_method : str
+        You can choose one between:
+            - "degree": unweighted neighbor mean using the connectivity matrix (adds self-loops).
+            - "weighted": inverse-distance weighted mean using the distance matrix (adds self-loops).
+            - "diffuse": iterative random-walk diffusion (uses _random_walk_diffuse).
+            - "cpr": personalized PageRank–style diffusion (uses _pagerank_diffuse).
     verbose : bool, optional
         Flag to enable verbose output. Default is True.
 
@@ -484,7 +500,21 @@ def run_numbat(
                                              haplotypes=haplotype,
                                              segs_consensus=segs_consensus_retest_corrected)
     
+    spatial_utils.get_spatial_info(counts_mat=count_mat)
     
+    joint_post = spatial_utils.get_joint_post(
+        exp_post=exp_post,
+        allele_post=allele_post,
+        segs_consensus=segs_consensus_retest_corrected,
+        count_mat=count_mat,
+        distance_key="weighted_adjacency",
+        spatial=spatial,
+        method=spatial_method,
+        method_kwargs=spatial_method_kwargs
+        )
+        
+        
+        
     return exp_post, allele_post, segs_consensus_retest, count_mat
     
     
