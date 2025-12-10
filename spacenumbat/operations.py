@@ -1853,3 +1853,225 @@ def get_joint_post(
 
     return joint_post_sp
 
+
+def binary_entropy(p: np.ndarray) -> np.ndarray:
+    """
+    Compute the element-wise binary entropy H(p) = -p log2 p - (1 - p) log2(1 - p).
+
+    Parameters
+    ----------
+    p : np.ndarray
+        Array of probabilities in the range [0, 1]. Values outside this range
+        are not checked and may produce nonsensical results.
+
+    Returns
+    -------
+    np.ndarray
+        Array of the same shape as `p` with the corresponding binary entropy
+        values. NaN entries produced by 0 * log2(0) or similar expressions are
+        replaced by 0 in the output.
+    """
+    H = -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+    H[np.isnan(H)] = 0
+    return H
+
+
+def joint_post_entropy(joint_post: pd.DataFrame) -> pd.Series:
+    """
+    Compute per-segment mean binary entropy of the CNV posterior probability.
+
+    For each segment (seg), this function computes the binary entropy of the
+    `p_cnv` posterior probabilities across rows in that segment and assigns
+    the segment-wise mean entropy to all rows belonging to that segment.
+
+    Parameters
+    ----------
+    joint_post : pd.DataFrame
+        DataFrame containing at least the following columns:
+        - 'seg' : segment identifier used for grouping.
+        - 'p_cnv' : posterior probability of CNV (float), possibly with NaNs.
+
+    Returns
+    -------
+    pd.Series
+        A Series of dtype float64 indexed like `joint_post`, where each entry
+        is the mean binary entropy of `p_cnv` for the corresponding segment.
+    """
+    binary_entropy_series = pd.Series(
+        np.repeat(0.0, joint_post.shape[0]),
+        index=joint_post.index,
+        dtype=np.float64,
+    )
+    seg_group = joint_post.groupby(by="seg", observed=True, sort=False)
+    for _, group in seg_group:
+        binary_entropy_series[group.index] = np.mean(
+            binary_entropy(group.p_cnv[group.p_cnv.notna()])
+        )
+    return binary_entropy_series
+
+
+def expand_states(
+    sc_post: pd.DataFrame,
+    segs_consensus: pd.DataFrame,
+    ) -> pd.DataFrame:
+    """
+    Expand multi-allelic CNV states into separate rows in a single-cell posterior table.
+
+    This function takes a per-cell CNV posterior table (`sc_post`) and a consensus
+    segment table (`segs_consensus`) that may contain multi-allelic CNV calls.
+    For segments with more than one possible CNV state (`n_states > 1`), the
+    function generates one row per CNV state and attaches the corresponding
+    posterior values from `sc_post` (for example, columns named "p_amp",
+    "Z_amp", etc.). Segments that are not multi-allelic are passed through
+    unchanged.
+
+    Parameters
+    ----------
+    sc_post : pandas.DataFrame
+        Single-cell posterior table. Expected to contain at least:
+          - "cell": cell identifier.
+          - "CHROM": chromosome identifier.
+          - "seg": segment identifier matching the consensus segments.
+        For multi-allelic expansion, it should also contain:
+          - One or more probability columns named "p_<state>" for each CNV
+            state listed in `segs_consensus["cnv_states"]`.
+          - One or more score/latent columns named "Z_<state>" for each such
+            state.
+        It may optionally contain a pre-existing "cnv_state" column, which
+        will be dropped before the multi-allelic expansion.
+
+    segs_consensus : pandas.DataFrame
+        Consensus CNV segment table. Expected to contain at least:
+          - "seg_cons": consensus segment identifier (to be renamed to "seg").
+          - "n_states": integer number of possible CNV states for that segment.
+          - "cnv_states": string encoding one or more states separated by
+            commas, for example "amp,del".
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame of single-cell posteriors with multi-allelic segments
+        expanded so that each CNV state has its own row. The result includes:
+          - All columns from the input `sc_post` (except any dropped
+            "cnv_state" before expansion).
+          - For expanded rows, new columns:
+              - "cnv_state": the CNV state label for that row.
+              - "p_cnv": posterior probability for the CNV state.
+              - "p_n": posterior probability for the normal state
+                (1 - p_cnv when available).
+              - "Z_cnv": state-specific score/latent value.
+              - "n_states": the number of states for the underlying segment.
+              - "seg_label": ordered categorical label combining segment and
+                state for plotting or grouping.
+    """
+    # Expand segs_consensus for multi-allelic CNVs.
+    segs_multi = (segs_consensus[segs_consensus['n_states'] > 1]
+                  .loc[:, ['seg_cons', 'cnv_states', 'n_states']]
+                  .rename(columns={'seg_cons': 'seg'}))
+    
+    # Split 'cnv_states' on commas and explode into separate rows.
+    segs_multi = segs_multi.assign(cnv_states=segs_multi['cnv_states'].str.split(',')).explode('cnv_states')
+    segs_multi = segs_multi.rename(columns={'cnv_states': 'cnv_state'})
+    
+    # If there are any multi-allelic segments, process them.
+    if (segs_consensus['n_states'] > 1).any():
+        # Create sc_post_multi by dropping the 'cnv_state' column and inner joining with segs_multi on 'seg'.
+        sc_post_multi = sc_post.drop(columns=['cnv_state'], errors='ignore').merge(
+            segs_multi,
+            on='seg',
+            how='inner'
+        )
+        # Append the cnv_state to the seg identifier.
+        sc_post_multi['seg'] = sc_post_multi['seg'].astype(str) + '_' + sc_post_multi['cnv_state'].astype(str)
+        
+        # For each row, dynamically select the posterior values based on cnv_state.
+        # This assumes that sc_post contains columns named like 'p_amp', 'Z_amp', etc.
+        def select_posteriors(row):
+            state = row['cnv_state']
+            # Retrieve the posterior value from the column 'p_{state}' if it exists; default to NaN otherwise.
+            p_col = f"p_{state}"
+            z_col = f"Z_{state}"
+            row['p_cnv'] = row.get(p_col, np.nan)
+            row['p_n'] = 1 - row['p_cnv'] if pd.notna(row['p_cnv']) else np.nan
+            row['Z_cnv'] = row.get(z_col, np.nan)
+            return row
+
+        sc_post_multi = sc_post_multi.apply(select_posteriors, axis=1)
+        
+        # Filter out rows from sc_post whose seg is present in segs_multi (unexpanded version).
+        sc_post_filtered = sc_post[~sc_post['seg'].isin(segs_multi['seg'])]
+        sc_post_filtered = sc_post_filtered.copy()
+        sc_post_filtered['n_states'] = 1
+        
+        # Concatenate the filtered sc_post with sc_post_multi.
+        sc_post = pd.concat([sc_post_filtered, sc_post_multi], ignore_index=True)
+        
+        # Sort by 'cell', 'CHROM', and 'seg'.
+        sc_post = sc_post.sort_values(by=['cell', 'CHROM', 'seg'])
+        # Create seg_label by concatenating seg and cnv_state.
+        sc_post['seg_label'] = sc_post['seg'].astype(str) + "(" + sc_post['cnv_state'].astype(str) + ")"
+        # Convert seg_label to a categorical preserving order of appearance.
+        unique_labels = sc_post['seg_label'].drop_duplicates().tolist()
+        sc_post['seg_label'] = pd.Categorical(sc_post['seg_label'], categories=unique_labels, ordered=True)
+    else:
+        log.info("No multi-allelic CNVs, skipping expansion.")
+    
+    return sc_post
+
+
+def get_joint_post_matrix(joint_post_filtered: pd.DataFrame, p_min: float) -> np.ndarray:
+    """
+    Build a cell-by-segment posterior probability table from joint posterior data.
+
+    This function takes a long-format joint posterior DataFrame and produces a
+    matrix-like table of posterior CNV probabilities.
+    
+    This function performs the following operations:
+      1. Clamp the 'p_cnv' values to be within [p_min, 1 - p_min].
+      2. Pivot the DataFrame so that the rows correspond to 'cell' and the columns correspond 
+         to 'seg', with values taken from 'p_cnv'. Missing values in the pivoted DataFrame 
+         are filled with 0.5.
+      3. Convert the resulting pivot table (a DataFrame with 'cell' as index) into a NumPy 
+         matrix.
+    
+    Parameters
+    ----------
+    joint_post_filtered : pd.DataFrame
+        A DataFrame containing joint posterior data with at least the following columns:
+          - 'cell': Identifier for each cell.
+          - 'seg': Segment identifier.
+          - 'p_cnv': Posterior probability for CNV state.
+    p_min : float
+        The minimum threshold for p_cnv. p_cnv values will be clamped to the interval 
+        [p_min, 1 - p_min].
+    
+    Returns
+    -------
+    pandas.DataFrame
+        A 2D DataFrame where:
+            - Rows correspond to cells (index is "cell").
+            - Columns correspond to segments (column labels are values of "seg").
+            - Entries are clamped CNV posterior probabilities in
+              the range [p_min, 1 - p_min].
+        Missing cell–segment combinations are filled with 0.5.
+
+        If you need a NumPy array for downstream computation, you can convert
+        the result via pivot_df.to_numpy() or
+        get_joint_post_matrix(...).to_numpy().
+        Missing values are filled with 0.5.
+    """
+    
+    # Make a copy of the DataFrame to avoid modifying the original data.
+    df = joint_post_filtered.copy()
+    
+    # Clamp 'p_cnv' values.
+    df['p_cnv'] = df['p_cnv'].clip(lower=p_min, upper=1 - p_min)
+    
+    # Reshape DataFrame.
+    # Rows are defined by 'cell', columns by 'seg', and the values are 'p_cnv'.
+    # Missing values are filled with 0.5.
+    pivot_df = df.pivot(index='cell', columns='seg', values='p_cnv').fillna(0.5)
+    
+    return pivot_df
+
+
