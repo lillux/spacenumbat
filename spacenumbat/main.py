@@ -475,7 +475,7 @@ def run_numbat(
     
     segs_consensus_retest.to_csv(os.path.join(out_dir, f"segs_consensus_retest_{i}.tsv"), sep="\t")
 
-    ######## Evaluate CNV per cell ########
+    ## Evaluate CNV per cell
     log.info("Evaluating CNV per cell")
     
     segs_consensus_retest_corrected = segs_consensus_retest.copy()
@@ -490,8 +490,6 @@ def run_numbat(
                         sc_refs=sc_refs,
                         ncores=ncores,
                         verbose=True)
-    
-    
     
     haplotype = operations.get_haplotype_post(bulk_retest, 
                                               segs_consensus_retest_corrected)
