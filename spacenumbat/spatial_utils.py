@@ -378,9 +378,7 @@ def neighbors_average(
           • cpr: {"alpha": float, 
                   "coifman_alpha":float, 
                   "lazy":float,
-                  "steps": int, 
-                  "tol":float, 
-                  "max_iter":int} 
+                  "steps": int} 
 
     Returns
     -------

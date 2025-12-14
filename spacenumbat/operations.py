@@ -1681,8 +1681,9 @@ def get_joint_post(
     allele_post: pd.DataFrame,
     segs_consensus: pd.DataFrame,
     count_mat: Optional[ad.AnnData] = None,
-    spatial: bool = True,
+    spatial: bool = False,
     method: Literal["degree", "weighted", "diffuse", "cpr"] = "cpr",
+    connectivity_key: str = "spatial_connectivities",
     distance_key: str = "weighted_adjacency",
     method_kwargs: Dict[str, Any] = None,
 ) -> pd.DataFrame:
@@ -1776,6 +1777,7 @@ def get_joint_post(
             by=['seg'],
             method=method,
             method_kwargs=method_kwargs,
+            connectivity_key=connectivity_key,
             distance_key=distance_key)
     
         allele_sel = spatial_utils.neighbors_average(
@@ -1786,6 +1788,7 @@ def get_joint_post(
             by=['seg'],
             method=method,
             method_kwargs=method_kwargs,
+            connectivity_key=connectivity_key,
             distance_key=distance_key)
     
     # join exp_sel and allele_sel on keys: cell, CHROM, seg, cnv_state.
