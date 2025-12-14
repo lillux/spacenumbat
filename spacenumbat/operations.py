@@ -2029,13 +2029,6 @@ def get_joint_post_matrix(joint_post_filtered: pd.DataFrame, p_min: float) -> np
     This function takes a long-format joint posterior DataFrame and produces a
     matrix-like table of posterior CNV probabilities.
     
-    This function performs the following operations:
-      1. Clamp the 'p_cnv' values to be within [p_min, 1 - p_min].
-      2. Pivot the DataFrame so that the rows correspond to 'cell' and the columns correspond 
-         to 'seg', with values taken from 'p_cnv'. Missing values in the pivoted DataFrame 
-         are filled with 0.5.
-      3. Convert the resulting pivot table (a DataFrame with 'cell' as index) into a NumPy 
-         matrix.
     
     Parameters
     ----------
@@ -2057,22 +2050,14 @@ def get_joint_post_matrix(joint_post_filtered: pd.DataFrame, p_min: float) -> np
             - Entries are clamped CNV posterior probabilities in
               the range [p_min, 1 - p_min].
         Missing cell–segment combinations are filled with 0.5.
-
-        If you need a NumPy array for downstream computation, you can convert
-        the result via pivot_df.to_numpy() or
-        get_joint_post_matrix(...).to_numpy().
-        Missing values are filled with 0.5.
     """
     
-    # Make a copy of the DataFrame to avoid modifying the original data.
     df = joint_post_filtered.copy()
     
     # Clamp 'p_cnv' values.
     df['p_cnv'] = df['p_cnv'].clip(lower=p_min, upper=1 - p_min)
     
     # Reshape DataFrame.
-    # Rows are defined by 'cell', columns by 'seg', and the values are 'p_cnv'.
-    # Missing values are filled with 0.5.
     pivot_df = df.pivot(index='cell', columns='seg', values='p_cnv').fillna(0.5)
     
     return pivot_df

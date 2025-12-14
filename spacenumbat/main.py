@@ -15,6 +15,8 @@ import pandas as pd
 #from scipy import sparse
 import matplotlib.pyplot as plt
 
+from sklearn.metrics import pairwise_distances
+
 import spacenumbat
 from spacenumbat import (utils, diagnostics, clustering, 
                          operations, plot, spatial_utils)
@@ -64,6 +66,7 @@ def run_numbat(
     filter_chromosome_segments=None, # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
     spatial=False,
     spatial_method="cpr",
+    spatial_decay="gaussian",
     spatial_method_kwargs: Mapping = None,
     connectivity_key: str ="spatial_connectivities",
     distance_key: str = "weighted_adjacency"
@@ -144,17 +147,39 @@ def run_numbat(
     exclude_neu : bool, optional
         Whether to exclude neutral segments from CNV retesting (internal use only). Default is True.
     filter_hla_hg38 : bool.
-        Filter HLA region, comprised =True, #Just added
+        Filter HLA region on hg38 genomic coorinates, default is True.
     filter_chromosome_segments=None. 
-        .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
+        .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end].
     spatial : bool
-        Flag to activate spatial mode to take in account spatial context in the analysis
+        Flag to activate spatial mode to take in account spatial context in the analysis.
     spatial_method : str
         You can choose one between:
             - "degree": unweighted neighbor mean using the connectivity matrix (adds self-loops).
             - "weighted": inverse-distance weighted mean using the distance matrix (adds self-loops).
             - "diffuse": iterative random-walk diffusion (uses _random_walk_diffuse).
             - "cpr": personalized PageRank–style diffusion (uses _pagerank_diffuse).
+    spatial_decay : str
+        Decay kernel mapping distance d to weight w:
+            - "gaussian": exp(-(d^2) / sigma^2)
+            - "exp":      exp(-d / ell)
+            - "invdist":  1 / (d + 1e-6)^p
+            - "cauchy":   1 / (1 + (d / sigma)^2)
+    spatial_method_kwargs : dict, optional
+        key:value pairs to pass to get_joint_post function, as argument of 
+        some spatial smoothing functions. Depending on the chosen spatial method, here
+        are the accepted key:value pairs:
+            - diffuse: {"alpha": float, 
+                        "steps": int}
+            - cpr: {"alpha": float, 
+                    "coifman_alpha":float, 
+                    "lazy":float,
+                    "steps": int} 
+    distance_key: str
+        default is "weighted_adjacency",
+    connectivity_key: str
+        default is "spatial_connectivities"
+    
+    
     verbose : bool, optional
         Flag to enable verbose output. Default is True.
 
@@ -282,7 +307,7 @@ def run_numbat(
         else:
             log.info('No segments with clonal LoH detected.')
             
-    # Calculate reference transcriptomic profile of cell with reference categories
+    # Calculate reference transcriptomic profile of cellwi th reference categories
     sc_refs = clustering.choose_ref_cor(count_mat, lambdas_ref, gtf)
     sc_refs.to_csv(os.path.join(out_dir, "sc_refs.tsv"), sep="\t")
     
@@ -395,13 +420,13 @@ def run_numbat(
                                           ncores=ncores)
     bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
     
-    # define consensus CNVs again
+    ## define consensus CNVs again
     segs_consensus_retest = operations.get_segs_consensus(bulk_retest, 
                                                min_LLR=min_LLR, 
                                                min_overlap=min_overlap, 
                                                retest=False) 
     
-    # check termination again
+    ## check termination again
     if np.all(segs_consensus_retest.cnv_state_post == 'neu'):
         msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
         log.info(msg)
@@ -469,13 +494,13 @@ def run_numbat(
             plot_subtrees.savefig(os.path.join(out_dir, "bulk_clones_{i}.jpg"), dpi=200)
             plt.close("all")
             
-    # test for multi-allelic CNVs
+    ### test for multi-allelic CNVs
     if multi_allelic:
         segs_consensus_retest = operations.test_multi_allelic(bulk_clones_retest, segs_consensus_retest, min_LLR = min_LLR, p_min = p_multi)
     
     segs_consensus_retest.to_csv(os.path.join(out_dir, f"segs_consensus_retest_{i}.tsv"), sep="\t")
 
-    ## Evaluate CNV per cell
+    ### Evaluate CNV per cell
     log.info("Evaluating CNV per cell")
     
     segs_consensus_retest_corrected = segs_consensus_retest.copy()
@@ -498,21 +523,61 @@ def run_numbat(
                                              haplotypes=haplotype,
                                              segs_consensus=segs_consensus_retest_corrected)
     
-    spatial_utils.get_spatial_info(counts_mat=count_mat)
+    count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
+                                               ncores=ncores,
+                                               distance_key=distance_key,
+                                               kind=spatial_decay,
+                                               connectivity_key=connectivity_key)
     
+
     joint_post = spatial_utils.get_joint_post(
         exp_post=exp_post,
         allele_post=allele_post,
         segs_consensus=segs_consensus_retest_corrected,
         count_mat=count_mat,
-        distance_key="weighted_adjacency",
+        distance_key=distance_key,
         spatial=spatial,
         method=spatial_method,
         method_kwargs=spatial_method_kwargs
         )
         
+    joint_post.loc[:,'avg_entropy'] = operations.joint_post_entropy(joint_post)
+    
+    if multi_allelic:
+        exp_post = operations.expand_states(exp_post, segs_consensus_retest)
+        allele_post = operations.expand_states(allele_post, segs_consensus_retest)
+        joint_post = operations.expand_states(joint_post, segs_consensus_retest)
+
         
+    exp_post.to_csv(os.path.join(out_dir, f"exp_post_{i}.tsv"), sep="\t")
+    allele_post.to_csv(os.path.join(out_dir, f"allele_post_{i}.tsv"), sep="\t")
+    joint_post.to_csv(os.path.join(out_dir, f"joint_post_{i}.tsv"), sep="\t")
+
+    ### Build phylogeny
+    msg = "Phylogeny reconstruction started."
+    log.info(msg)
+    
+    joint_post_filtered = joint_post[(joint_post.cnv_state != 'neu') & 
+                                (joint_post.avg_entropy < max_entropy) & 
+                                (joint_post.LLR > min_LLR)].copy()
         
+    if joint_post_filtered.shape[0] == 0:
+        log.info(f"No CNV remains after filtering by entropy in single cells. Consider increasing max_entropy.\nCurrent entropy: {max_entropy}")
+    else:
+        n_cnv = joint_post_filtered.seg.unique().shape[0]
+        log.info(f'Using {n_cnv} CNAs to construct phylogeny')
+    
+    # construct genotype probability matrix
+    p_min = 1e-10
+    
+    P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
+    P.to_csv(os.path.join(out_dir, f"geno_{i}.tsv"), sep="\t")
+
+    dist_mat = pairwise_distances(P, metric='euclidean', n_jobs=ncores)
+    dist_mat = (dist_mat + dist_mat.T) * 0.5
+    np.fill_diagonal(dist_mat, 0.0)
+    
+    
     return exp_post, allele_post, segs_consensus_retest, count_mat
     
     
