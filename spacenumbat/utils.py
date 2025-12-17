@@ -3490,3 +3490,7 @@ def annot_theta_mle(bulk: pd.DataFrame) -> pd.DataFrame:
     # left-join back to bulk
     out = bulk.merge(theta_est, on=["CHROM", "seg"], how="left")
     return out
+
+
+
+

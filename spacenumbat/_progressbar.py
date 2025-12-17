@@ -67,3 +67,10 @@ def ParallelPbar(desc: str | None = None, total: int | None = None, **tqdm_kwarg
                 return super().__call__(local_iter)
 
     return Parallel
+
+
+
+
+
+
+

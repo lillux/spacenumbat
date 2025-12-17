@@ -1436,3 +1436,8 @@ def forward_back_allele(hmm: Dict[str, Any]) -> Optional[np.ndarray]:
 
     # return posterior
     return marginals
+
+
+
+
+

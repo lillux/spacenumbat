@@ -524,3 +524,8 @@ def log_beta_binomial_pmf(k: np.ndarray,
     # Calculate PMF using beta functions.
     log_pmf = log_coef + betaln(k + alpha, n - k + beta) - betaln(alpha, beta)
     return log_pmf
+
+
+
+
+

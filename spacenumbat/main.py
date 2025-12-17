@@ -16,10 +16,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import pairwise_distances
+from skbio import DistanceMatrix as SKDM
 
 import spacenumbat
 from spacenumbat import (utils, diagnostics, clustering, 
-                         operations, plot, spatial_utils)
+                         operations, plot, spatial_utils,
+                         tree)
 
 from spacenumbat._log import configure, get_logger
 
@@ -40,7 +42,7 @@ def run_numbat(
     max_entropy=0.5,
     init_k=3,
     min_cells=50,
-    tau=0.3,
+    tau=0.2,
     nu=1,
     max_cost=None,
     n_cut=0,
@@ -69,7 +71,7 @@ def run_numbat(
     spatial_decay="gaussian",
     spatial_method_kwargs: Mapping = None,
     connectivity_key: str ="spatial_connectivities",
-    distance_key: str = "weighted_adjacency"
+    distance_key: str = "weighted_adjacency",
     ):
     """
     Run workflow to decompose tumor subclones.
@@ -147,9 +149,9 @@ def run_numbat(
     exclude_neu : bool, optional
         Whether to exclude neutral segments from CNV retesting (internal use only). Default is True.
     filter_hla_hg38 : bool.
-        Filter HLA region on hg38 genomic coorinates, default is True.
+        Filter HLA region on hg38 genomic coordinates, default is True.
     filter_chromosome_segments=None. 
-        .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end].
+        .tsv or pd.Dataframe with coordinates to skip. Needs: [CHROM, start, end].
     spatial : bool
         Flag to activate spatial mode to take in account spatial context in the analysis.
     spatial_method : str
@@ -165,9 +167,9 @@ def run_numbat(
             - "invdist":  1 / (d + 1e-6)^p
             - "cauchy":   1 / (1 + (d / sigma)^2)
     spatial_method_kwargs : dict, optional
-        key:value pairs to pass to get_joint_post function, as argument of 
-        some spatial smoothing functions. Depending on the chosen spatial method, here
-        are the accepted key:value pairs:
+        key:value pairs for get_joint_post function, as argument of the
+        spatial smoothing functions. Depending on the chosen spatial method,
+        here are the accepted key:value pairs:
             - diffuse: {"alpha": float, 
                         "steps": int}
             - cpr: {"alpha": float, 
@@ -553,7 +555,8 @@ def run_numbat(
     allele_post.to_csv(os.path.join(out_dir, f"allele_post_{i}.tsv"), sep="\t")
     joint_post.to_csv(os.path.join(out_dir, f"joint_post_{i}.tsv"), sep="\t")
 
-    ### Build phylogeny
+    
+    ### Build phylogeny  
     msg = "Phylogeny reconstruction started."
     log.info(msg)
     
@@ -562,7 +565,8 @@ def run_numbat(
                                 (joint_post.LLR > min_LLR)].copy()
         
     if joint_post_filtered.shape[0] == 0:
-        log.info(f"No CNV remains after filtering by entropy in single cells. Consider increasing max_entropy.\nCurrent entropy: {max_entropy}")
+        log.info(f"No CNV remains after filtering by entropy in single cells.\n"
+                 f"Consider increasing max_entropy. Current entropy is: {max_entropy}")
     else:
         n_cnv = joint_post_filtered.seg.unique().shape[0]
         log.info(f'Using {n_cnv} CNAs to construct phylogeny')
@@ -573,9 +577,77 @@ def run_numbat(
     P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
     P.to_csv(os.path.join(out_dir, f"geno_{i}.tsv"), sep="\t")
 
+    P.loc['outgroup',:] = np.zeros((1,P.shape[1]))
+    labels = list(P.index)
+    
     dist_mat = pairwise_distances(P, metric='euclidean', n_jobs=ncores)
     dist_mat = (dist_mat + dist_mat.T) * 0.5
     np.fill_diagonal(dist_mat, 0.0)
+    
+    # build both guide trees
+    dm_skbio = SKDM(dist_mat, labels)
+    
+    tree_upgma = tree.root_and_prune(tree.build_upgma_tree(dm_skbio, labels),
+                                     outgroup_name='outgroup')
+    log.info('UPGMA performed')
+    
+    tree_nj = tree.root_and_prune(tree.build_nj_tree(dm_skbio, labels),
+                                  outgroup_name='outgroup')
+    log.info('NJ performed')
+    
+
+    # likelihoods calculation
+    upgma_score, tnode_upgma = tree.tree_score_wrapper(tree_upgma,
+                                                       P.drop(index='outgroup'))
+    upgma_score_ll = upgma_score['l_tree']
+    log.info(f'UPGMA tree is {upgma_score_ll}')
+    
+    nj_score, tnode_nj = tree.tree_score_wrapper(tree_nj,
+                                                 P.drop(index='outgroup'))
+    nj_score_ll = nj_score['l_tree']
+    log.info(f'NJ tree is {nj_score_ll}')
+    
+    # choose the seed tree
+    if upgma_score_ll >= nj_score_ll:
+        tree_init = tree_upgma
+        log.info("Using UPGMA tree as seed (higher likelihood).")
+    else:
+        tree_init = tree_nj
+        log.info("Using NJ tree as seed (higher likelihood).")
+    
+    # Dist matrix without outgroup
+    mask = [lab != "outgroup" for lab in labels]        # labels is list(P.index)
+    dist_no_out = dist_mat[np.ix_(mask, mask)]          # square slice
+    labels_no_out = [lab for lab in labels if lab != "outgroup"]
+    
+    dm_skbio = SKDM(dist_no_out, labels_no_out)   # sets == tree tips
+    
+    ## run greedy NNI ML search
+    tree_list  = tree.perform_nni_ml(tree_init,
+                                     dm_skbio=dm_skbio,
+                                     P_df=P.drop(index='outgroup'),
+                                     eps=eps,
+                                     max_iter=max_nni,
+                                     ncores=ncores_nni)
+    
+    treeML = tree_list[-1]      
+    
+    gtree = tree.get_gtree(treeML,
+                           P.drop(index="outgroup"),
+                           n_cut=n_cut,
+                           max_cost=max_cost)
+    
+    G_m = tree.label_genotype(tree.get_mut_graph(gtree))
+    
+    log.info(f"Tree building completed, pass {i}")
+    
+    clone_post = operations.get_clone_post(gtree, exp_post, allele_post)
+    clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
+
+    normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
+    msg = f"Found {len(normal_cells)} normal cells."
+    log.info(msg)
+    
     
     
     return exp_post, allele_post, segs_consensus_retest, count_mat

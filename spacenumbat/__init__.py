@@ -10,6 +10,7 @@ from . import _progressbar
 from . import diagnostics
 from . import plot
 from . import operations
+from . import tree
 
 from .main import run_numbat
 
