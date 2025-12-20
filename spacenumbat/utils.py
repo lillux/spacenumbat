@@ -1870,9 +1870,9 @@ def find_common_diploid(
         segs_imbal['cnv_state'] = 'theta_1'
         
         #TODO remove this
-        log.info("segs_imbal shape is: {segs_imbal.shape}")
-        log.info("bulks shape is: {bulks.shape}")
-        log.info("get_segs_neu(bulks) shape is: {get_segs_neu(bulks).shape}")
+        log.info(f"segs_imbal shape is: {segs_imbal.shape}")
+        log.info(f"bulks shape is: {bulks.shape}")
+        log.info(f"get_segs_neu(bulks) shape is: {get_segs_neu(bulks).shape}")
 
 
         segs_consensus = fill_neu_segs(segs_imbal, get_segs_neu(bulks))
