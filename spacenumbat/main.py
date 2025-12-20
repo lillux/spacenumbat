@@ -650,7 +650,7 @@ def run_numbat(
     
     
     
-    return exp_post, allele_post, segs_consensus_retest, count_mat
+    return exp_post, allele_post, segs_consensus_retest, count_mat, clone_post, G_m
     
     
     
