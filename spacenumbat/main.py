@@ -304,6 +304,9 @@ def run_numbat(
         bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, filter_segments=filter_segments_df)
         segs_loh = utils.detect_clonal_loh(bulk, t=t)
         
+        #TODO remove this
+        log.info(f"segs_loh shape is: {segs_loh.shape}\nbulk shape is: {bulk.shape}")       
+        
         if segs_loh.shape[0] > 0:
             segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
         else:

@@ -1394,7 +1394,7 @@ def fill_neu_segs(segs_consensus: pd.DataFrame, segs_neu: pd.DataFrame) -> pd.Da
 
     Computes gaps as "neutral - consensus" via PyRanges subtraction, appends
     these gaps to the consensus, sets missing "cnv_state" to "neu", and assigns
-    a per-chromosome consensus segment ID 'seg_cons' using an external
+    a per-chromosome consensus segment ID 'seg_cons' using
     "generate_postfix" helper.
 
     Parameters
@@ -1418,9 +1418,6 @@ def fill_neu_segs(segs_consensus: pd.DataFrame, segs_neu: pd.DataFrame) -> pd.Da
         gaps, with columns including:
         - 'CHROM', 'seg_start', 'seg_end', 'seg_length', 'cnv_state', 'seg_cons'.
 
-    Notes
-    -----
-    - Sorting uses ``natsort.natsort_keygen()`` to produce human-friendly ordering.
     """
     # Convert segs_neu and segs_consensus to PyRanges    
     gr_neu = pr.PyRanges(chromosomes=segs_neu['CHROM'].astype('string'),
@@ -1872,6 +1869,12 @@ def find_common_diploid(
         segs_imbal['seg'] = segs_imbal['CHROM'] + '_' + segs_imbal['seg'].astype("string")
         segs_imbal['cnv_state'] = 'theta_1'
         
+        #TODO remove this
+        log.info("segs_imbal shape is: {segs_imbal.shape}")
+        log.info("bulks shape is: {bulks.shape}")
+        log.info("get_segs_neu(bulks) shape is: {get_segs_neu(bulks).shape}")
+
+
         segs_consensus = fill_neu_segs(segs_imbal, get_segs_neu(bulks))
         segs_consensus.loc[:,'seg'] = segs_consensus.loc[:,'seg_cons']
         
