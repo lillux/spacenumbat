@@ -1372,7 +1372,8 @@ def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
     neu = bulks[bulks['cnv_state'] == 'neu'].copy()
 
     neu = neu.groupby(['sample','seg','CHROM'], sort=False, as_index=False, observed=True)
-    segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
+    #segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
+    segs_neu = neu.min('POS').loc[:, ['sample', 'seg', 'CHROM', 'POS']].dropna()
     segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)
     segs_neu['seg_end'] = neu.max('POS').dropna().loc[:,'POS']
 
