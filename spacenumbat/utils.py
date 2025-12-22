@@ -816,7 +816,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start':'seg_start', 'End':'seg_end'})
     # # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
-    
+    overlaps_df["CHROM"] = overlaps_df["CHROM"].astype("string")
+
     bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
     
     # Drop unnecessary columns
@@ -1817,7 +1818,7 @@ def find_common_diploid(
         return bulk
     
     ncores = np.min((len(sample_groups), cpu_count(), ncores))
-    print(f'Running diploid inference on {ncores} core')
+    log.info(f'Running diploid inference on {ncores} core')
     
     # Parallel processing with joblib
     if ncores > 1:
