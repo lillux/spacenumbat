@@ -108,16 +108,12 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
     This function performs several checks and modifications on an AnnData object to ensure it is
     properly formatted for analysis:
     1. Converts the `.X` attribute to a CSC (Compressed Sparse Column) matrix if it is a dense NumPy array.
-    2. Ensures that the data in `.X` are of integer type, converting if necessary and allowed.
-    3. Checks for duplicate gene names in `var_names` and makes them unique if required.
+    2. Checks for duplicate gene names in `var_names` and makes them unique if required.
 
     Parameters
     ----------
     count_ad : AnnData
         The AnnData object containing the count matrix and associated metadata.
-    count_to_int : bool, optional (default: True)
-        If True, converts the count matrix to 32-bit integers if it is not already of integer type.
-        If False, raises a ValueError when the count matrix is not of integer type.
     fix_names : bool, optional (default: True)
         If True, modifies duplicate gene names to make them unique.
         If False, raises a ValueError when duplicate gene names are found.
@@ -131,13 +127,8 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
     ------
     ValueError
         If `.X` is neither a NumPy array nor a SciPy sparse matrix.
-        If `count_to_int` is False and the count matrix is not of integer type.
         If `fix_names` is False and duplicate gene names are present.
 
-    Notes
-    -----
-    This function is intended to standardize the format of AnnData objects before analysis,
-    ensuring consistency in data types and uniqueness of gene identifiers.
     """
     # Convert .X to CSC matrix if it's a dense NumPy array
     if isinstance(count_ad.X, np.ndarray):
@@ -147,19 +138,6 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
         msg = (f'You passed an object with an .X of type {type(count_ad.X)}. '
                'count_ad.X should be a NumPy array or a SciPy sparse CSC matrix.')
         raise ValueError(msg)
-
-    # Check if the data in .X are of integer type
-    if not np.issubdtype(count_ad.X.dtype, np.integer):
-        if count_to_int:
-            msg = (f'The count matrix in the supplied count_ad is of type {count_ad.X.dtype}. '
-                   f'Converting to {np.int32}.')
-            log.warning(msg)
-            count_ad.X = count_ad.X.astype(np.int32)
-            log.warning(f'Conversion to {np.int32} completed.')
-        else:
-            msg = (f'Supplied matrix is not of dtype integer, but it is {count_ad.X.dtype}. '
-                   'Please supply an integer count matrix.')
-            raise ValueError(msg)
 
     # Check for duplicate gene names and make them unique if required
     if count_ad.var_names.shape[0] != np.unique(count_ad.var_names).shape[0]:
