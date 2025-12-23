@@ -211,8 +211,10 @@ def run_numbat(
     else:
         filter_hla_hg38=False
         gtf = diagnostics.load_and_validate_annotation(gtf)
-        
-    count_mat = utils.check_anndata(count_mat)
+    
+    gtf["CHROM"] = gtf["CHROM"].astype("string")
+    
+    count_mat = utils.check_anndata(count_mat, count_to_int=False)
     df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
     df_allele = utils.check_allele_df(df_allele)
     lambdas_ref = utils.check_exp_ref(lambdas_ref)

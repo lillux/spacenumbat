@@ -894,7 +894,7 @@ def get_bulk(
     # Filter out rows where lambda_ref is zero or gene is not NaN
     bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
 
-    bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', 23, bulk.loc[:,'CHROM'])
+    bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     bulk = bulk.reset_index(drop=True)
 
@@ -1586,13 +1586,13 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     # Combine all bulks into a single DataFrame
     bulks = pd.concat(bulks_list, ignore_index=True)
     # Arrange the DataFrame by 'CHROM' and 'POS'
-    bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
+    #bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
     # Modify 'snp_id' and 'snp_index' columns
     # Create a categorical type for 'snp_id' with categories in order of appearance
-    bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
-    bulks['snp_index'] = bulks['snp_id'].cat.codes
+    #bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
+    #bulks['snp_index'] = bulks['snp_id'].cat.codes
     # Arrange by 'sample'
-    bulks = bulks.sort_values(['sample', 'snp_id', 'POS'])
+    bulks = bulks.sort_values(['sample', 'snp_id', 'POS'], key=natsort.natsort_keygen())
     return bulks
 
 
