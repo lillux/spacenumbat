@@ -884,7 +884,7 @@ def get_bulk(
             df_allele = df_allele[df_allele_subset_mask]
     fit = fit_ref_sse_ad(count_mat, lambdas_ref, gtf, verbose=disp)
     exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla, filter_segments=filter_segments)
-    exp_bulk = exp_bulk[(exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5) | (exp_bulk.loc[:,'Y_obs'] == 0)]
+    exp_bulk = exp_bulk[((exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5)) | (exp_bulk.loc[:,'Y_obs'] == 0)]
     exp_bulk.loc[:,'mse'] = fit['mse']
     allele_bulk = get_allele_bulk(df_allele, nu=nu, min_depth=min_depth)
     bulk = combine_bulk(allele_bulk, exp_bulk, filter_hla=filter_hla, filter_segments=filter_segments)
