@@ -1357,8 +1357,8 @@ def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
     neu = bulks[bulks['cnv_state'] == 'neu'].copy()
 
     neu = neu.groupby(['sample','seg','CHROM'], sort=False, as_index=False, observed=True)
-    #segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
-    segs_neu = neu.min('POS').loc[:, ['sample', 'seg', 'CHROM', 'POS']].dropna()
+    segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
+    #segs_neu = neu.min('POS').loc[:, ['sample', 'seg', 'CHROM', 'POS']].dropna()
     segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)
     segs_neu['seg_end'] = neu.max('POS').dropna().loc[:,'POS']
 
@@ -1590,14 +1590,14 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     if not bulks_list:
         return pd.DataFrame()
 
-    # Combine all bulks into a single DataFrame
+    # Combine all bulks into a single DataFrame # TODO check the 3 lines in the middle, sorting and categories
     bulks = pd.concat(bulks_list, ignore_index=True)
     # Arrange the DataFrame by 'CHROM' and 'POS'
-    #bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
+    bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
     # Modify 'snp_id' and 'snp_index' columns
     # Create a categorical type for 'snp_id' with categories in order of appearance
-    #bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
-    #bulks['snp_index'] = bulks['snp_id'].cat.codes
+    bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
+    bulks['snp_index'] = bulks['snp_id'].cat.codes
     # Arrange by 'sample'
     bulks = bulks.sort_values(['sample', 'snp_id', 'POS'], key=natsort.natsort_keygen())
     return bulks

@@ -333,7 +333,10 @@ def run_numbat(
                            lambdas_ref=lambdas_ref,
                            gtf=gtf,
                            sc_refs=sc_refs,
-                           ncores=ncores)
+                           ncores=ncores,
+                           filter_hla=filter_hla_hg38,
+                           filter_segments=filter_chromosome_segments,
+                           verbose=verbose)
         # save window-smoothed normalized expression profiles as AnnData
         log.info("Saving clustering results")
         clust["gexp_roll_wide"].write_h5ad(os.path.join(out_dir, "gexp_roll_wide.h5ad"))

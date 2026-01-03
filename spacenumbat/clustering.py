@@ -173,7 +173,10 @@ def smooth_expression(
     gtf: pd.DataFrame,
     window: int = 101,
     cap: int = 3,
-    filter_hla: bool = True
+    filter_hla: bool = True,
+    filter_segments = None,
+    ncores: int = 1,
+    verbose: bool = True
     ) -> ad.AnnData:
     """
     Smooth gene expression counts using a rolling window after normalization and log-transformation.
@@ -200,7 +203,7 @@ def smooth_expression(
         and `.layers['X']` preserving the original counts.
     """
     # Filter mutually expressed genes
-    mut_expressed = filter_genes(count_mat, lambdas_ref, gtf, filter_hla=filter_hla)
+    mut_expressed = filter_genes(count_mat, lambdas_ref, gtf, filter_hla=filter_hla, filter_segments=filter_segments)
     count_mat = count_mat[:, mut_expressed].copy()
     lambdas_ref = lambdas_ref.loc[mut_expressed]
 
@@ -234,7 +237,8 @@ def exp_hclust(
     window: int = 101,
     ncores: int = 1,
     verbose: bool = True,
-    filter_hla: bool = True
+    filter_hla: bool = True,
+    filter_segments = None
     ) -> Dict[str, Any]:
     """
     Perform hierarchical clustering on smoothed gene expression profiles.
@@ -271,14 +275,15 @@ def exp_hclust(
     count_mat = check_anndata(count_mat.copy())
     if sc_refs is None:
         sc_refs = choose_ref_cor(count_mat, lambdas_ref, gtf)
-    lambdas_bar = get_lambdas_bar(lambdas_ref, sc_refs, verbose=False)
+    lambdas_bar = get_lambdas_bar(lambdas_ref, sc_refs, verbose=verbose)
     gexp_roll_wide = smooth_expression(
         count_mat,
         lambdas_bar,
         gtf,
         window=window,
-        #verbose=verbose,
-        filter_hla=filter_hla
+        verbose=verbose,
+        filter_hla=filter_hla,
+        filter_segments=filter_segments
     )
 
     # Compute parallel pairwise Euclidean distances
@@ -290,7 +295,7 @@ def exp_hclust(
     dist_mat[np.isnan(dist_mat)] = 0
 
     # Symmetrize distance matrix (make it strictly symmetric)
-    dist_mat = (dist_mat + dist_mat.T) / 2
+    dist_mat = (dist_mat + dist_mat.T) * 0.5
 
     # Convert to condensed distance matrix for linkage
     dist_mat_condensed = scipy.spatial.distance.squareform(dist_mat)
