@@ -214,10 +214,10 @@ def run_numbat(
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
-    count_mat = utils.check_anndata(count_mat, count_to_int=False)
-    df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
+    #count_mat = utils.check_anndata(count_mat, count_to_int=False)
+    #df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
     df_allele = utils.check_allele_df(df_allele)
-    lambdas_ref = utils.check_exp_ref(lambdas_ref)
+    #lambdas_ref = utils.check_exp_ref(lambdas_ref)
     
     # filter for annotated genes
     gene_shared = set(gtf['gene']).intersection(set(count_mat.var_names.values)).intersection(set(lambdas_ref.index.values))
@@ -230,7 +230,7 @@ def run_numbat(
     if len(zero_cov) > 0:
         log.info(f"Filtering out {len(zero_cov)} cells with 0 coverage")
         count_mat = count_mat[~count_mat.obs_names.isin(zero_cov),:]
-        df_allele[~df_allele.cell.isin(zero_cov)]
+        df_allele = df_allele[~df_allele.cell.isin(zero_cov)]
     
     # keep cells that have a transcriptome
     df_allele = df_allele[df_allele.cell.isin(count_mat.obs_names)]
@@ -239,7 +239,7 @@ def run_numbat(
         raise ValueError(msg)
 
     # check if conficts on given genomic information
-    if segs_loh and segs_consensus_fix:
+    if (not (segs_loh is None) and (segs_loh.shape[0]>0)) and segs_consensus_fix:
         msg = "Cannot specify both segs_loh and segs_consensus_fix."
         raise ValueError(msg)
     
@@ -247,14 +247,14 @@ def run_numbat(
     segs_consensus_fix = diagnostics.check_segs_fix(segs_consensus_fix)
     
     # check provided clonal LoH
-    if segs_loh:
+    if (not (segs_loh is None) and (segs_loh.shape[0]>0)):
         if call_clonal_loh:
             msg = "Cannot specify both segs_loh and call_clonal_loh"
             raise ValueError(msg)
         segs_loh = diagnostics.check_segs_loh(segs_loh)
     
     # Check if filtering Chromosomal segments
-    if filter_chromosome_segments:
+    if (not (filter_chromosome_segments is None) and (filter_chromosome_segments.shape[0]>0)):
         filter_segments_df = diagnostics.check_filter_segments(filter_chromosome_segments)
     else:
         filter_segments_df = None

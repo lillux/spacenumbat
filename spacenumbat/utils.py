@@ -189,7 +189,8 @@ def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
         msg = ("Inconsistent SNP genotypes; "
                "Are cells from two different individuals mixed together?")
         # logging.error(msg)
-        raise ValueError(msg)
+        # raise ValueError(msg)
+        log.error(msg)
 
     # Strip 'chr' prefix
     # Only check if the first entry starts with "chr"
@@ -234,7 +235,8 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
         msg = ("The reference expression matrix 'lambdas_ref' "
                "should not contain any NA values.")
         # logging.error(msg)
-        raise ValueError(msg)
+        # raise ValueError(msg)
+        log.error(msg)
 
     # Reject integer-only matrices (raw counts)
     arr = lambdas_ref.to_numpy(copy=False)
@@ -249,7 +251,9 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
     if lambdas_ref.index.has_duplicates:
         msg = "Please remove duplicated genes in reference profile."
         # logging.error(msg)
-        raise ValueError(msg)
+        # raise ValueError(msg)
+        log.error(msg)
+
 
     return lambdas_ref.copy()
 
@@ -286,7 +290,10 @@ def fit_ref_sse_ad(
         - 'mse': float mean squared error of the fit per gene.
     """
     count_mat = count_mat[:, np.array(count_mat.X.sum(0) > 0).flatten()]
-    common_genes = set(gtf.loc[:,'gene']).intersection(set(count_mat.var_names)).intersection(set(lambdas_ref[lambdas_ref.mean(1) > min_lambda].index))
+    common_genes = set(
+        gtf.loc[:,'gene']).intersection(
+        set(count_mat.var_names)).intersection(
+            set(lambdas_ref[lambdas_ref.mean(1) > min_lambda].index))
     common_genes = [g for g in gtf.loc[:, 'gene'] if g in common_genes]
 
     count_mat = count_mat[:, common_genes]
@@ -355,7 +362,7 @@ def filter_genes(
     Notes
     -----
     - Genes are initially filtered to those present in all three inputs: gtf, count_mat, and lambdas_bar.
-    - Optionally excludes genes overlapping the human HLA region on chromosome 6.
+    - Optionally excludes genes overlapping the human HLA region on chromosome 6, hg38 coordinates.
     - Optionally excludes genes overlapping regions defined in `filter_segments`.
     - Retention is based on expression thresholds applied to both the reference profile (`lambdas_bar`) and observed counts.
     """
@@ -794,13 +801,12 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start':'seg_start', 'End':'seg_end'})
     # # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
-    overlaps_df["CHROM"] = overlaps_df["CHROM"].astype("string")
-
+    #overlaps_df["CHROM"] = overlaps_df["CHROM"].astype("string")
     bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
     
     # Drop unnecessary columns
     columns_to_exclude = ['sample']
-    
+
     overlaps_df = overlaps_df.drop(columns=[col for col in columns_to_exclude if col in overlaps_df.columns])
     overlaps_df = overlaps_df.loc[:,['snp_id'] + [col for col in segs_consensus if col not in columns_to_exclude]]
     # Exclude overlapping columns from bulk except 'snp_id' and 'CHROM'
@@ -892,9 +898,9 @@ def get_bulk(
         raise ValueError('Duplicated SNPs found, please check genotypes')
     
     # Filter out rows where lambda_ref is zero or gene is not NaN
-    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
+    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (~bulk.loc[:,'gene'].isna())]
 
-    bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
+    #bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     bulk = bulk.reset_index(drop=True)
 
@@ -1254,7 +1260,8 @@ def detect_clonal_loh(
     
     bulk_snps_df = pd.DataFrame(bulk_snps)
     bulk_snps_df = bulk_snps_df[(bulk_snps_df.logFC < 8) & (bulk_snps_df.logFC > -8)]
-    bulk_snps_df = bulk_snps_df.sort_values(['CHROM','gene_start']).reset_index(drop=True)
+    bulk_snps_df = bulk_snps_df.sort_values(['CHROM','gene_start'],
+                                            key=natsort.natsort_keygen()).reset_index(drop=True)
     
     fit = dist_prob.fit_lnpois(bulk_snps_df.Y_obs.values,
                      bulk_snps_df.lambda_ref.values,
@@ -1299,12 +1306,12 @@ def detect_clonal_loh(
         chrom_bulk = segs_loh[segs_loh.CHROM == chrom]
         for seg in chrom_bulk.seg.unique():
             seg_bulk = chrom_bulk[chrom_bulk.seg == seg]
-    
             snp_rate.append(fit_snp_rate(seg_bulk.gene_snps, seg_bulk.gene_length)[0])
     
-    segs_loh = segs_loh.groupby(['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state'], observed=True, sort=False).sum()
-    segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state', 'gene_snps', 'gene_length']]
-    
+    segs_loh = segs_loh.groupby(['CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state'], 
+                                observed=True, sort=False).sum()
+    segs_loh = segs_loh.reset_index().loc[:,['CHROM', 'seg', 'seg_start', 'seg_end', 
+                                             'cnv_state', 'gene_snps', 'gene_length']]
     
     segs_loh.loc[:,'snp_rate'] = snp_rate
     segs_loh = segs_loh[segs_loh.cnv_state == 'loh'].copy()
