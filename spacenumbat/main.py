@@ -407,7 +407,7 @@ def run_numbat(
                                               text_size=10, 
                                               title_size=14,
                                               panel_vspace=1)
-            plot_subtrees.savefig(os.path.join(out_dir, "bulk_subtrees{i}.jpg"), dpi=200)
+            plot_subtrees.savefig(os.path.join(out_dir, f"bulk_subtrees{i}.jpg"), dpi=200)
             plt.close("all")
        
     # define consensus CNVs
@@ -501,7 +501,7 @@ def run_numbat(
                                               text_size=10, 
                                               title_size=14,
                                               panel_vspace=1)
-            plot_subtrees.savefig(os.path.join(out_dir, "bulk_clones_{i}.jpg"), dpi=200)
+            plot_subtrees.savefig(os.path.join(out_dir, f"bulk_clones_{i}.jpg"), dpi=200)
             plt.close("all")
             
     ### test for multi-allelic CNVs
