@@ -623,7 +623,7 @@ def get_allele_bulk(
     df_allele['pBAF'] = pBAF
     df_allele['pAD'] = pAD
 
-    df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
+    # df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen()) # REMOVED NOW
     # df_allele['CHROM'] = df_allele['CHROM'].astype('string')
 
     # Compute inter-SNP genetic distances chromosome-wise
@@ -801,12 +801,11 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start':'seg_start', 'End':'seg_end'})
     # # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
-    #overlaps_df["CHROM"] = overlaps_df["CHROM"].astype("string")
-    bulk = bulk.rename(columns={'Chromosome':'CHROM', 'Start':'POS'})
+    overlaps_df["CHROM"] = overlaps_df["CHROM"].astype("string")
+
     
     # Drop unnecessary columns
     columns_to_exclude = ['sample']
-
     overlaps_df = overlaps_df.drop(columns=[col for col in columns_to_exclude if col in overlaps_df.columns])
     overlaps_df = overlaps_df.loc[:,['snp_id'] + [col for col in segs_consensus if col not in columns_to_exclude]]
     # Exclude overlapping columns from bulk except 'snp_id' and 'CHROM'
