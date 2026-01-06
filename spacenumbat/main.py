@@ -44,7 +44,7 @@ def run_numbat(
     min_cells=50,
     tau=0.2,
     nu=1,
-    max_cost=None,
+    max_cost=0,
     n_cut=0,
     min_depth=0,
     common_diploid=True,
