@@ -1598,7 +1598,7 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     snp_id_cat = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
     bulks['snp_index'] = snp_id_cat.codes
     # Arrange by 'sample'
-    bulks = bulks.sort_values(['sample','CHROM', 'POS'], key=natsort.natsort_keygen())
+    bulks = bulks.sort_values(['sample','CHROM', 'POS'], key=natsort.natsort_keygen()).reset_index(drop=True)
     return bulks
 
 
