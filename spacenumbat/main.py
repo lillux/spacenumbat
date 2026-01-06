@@ -543,7 +543,7 @@ def run_numbat(
     joint_post = spatial_utils.get_joint_post(
         exp_post=exp_post,
         allele_post=allele_post,
-        segs_consensus=segs_consensus_retest_corrected,
+        segs_consensus=segs_consensus_retest,
         count_mat=count_mat,
         distance_key=distance_key,
         spatial=spatial,

@@ -1690,7 +1690,7 @@ def get_joint_post(
     connectivity_key: str = "spatial_connectivities",
     distance_key: str = "weighted_adjacency",
     method_kwargs: Dict[str, Any] = None,
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     """
     Build a joint CNV posterior by combining expression- and allele-level posteriors,
     with optional spatial smoothing on a per-segment basis.
