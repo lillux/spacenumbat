@@ -65,6 +65,14 @@ def get_spatial_info(
         kind=kind,
     )
     counts_mat.obsp[distance_key] = W
+    dist_nans = int(np.isnan(dist_test).sum())
+    w_nans = int(np.isnan(W.data).sum()) if W.nnz else 0
+    log.info(
+        "[sanity] get_spatial_info: dist_nans=%s weight_nans=%s obsp_keys=%s",
+        dist_nans,
+        w_nans,
+        list(counts_mat.obsp.keys()),
+    )
 
     return counts_mat
 
@@ -405,7 +413,14 @@ def neighbors_average(
     ... )
     """
     
-    if method_kwargs is None: method_kwargs = {}
+    if method_kwargs is None:
+        method_kwargs = {}
+    log.info(
+        "[sanity] neighbors_average: method=%s columns=%s by=%s",
+        method,
+        columns,
+        by,
+    )
 
     collector = []
 

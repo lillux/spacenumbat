@@ -31,6 +31,30 @@ from spacenumbat._log import get_logger
 log = get_logger(__name__)
 #log.info("Test operations")
 
+def _log_sanity(
+    df: Optional[pd.DataFrame],
+    name: str,
+    columns: Optional[List[str]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+    if df is None:
+        log.info(f"[sanity] {name}: df is None")
+        return
+
+    col_list = [c for c in (columns or []) if c in df.columns]
+    na_counts = {c: int(df[c].isna().sum()) for c in col_list}
+    dtypes = {c: str(df[c].dtype) for c in col_list}
+    extras = extra or {}
+    log.info(
+        "[sanity] %s: rows=%s cols=%s na=%s dtypes=%s extras=%s",
+        name,
+        df.shape[0],
+        df.shape[1],
+        na_counts,
+        dtypes,
+        extras,
+    )
+
 def run_group_hmms(
     bulks, t=1e-4, gamma=20, alpha=1e-4, min_genes=10, nu=1,
     common_diploid=True, diploid_chroms=None, allele_only=False, retest=True, run_hmm=True,
@@ -621,9 +645,16 @@ def test_multi_allelic(
     log.info('Testing for multi-allelic CNVs ..')
 
     cols_needed = ['sample','CHROM','seg_cons','LLR','p_amp','p_del','p_bdel','p_loh','p_bamp','cnv_state_post']
+    _log_sanity(bulks, "test_multi_allelic:bulks", columns=cols_needed)
     bulks_dist = bulks[cols_needed].drop_duplicates().copy()
     bulks_dist['p_max'] = bulks_dist[['p_amp','p_del','p_bdel','p_loh','p_bamp']].max(axis=1)
     bulks_dist = bulks_dist[(bulks_dist['LLR']>min_LLR) & (bulks_dist['p_max']>p_min)]
+    _log_sanity(
+        bulks_dist,
+        "test_multi_allelic:bulks_dist",
+        columns=['LLR', 'p_max', 'seg_cons'],
+        extra={"min_LLR": min_LLR, "p_min": p_min},
+    )
 
     if bulks_dist.empty:
         segs_multi = pd.DataFrame(columns=['seg_cons','cnv_states','n_states'])
@@ -647,6 +678,11 @@ def test_multi_allelic(
     segs_consensus = segs_consensus.copy()
     if count_segs>0:
         segs_consensus = segs_consensus.merge(segs_multi, on='seg_cons', how='left')
+        _log_sanity(
+            segs_consensus,
+            "test_multi_allelic:segs_consensus_merged",
+            columns=['seg_cons', 'cnv_states', 'n_states'],
+        )
 
         def update_p(row):
             cnv_states = row['cnv_states']
@@ -1438,6 +1474,11 @@ def get_exp_post(
     # gather good result
     good_results = [r for r in results if not isinstance(r, Exception)]
     exp_post = pd.concat(good_results).reset_index(drop=True)
+    _log_sanity(
+        exp_post,
+        "get_exp_post:exp_post",
+        columns=['cell', 'CHROM', 'seg', 'l11', 'l20', 'l10', 'l21', 'l31', 'l22', 'l00'],
+    )
     
     segs_cons_temp = segs_consensus.loc[:,['CHROM',
                                            'seg_cons',
@@ -1456,6 +1497,12 @@ def get_exp_post(
                                                     'p_bdel':'prior_bdel'})
 
     exp_post_merged = exp_post.merge(segs_cons_temp, on=['seg','CHROM'])
+    _log_sanity(
+        exp_post_merged,
+        "get_exp_post:exp_post_merged",
+        columns=['seg', 'CHROM', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel'],
+        extra={"rows_pre_merge": int(exp_post.shape[0])},
+    )
     prior_cols = ['prior_loh','prior_amp','prior_del','prior_bamp','prior_bdel']
     for c in prior_cols:
         exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
@@ -1547,6 +1594,12 @@ def get_haplotype_post(
     bulks_sel = bulks_filtered.loc[:,['CHROM', 'seg', 'snp_id', 'sample', 'haplo_post']].copy()
     
     merged = bulks_sel.merge(segs_consensus, on=['sample','CHROM','seg'])
+    _log_sanity(
+        merged,
+        "get_haplotype_post:merged",
+        columns=['sample', 'CHROM', 'seg', 'cnv_state'],
+        extra={"rows_pre_merge": int(bulks_sel.shape[0])},
+    )
     haplotypes = merged.loc[:,['CHROM', 'seg_cons', 'cnv_state', 'snp_id', 'haplo_post']].rename(columns={'seg_cons': 'seg'})
 
     return haplotypes
@@ -1610,12 +1663,23 @@ def get_allele_post(
 
     # Compute pAD based on genotype: if GT == '1|0' then pAD = AD, else pAD = DP - AD.
     allele_counts = df_allele.copy()
+    _log_sanity(
+        allele_counts,
+        "get_allele_post:df_allele",
+        columns=['cell', 'CHROM', 'snp_id', 'GT', 'AD', 'DP'],
+    )
     allele_counts['pAD'] = np.where(allele_counts['GT'] == '1|0',
                                     allele_counts['AD'],
                                     allele_counts['DP'] - allele_counts['AD'])
     # Inner join with haplotypes (only relevant columns)
     haplo_sel = haplotypes.loc[:,['CHROM', 'seg', 'cnv_state', 'snp_id', 'haplo_post']]
     allele_counts = allele_counts.merge(haplo_sel, on=['CHROM', 'snp_id'], how='inner')
+    _log_sanity(
+        allele_counts,
+        "get_allele_post:after_haplotype_merge",
+        columns=['cell', 'CHROM', 'seg', 'cnv_state', 'snp_id', 'DP', 'AD'],
+        extra={"rows_pre_merge": int(df_allele.shape[0])},
+    )
     # Filter rows where cnv_state is 'neu'
     allele_counts = allele_counts[allele_counts['cnv_state'] != 'neu']
     # Compute major and minor allele counts and MAF.
@@ -1650,6 +1714,11 @@ def get_allele_post(
                                                     'p_bamp':'prior_bamp',
                                                     'p_bdel':'prior_bdel'})
     allele_post = allele_post.merge(segs_cons_temp, on='seg')
+    _log_sanity(
+        allele_post,
+        "get_allele_post:allele_post_merged",
+        columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel', 'MAF', 'total'],
+    )
     
     # Rowwise compute log-likelihood values using the binomial log-PMF.
     def compute_ll(row):
@@ -1797,6 +1866,12 @@ def get_joint_post(
     
     # join exp_sel and allele_sel on keys: cell, CHROM, seg, cnv_state.
     joint_post_sp = pd.merge(exp_sel, allele_sel, on=['cell', 'CHROM', 'seg', 'cnv_state'], how='outer')
+    _log_sanity(
+        joint_post_sp,
+        "get_joint_post:merged_exp_allele",
+        columns=['cell', 'CHROM', 'seg', 'cnv_state', 'MAF', 'n_snp'],
+        extra={"rows_exp": int(exp_sel.shape[0]), "rows_allele": int(allele_sel.shape[0])},
+    )
     # Replace NA values in all columns ending with _x or _y with 0. These are {'l*', 'Z*', 'logBF' }
     for col in joint_post_sp.columns:
        if col.endswith('_x') or col.endswith('_y'):
@@ -1823,6 +1898,11 @@ def get_joint_post(
                                                        'p_bdel':'prior_bdel'})
     
     joint_post_sp = pd.merge(joint_post_sp, segs_sel, on='seg', how='left')
+    _log_sanity(
+        joint_post_sp,
+        "get_joint_post:with_priors",
+        columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel'],
+    )
     
     ## ADD SPATIAL CONTEXT    
     # Compute new joint log-likelihood columns by summing the _x and _y columns
@@ -1833,6 +1913,11 @@ def get_joint_post(
     warnings.filterwarnings('ignore')
     joint_post_sp = compute_posterior(joint_post_sp)
     warnings.filterwarnings('always')
+    _log_sanity(
+        joint_post_sp,
+        "get_joint_post:post_compute",
+        columns=['p_cnv', 'p_neu', 'p_amp', 'p_del', 'p_loh', 'p_bamp'],
+    )
     
     # Compute logistic transformations for logBF values.
     joint_post_sp['p_cnv_x'] = 1 / (1 + np.exp(-joint_post_sp['logBF_x']))
@@ -2004,6 +2089,11 @@ def expand_states(
             return row
 
         sc_post_multi = sc_post_multi.apply(select_posteriors, axis=1)
+        _log_sanity(
+            sc_post_multi,
+            "expand_states:sc_post_multi",
+            columns=['seg', 'cnv_state', 'p_cnv', 'Z_cnv'],
+        )
         
         # Filter out rows from sc_post whose seg is present in segs_multi (unexpanded version).
         sc_post_filtered = sc_post[~sc_post['seg'].isin(segs_multi['seg'])]
@@ -2264,6 +2354,5 @@ def get_clone_post(gtree: nx.DiGraph,
     clone_post_wide["compartment_opt"] = np.where(clone_post_wide["p_cnv"] > 0.5, "tumor", "normal")
 
     return clone_post_wide
-
 
 
