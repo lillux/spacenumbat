@@ -897,7 +897,7 @@ def get_bulk(
         raise ValueError('Duplicated SNPs found, please check genotypes')
     
     # Filter out rows where lambda_ref is zero or gene is not NaN
-    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (~bulk.loc[:,'gene'].isna())]
+    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
 
     #bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
