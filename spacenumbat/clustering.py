@@ -554,8 +554,10 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
     # Modify 'snp_id' and 'snp_index' columns
     # Create a categorical type for 'snp_id' with categories in order of appearance
-    bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
-    bulks['snp_index'] = bulks['snp_id'].cat.codes
+    # bulks['snp_id'] = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
+    # bulks['snp_index'] = bulks['snp_id'].cat.codes
+    snp_id_cat = pd.Categorical(bulks['snp_id'], categories=bulks['snp_id'].unique())
+    bulks['snp_index'] = snp_id_cat.codes
     # Arrange by 'sample'
     bulks = bulks.sort_values(['sample', 'snp_id', 'POS'])
     return bulks
