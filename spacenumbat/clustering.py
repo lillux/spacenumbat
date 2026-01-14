@@ -394,15 +394,15 @@ def get_nodes_celltree(
     # Cut dendrogram into k clusters
     clusters_array = fcluster(hclust['hc'], k, criterion='maxclust')
     
-    # if debug_sort:
-    #     group_lab, group_count = np.unique(clusters_array, return_counts=True)
-    #     sorted_count_index = np.argsort(group_count)[::-1]
+    if debug_sort:
+        group_lab, group_count = np.unique(clusters_array, return_counts=True)
+        sorted_count_index = np.argsort(group_count)[::-1]
         
-    #     new_label = np.zeros(clusters_array.shape[0], dtype=np.int64)
-    #     for idx, e in enumerate(group_lab):
-    #         group_index = np.where(clusters_array == e)[0]
-    #         new_label[group_index] = group_lab[sorted_count_index][idx]
-    #     clusters_array = new_label
+        new_label = np.zeros(clusters_array.shape[0], dtype=np.int64)
+        for idx, e in enumerate(group_lab):
+            group_index = np.where(clusters_array == e)[0]
+            new_label[group_index] = group_lab[sorted_count_index][idx]
+        clusters_array = new_label
 
     # Cell labels in dendrogram leaf order
     cell_labels = list(hclust['gexp_roll_wide'].obs_names)
