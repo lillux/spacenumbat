@@ -2024,8 +2024,7 @@ def find_common_diploid(
         fc_exp = np.exp(fc_max)
         
         if fc_exp > fc_min:
-            log.info(1,"quadruploid state enabled") # check if logging level is correct
-            print("quadruploid state enabled")
+            log.info("quadruploid state enabled") # check if logging level is correct
             if grouping=='component':
                 # find which segs are in that cluster
                 comp_idx = diploid_cluster if diploid_cluster > 0 else 0
@@ -2039,7 +2038,7 @@ def find_common_diploid(
             diploid_segs = segs_bal
             #bamp=False
     
-    print(f"Diploid regions: {', '.join(natsort.natsorted(diploid_segs))}")
+    log.info(f"Diploid regions: {', '.join(natsort.natsorted(diploid_segs))}")
     
     bulks['diploid'] = bulks['seg'].isin(diploid_segs)
 
