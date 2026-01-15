@@ -820,6 +820,23 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     return bulk
 
 
+def sanityze_df(df):
+
+    group_collector = []
+    for idx, group in df.groupby("gene", sort=False):
+
+        if group.shape[0] > 1:
+            group.loc[group.index[1]:,"logFC"] = np.nan
+            group.loc[group.index[1]:,"lnFC"] = np.nan
+    
+        group_collector.append(group)
+        
+    nan_remove = pd.concat(group_collector, axis=0)
+    pd.concat([nan_remove,df[df.gene.isna()]],axis=0)
+
+    return df
+
+
 def get_bulk(
     count_mat: ad.AnnData,
     lambdas_ref: Union[pd.DataFrame, pd.Series],
@@ -899,6 +916,8 @@ def get_bulk(
     # Filter out rows where lambda_ref is zero or gene is not NaN
     bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
 
+    bulk = sanityze_df(bulk) # TODO: remove it!!!!!!!!!!!!!!!!!!!!!!!!
+    
     #bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     bulk = bulk.reset_index(drop=True)
