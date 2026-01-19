@@ -714,22 +714,26 @@ def combine_bulk(
         bulk = bulk.drop(index=genes_exclude)
     
     # Fix observed counts, collapsing multiple SNPs per gene
-    gene_collect = {}
-    Y_obs_fix = []
-    for chrom in bulk['CHROM'].unique():
-        chrom_bulk = bulk[bulk['CHROM'] == chrom]
-        for idx, row in chrom_bulk.iterrows():
-            if pd.notna(row.gene) and row.gene in gene_collect:
-                gene_collect[row.gene][row.snp_id] = row.Y_obs
-                Y_obs_fix.append(np.nan)
-            else:
-                gene_collect[row.gene] = {row.snp_id: row.Y_obs}
-                Y_obs_fix.append(row.Y_obs)
-    bulk['Y_obs'] = Y_obs_fix
+    #gene_collect = {}
+    #Y_obs_fix = []
+    #for chrom in bulk['CHROM'].unique():
+    #    chrom_bulk = bulk[bulk['CHROM'] == chrom]
+    #    for idx, row in chrom_bulk.iterrows():
+    #        if pd.notna(row.gene) and row.gene in gene_collect:
+    #            gene_collect[row.gene][row.snp_id] = row.Y_obs
+    #            Y_obs_fix.append(np.nan)
+    #        else:
+    #            gene_collect[row.gene] = {row.snp_id: row.Y_obs}
+    #            Y_obs_fix.append(row.Y_obs)
+    #bulk['Y_obs'] = Y_obs_fix
+    
+    # get rid of duplicate gene expression values, collapsing multiple SNPs per gene
+    dup_mask = bulk["gene"].notna() & bulk.duplicated(subset=["CHROM", "gene"], keep="first")
+    bulk.loc[dup_mask, "Y_obs"] = np.nan
     
     # Calculate fold changes and normalize lambda_obs
-    fc = np.exp(np.log(bulk['lambda_obs']) - np.log(bulk['lambda_ref']))
     bulk['lambda_obs'] = bulk['Y_obs'] / bulk['d_obs']
+    fc = np.exp(np.log(bulk['lambda_obs']) - np.log(bulk['lambda_ref']))
     bulk['logFC'] = np.log2(fc)
     bulk['logFC'] = bulk['logFC'].replace([np.inf, -np.inf], np.nan)
     bulk['lnFC'] = np.log(fc)
