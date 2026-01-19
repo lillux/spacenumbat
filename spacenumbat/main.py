@@ -540,7 +540,7 @@ def run_numbat(
                                                connectivity_key=connectivity_key)
     
 
-    joint_post = spatial_utils.get_joint_post(
+    joint_post = operations.get_joint_post(
         exp_post=exp_post,
         allele_post=allele_post,
         segs_consensus=segs_consensus_retest,
