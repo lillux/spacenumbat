@@ -377,6 +377,7 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     bulk = bulk.copy()
     # Within each segment, set 'cnv_state' to NaN if 'n_genes' <= min_genes
     # Get the number of genes per segment
+    bulk.seg = bulk.seg.astype("string") # TODO check validity of conversion
     n_genes_per_seg = bulk.groupby('seg', observed=True, sort=False)['n_genes'].first().reset_index()
     # Identify segments with insufficient genes
     small_segs = n_genes_per_seg.loc[n_genes_per_seg['n_genes'] <= min_genes, 'seg']
@@ -385,6 +386,7 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     # Fill NaN values in 'cnv_state' forward and backward within each chromosome
     bulk['cnv_state'] = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].ffill().bfill()
     # Check if any chromosome has all NaN in 'cnv_state'
+    bulk.CHROM = bulk.CHROM.astype("string") # TODO check validity of conversion
     chrom_na = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].apply(lambda x: x.isna().all()).reset_index(name='all_na')
 
     # THIS RAISE ERROR IF FEW GENES ARE FOUND IN A CHROMOSOME
