@@ -234,9 +234,8 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
     if lambdas_ref.isna().any(axis=None):
         msg = ("The reference expression matrix 'lambdas_ref' "
                "should not contain any NA values.")
-        # logging.error(msg)
-        # raise ValueError(msg)
-        log.error(msg)
+        #log.error(msg)
+        raise ValueError(msg)
 
     # Reject integer-only matrices (raw counts)
     arr = lambdas_ref.to_numpy(copy=False)
@@ -244,15 +243,14 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
         msg = ("The reference expression matrix 'lambdas_ref' appears to "
                "contain only integer values. Please normalise raw counts "
                "with aggregate_counts() before calling this routine.")
-        # logging.error(msg)
+        #log.error(msg)
         raise ValueError(msg)
 
     # check that Gene IDs (row index) are unique
     if lambdas_ref.index.has_duplicates:
         msg = "Please remove duplicated genes in reference profile."
-        # logging.error(msg)
-        # raise ValueError(msg)
-        log.error(msg)
+        #log.error(msg)
+        raise ValueError(msg)
 
 
     return lambdas_ref.copy()
@@ -480,7 +478,9 @@ def get_exp_bulk(
     bulk_obs['lambda_ref'] = lambdas_bar[bulk_obs['gene']].values.astype(np.float64)
 
     gtf = gtf.copy()
-    gtf['gene_index'] = gtf.index
+    #gtf['gene_index'] = gtf.index
+    bulk_obs.gene = bulk_obs.gene.astype("string")
+    gtf.gene = gtf.gene.astype("string")
     bulk_obs = bulk_obs.merge(gtf, on='gene', how='left', sort=False)
 
     bulk_obs['CHROM'] = bulk_obs['CHROM'].astype('string') #was category
@@ -490,6 +490,7 @@ def get_exp_bulk(
 
     # Filter out infinite log fold changes
     bulk_obs = bulk_obs[~bulk_obs['logFC'].isin([np.inf, -np.inf]) & ~bulk_obs['lnFC'].isin([np.inf, -np.inf])]
+    bulk_obs["gene_index"] = [i for i in range(bulk_obs.shape[0])]
     return bulk_obs
 
 
@@ -685,6 +686,10 @@ def combine_bulk(
     - Fold changes (`logFC` and `lnFC`) are computed with infinity values replaced by NaN.
     """
     # Outer merge on CHROM and gene
+    allele_bulk.CHROM = allele_bulk.CHROM.astype("string")
+    allele_bulk.gene = allele_bulk.gene.astype("string")
+    exp_bulk.CHROM = exp_bulk.CHROM.astype("string")
+    exp_bulk.gene = exp_bulk.gene.astype("string")
     bulk = pd.merge(allele_bulk, exp_bulk, how='outer', on=['CHROM', 'gene'])
     # Fill missing SNP ids with gene names
     bulk['snp_id'] = np.where(bulk['snp_id'].isna(), bulk['gene'], bulk['snp_id'])
@@ -817,6 +822,10 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     bulk = bulk.drop(columns=[col for col in exclude_from_bulk if col in bulk.columns])
     
     # # Merge bulk and overlaps_df
+    bulk.snp_id = bulk.snp_id.astype("string")
+    bulk.CHROM = bulk.CHROM.astype("string")
+    overlaps_df.snp_id = bulk.snp_id.astype("string")
+    overlaps_df.CHROM = bulk.CHROM.astype("string")
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
