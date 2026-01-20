@@ -829,7 +829,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
-
+    # TODO: add type string for "seg"
     return bulk
 
 
