@@ -920,7 +920,7 @@ def get_bulk(
     # Filter out rows where lambda_ref is zero or gene is not NaN
     bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
 
-    bulk = sanityze_df(bulk) # TODO: remove it!!!!!!!!!!!!!!!!!!!!!!!!
+    #bulk = sanityze_df(bulk) # TODO: remove it!!!!!!!!!!!!!!!!!!!!!!!!
     
     #bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
