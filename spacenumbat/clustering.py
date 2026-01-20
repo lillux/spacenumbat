@@ -8,6 +8,8 @@ Created on Mon Dec  2 19:57:25 2024
 import numpy as np
 import pandas as pd
 import scipy
+from scipy.sparse import csr_matrix
+
 import anndata as ad
 import natsort
 
@@ -95,20 +97,20 @@ def choose_ref_cor(
     count_mat = count_mat[:, genes_annotated].copy()
     lambdas_ref_annot = lambdas_ref.loc[genes_annotated, :].copy()
 
-    count_mat.layers['X_norm'] = scale_counts(count_mat.X)
+    count_mat.layers['X_norm'] = csr_matrix(scale_counts(count_mat.X))
     count_mat.layers['X'] = count_mat.X.copy()
-    count_mat.X = count_mat.layers['X_norm']
-    count_mat.X = scipy.sparse.csr_matrix(count_mat.X)
+    #count_mat.X = count_mat.layers['X_norm']
+    #count_mat.X = scipy.sparse.csr_matrix(count_mat.X)
     count_mat = count_mat[:, lambdas_ref_annot[np.sum(lambdas_ref_annot * 1e6 > 2, axis=1) > 0].index]
 
-    zero_cov = count_mat.obs.loc[count_mat.X.sum(1).A == 0, :].index
+    zero_cov = count_mat.obs.loc[count_mat.layers['X_norm'].sum(1).A == 0, :].index
 
     if len(zero_cov) != 0:
         log.warning(f'Cannot choose reference for {len(zero_cov)} cells due to low coverage')
         count_mat = count_mat[[i for i in count_mat.obs.index if i not in set(zero_cov)], :]
 
     # homemade vectorized correlation
-    c_mat = np.log1p(count_mat.X.toarray() * 1e6)
+    c_mat = np.log1p(count_mat.layers['X_norm'].toarray() * 1e6)
     ref_mat = np.log1p(lambdas_ref_annot * 1e6).loc[count_mat.var_names, :].values
 
     c_mat_centered = c_mat - c_mat.mean(axis=1, keepdims=True)
