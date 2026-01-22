@@ -171,6 +171,7 @@ def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
     ValueError
         If mandatory columns are missing or SNP genotypes are inconsistent.
     """
+    df = df.copy()
     # check column
     expected: List[str] = ["cell","snp_id","CHROM",
                            "POS","cM","REF",
@@ -188,9 +189,8 @@ def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
     if (snp_n_unique > 1).any():
         msg = ("Inconsistent SNP genotypes; "
                "Are cells from two different individuals mixed together?")
-        # logging.error(msg)
-        # raise ValueError(msg)
-        log.error(msg)
+        #log.error(msg)
+        raise ValueError(msg)
 
     # Strip 'chr' prefix
     # Only check if the first entry starts with "chr"
@@ -201,7 +201,7 @@ def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
     autosomes = [str(i) for i in range(1, 23)]
     df = df[df["CHROM"].astype('string').isin(autosomes)]    
     df["CHROM"] = df["CHROM"].astype('string')
-    return df.copy()
+    return df
 
 
 def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.DataFrame:
