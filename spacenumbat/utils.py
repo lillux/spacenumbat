@@ -605,7 +605,7 @@ def get_allele_bulk(
     flat_list = []
     for chrom in df_allele.CHROM.unique():
         snps = df_allele[df_allele.CHROM == chrom].snp_id
-        flat_list.extend(range(1, len(snps) + 1))
+        flat_list.extend(range(len(snps)))
     df_allele['snp_index'] = flat_list
 
     # Filter by minimum depth
@@ -1389,7 +1389,6 @@ def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
 
     neu = neu.groupby(['sample','seg','CHROM'], sort=False, as_index=False, observed=True)
     segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
-    #segs_neu = neu.min('POS').loc[:, ['sample', 'seg', 'CHROM', 'POS']].dropna()
     segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)
     segs_neu['seg_end'] = neu.max('POS').dropna().loc[:,'POS']
 
