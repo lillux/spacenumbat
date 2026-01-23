@@ -624,8 +624,8 @@ def get_allele_bulk(
     df_allele['pBAF'] = pBAF
     df_allele['pAD'] = pAD
 
-    # df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen()) # REMOVED NOW
-    # df_allele['CHROM'] = df_allele['CHROM'].astype('string')
+    df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen()) # REMOVED NOW
+    df_allele['CHROM'] = df_allele['CHROM'].astype('string')
 
     # Compute inter-SNP genetic distances chromosome-wise
     inter_snp_cm = np.zeros(df_allele.shape[0])
