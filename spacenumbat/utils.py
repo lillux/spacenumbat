@@ -543,7 +543,9 @@ def switch_prob(
     if nu == 0:
         p = np.zeros(len(distance))
     else:
-        p = np.exp(np.log(1 - np.exp(-2 * nu * distance)) - np.log(2))
+        #p = np.exp(np.log(1 - np.exp(-2 * nu * distance)) - np.log(2))
+        p = (1 - np.exp(-2 * nu * distance)) * 0.5
+
         p = np.maximum(p, min_p)
 
     p[np.isnan(p)] = 0
