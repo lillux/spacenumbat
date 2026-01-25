@@ -1339,7 +1339,7 @@ def get_exp_post(
     diploid_chroms: Optional[List[str]] = None,
     use_loh: Optional[bool] = None,
     segs_loh: Optional[pd.DataFrame] = None,
-    ncores: int = 30,
+    ncores: int = 1,
     verbose: bool = True,
     debug: bool = False,
     n_points: int = 200
@@ -1474,6 +1474,12 @@ def get_exp_post(
     # gather good result
     good_results = [r for r in results if not isinstance(r, Exception)]
     exp_post = pd.concat(good_results).reset_index(drop=True)
+    
+    exp_post.CHROM = exp_post.CHROM.astype("string")
+    exp_post.seg = exp_post.seg.astype("string")
+    segs_consensus.CHROM = segs_consensus.CHROM.astype("string")
+    segs_consensus.seg = segs_consensus.seg.astype("string")
+
     _log_sanity(
         exp_post,
         "get_exp_post:exp_post",
@@ -1507,9 +1513,9 @@ def get_exp_post(
     for c in prior_cols:
         exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
     log.info('Disabling system warnings...')
-    # warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
-    # warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     log.info('System warnings enabled.')
     exp_posterior['seg_label'] = exp_posterior.apply(lambda r: f"{r['seg']}({r['cnv_state']})", axis=1)
 
