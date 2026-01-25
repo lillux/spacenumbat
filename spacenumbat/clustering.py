@@ -290,7 +290,7 @@ def exp_hclust(
     )
 
     # Compute parallel pairwise Euclidean distances
-    ncores = np.min(ncores, gexp_roll_wide.layers['X_smooth'].shape[0]//batch_size)
+    ncores = min(ncores, gexp_roll_wide.layers['X_smooth'].shape[0]//batch_size)
     dist_mat = pairwise_distances(
         gexp_roll_wide.layers['X_smooth'], metric='euclidean', n_jobs=ncores
     )
