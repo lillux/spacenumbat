@@ -1746,9 +1746,9 @@ def get_allele_post(
     
     allele_post = allele_post.apply(compute_ll, axis=1)
     # Compute the overall posterior probabilities.
-    # warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     allele_post = compute_posterior(allele_post)
-    # warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     # Create a seg_label by concatenating seg and cnv_state.
     allele_post['seg_label'] = allele_post['seg'].astype("string") + "(" + allele_post['cnv_state'].astype("string") + ")"
     
