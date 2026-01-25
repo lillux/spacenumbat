@@ -240,7 +240,8 @@ def exp_hclust(
     ncores: int = 1,
     verbose: bool = True,
     filter_hla: bool = True,
-    filter_segments = None
+    filter_segments = None,
+    batch_size : int = 256
     ) -> Dict[str, Any]:
     """
     Perform hierarchical clustering on smoothed gene expression profiles.
@@ -289,6 +290,7 @@ def exp_hclust(
     )
 
     # Compute parallel pairwise Euclidean distances
+    ncores = np.min(ncores, gexp_roll_wide.layers['X_smooth'].shape[0]//batch_size)
     dist_mat = pairwise_distances(
         gexp_roll_wide.layers['X_smooth'], metric='euclidean', n_jobs=ncores
     )

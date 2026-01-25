@@ -826,8 +826,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     # # Merge bulk and overlaps_df
     bulk.snp_id = bulk.snp_id.astype("string")
     bulk.CHROM = bulk.CHROM.astype("string")
-    overlaps_df.snp_id = bulk.snp_id.astype("string")
-    overlaps_df.CHROM = bulk.CHROM.astype("string")
+    overlaps_df.snp_id = overlaps_df.snp_id.astype("string")
+    overlaps_df.CHROM = overlaps_df.CHROM.astype("string")
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
@@ -1851,7 +1851,7 @@ def find_common_diploid(
         results_list = [process_bulk(bulk) for bulk in sample_groups]
     
     # Combine results
-    bulks = pd.concat(results_list)
+    bulks = pd.concat(results_list,ignore_index=True)
     # If there's any loh:
     if 'loh' in bulks.columns and bulks['loh'].any():
         # Replace cnv_state with 'loh' where loh is True
