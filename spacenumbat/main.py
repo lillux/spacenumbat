@@ -340,9 +340,9 @@ def run_numbat(
         # save window-smoothed normalized expression profiles as AnnData
         log.info("Saving clustering results")
         clust["gexp_roll_wide"].write_h5ad(os.path.join(out_dir, "gexp_roll_wide.h5ad"))
-        pd.DataFrame(clust["hc"]).to_csv(os.path.join(out_dir, "hc_initial_hierarcical_clustering.tsv"), sep="\t")
+        pd.DataFrame(clust["hc"]).to_csv(os.path.join(out_dir, "hc_initial_hierarchical_clustering.tsv"), sep="\t")
         log.info(f"Normalized expression results saved at {os.path.join(out_dir, 'gexp_roll_wide.h5ad')}")
-        log.info(f"Initial hierarchical clustering results saved at {os.path.join(out_dir, 'hc_initial_hierarcical_clustering.tsv')}")
+        log.info(f"Initial hierarchical clustering results saved at {os.path.join(out_dir, 'hc_initial_hierarchical_clustering.tsv')}")
         
         # extract cell groupings
         nodes_dict = clustering.get_nodes_celltree(clust, init_k)
