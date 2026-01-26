@@ -2440,7 +2440,7 @@ def log1mexp(x: float) -> float:
         raise ValueError("Inputs need to be non-negative!")
 
     if x <= np.log(2):
-        return np.log(1.0 - np.exp(-x))
+        return np.log(-np.expm1(-x))
     else:
         return np.log1p(-np.exp(-x))
 
