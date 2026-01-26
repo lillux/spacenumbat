@@ -948,7 +948,7 @@ def run_joint_hmm_s15(
     As_sub_reordered = np.moveaxis(As_sub_np, 2, 0)  # shape (N, M, M)
     logPi = np.log(As_sub_reordered, out=np.zeros_like(As_sub_reordered))
 
-    # 8) Construct the HMM dictionary
+    # Construct the HMM dictionary
     hmm = {"x":      pAD,
            "d":      DP,
            "y":      Y_obs,
@@ -964,11 +964,10 @@ def run_joint_hmm_s15(
            "states": states_sub,
            "p_s":    p_s}
 
-    # Call Viterbi routine:
-    #    That function returns a length-N array of 0-based state indices
+    # Call Viterbi algorithm:
     z_idx = viterbi_joint(hmm)
 
-    # Map these indices back to the state names
+    # Map indices back to the state names
     MPC = [states_sub[i] for i in z_idx]
     return MPC
 

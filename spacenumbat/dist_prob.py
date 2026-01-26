@@ -442,7 +442,7 @@ def fit_lnpois(
         initial_guess,
         method='L-BFGS-B',
         bounds=bounds,
-        options={'disp': disp},
+        #options={'disp': disp},
         tol=1e-5
     )
 
