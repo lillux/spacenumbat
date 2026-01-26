@@ -2433,6 +2433,8 @@ def log1mexp(x: float) -> float:
     ValueError
         If x < 0.
     """
+    if x == 0:
+        return -np.inf
 
     if x < 0:
         raise ValueError("Inputs need to be non-negative!")
