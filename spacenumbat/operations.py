@@ -1437,7 +1437,14 @@ def get_exp_post(
             sc_exp_data.loc[:,'Y_obs'] = exp_sc[cell, sc_exp_data.index].X.toarray().ravel()
             sc_exp_data.loc[:,'lambda_ref'] = lambdas_ref.loc[sc_exp_data.index,ref]
             sc_exp_data.loc[:,'lambda_obs'] = sc_exp_data.Y_obs / sc_exp_data.Y_obs.sum()
-            sc_exp_data.loc[:,'logFC'] = np.log2(sc_exp_data.lambda_obs) - np.log2(sc_exp_data.lambda_ref)
+            #sc_exp_data.loc[:,'logFC'] = np.log2(sc_exp_data.lambda_obs) - np.log2(sc_exp_data.lambda_ref)
+            safe_lambda_obs = pd.Series(np.where(sc_exp_data.lambda_obs > 0, 
+                                                 sc_exp_data.lambda_obs, 
+                                                 np.nan), index=sc_exp_data.index)
+            safe_lambda_ref = pd.Series(np.where(sc_exp_data.lambda_ref > 0,
+                                                 sc_exp_data.lambda_ref,
+                                                 np.nan), index=sc_exp_data.index)
+            sc_exp_data.loc[:,'logFC'] = np.log2(safe_lambda_obs) - np.log2(safe_lambda_ref)
             cell_lik = get_exp_likelihoods(exp_counts=sc_exp_data,
                                            use_loh=use_loh,
                                            diploid_chroms=diploid_chroms,
