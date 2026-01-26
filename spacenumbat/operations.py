@@ -1669,23 +1669,23 @@ def get_allele_post(
 
     # Compute pAD based on genotype: if GT == '1|0' then pAD = AD, else pAD = DP - AD.
     allele_counts = df_allele.copy()
-    _log_sanity(
-        allele_counts,
-        "get_allele_post:df_allele",
-        columns=['cell', 'CHROM', 'snp_id', 'GT', 'AD', 'DP'],
-    )
+    #_log_sanity(
+    #    allele_counts,
+    #    "get_allele_post:df_allele",
+    #    columns=['cell', 'CHROM', 'snp_id', 'GT', 'AD', 'DP'],
+    #)
     allele_counts['pAD'] = np.where(allele_counts['GT'] == '1|0',
                                     allele_counts['AD'],
                                     allele_counts['DP'] - allele_counts['AD'])
     # Inner join with haplotypes (only relevant columns)
     haplo_sel = haplotypes.loc[:,['CHROM', 'seg', 'cnv_state', 'snp_id', 'haplo_post']]
     allele_counts = allele_counts.merge(haplo_sel, on=['CHROM', 'snp_id'], how='inner')
-    _log_sanity(
-        allele_counts,
-        "get_allele_post:after_haplotype_merge",
-        columns=['cell', 'CHROM', 'seg', 'cnv_state', 'snp_id', 'DP', 'AD'],
-        extra={"rows_pre_merge": int(df_allele.shape[0])},
-    )
+    #_log_sanity(
+    #    allele_counts,
+    #    "get_allele_post:after_haplotype_merge",
+    #    columns=['cell', 'CHROM', 'seg', 'cnv_state', 'snp_id', 'DP', 'AD'],
+    #    extra={"rows_pre_merge": int(df_allele.shape[0])},
+    #)
     # Filter rows where cnv_state is 'neu'
     allele_counts = allele_counts[allele_counts['cnv_state'] != 'neu']
     # Compute major and minor allele counts and MAF.
@@ -1697,7 +1697,8 @@ def get_allele_post(
     allele_counts['minor_count'] = allele_counts['DP'] - allele_counts['major_count']
     allele_counts['MAF'] = allele_counts['major_count'] / allele_counts['DP']
     #warnings.filterwarnings('always')
-
+    
+    allele_counts = allele_counts.sort_values(["cell", "CHROM", "POS"], key=natsort.natsort_keygen())
     allele_counts['n_chrom_snp'] = allele_counts.groupby(['cell', 'CHROM'], sort=False, observed=True)['POS'].transform('count')
     allele_counts['inter_snp_dist'] = allele_counts.groupby(['cell', 'CHROM'], sort=False, observed=True)['POS'].diff()
     # Filter rows where inter_snp_dist > 250 or is NA.
@@ -1720,11 +1721,11 @@ def get_allele_post(
                                                     'p_bamp':'prior_bamp',
                                                     'p_bdel':'prior_bdel'})
     allele_post = allele_post.merge(segs_cons_temp, on='seg')
-    _log_sanity(
-        allele_post,
-        "get_allele_post:allele_post_merged",
-        columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel', 'MAF', 'total'],
-    )
+    #_log_sanity(
+    #    allele_post,
+    #    "get_allele_post:allele_post_merged",
+    #    columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel', 'MAF', 'total'],
+    #)
     
     # Rowwise compute log-likelihood values using the binomial log-PMF.
     def compute_ll(row):
@@ -1884,24 +1885,25 @@ def get_joint_post(
            joint_post_sp[col] = joint_post_sp[col].fillna(0)
     
     # Left join with segs_consensus
-    segs_sel = segs_consensus.loc[:,['seg_cons', 'seg_start', 'seg_end'] +
-                                                 [col for col in segs_consensus if col in {'n_genes',
-                                                                                           'n_snps',
-                                                                                           'p_loh',
-                                                                                           'p_amp',
-                                                                                           'p_del',
-                                                                                           'p_bamp',
-                                                                                           'p_bdel',
-                                                                                           'LLR', 
-                                                                                           'LLR_x', 
-                                                                                           'LLR_y'}]].copy()
+    segs_sel = segs_consensus.loc[:,
+                                  ['seg_cons', 'seg_start', 'seg_end'] +
+                                  [col for col in segs_consensus if col in {'n_genes',
+                                                                            'n_snps',
+                                                                            'p_loh',
+                                                                            'p_amp',
+                                                                            'p_del',
+                                                                            'p_bamp',
+                                                                            'p_bdel',
+                                                                            'LLR', 
+                                                                            'LLR_x', 
+                                                                            'LLR_y'}]].copy()
     
     segs_sel = segs_sel.rename(columns={'seg_cons':'seg',
-                                                       'p_loh':'prior_loh',
-                                                       'p_amp':'prior_amp',
-                                                       'p_del':'prior_del',
-                                                       'p_bamp':'prior_bamp',
-                                                       'p_bdel':'prior_bdel'})
+                                        'p_loh':'prior_loh',
+                                        'p_amp':'prior_amp',
+                                        'p_del':'prior_del',
+                                        'p_bamp':'prior_bamp',
+                                        'p_bdel':'prior_bdel'})
     
     joint_post_sp = pd.merge(joint_post_sp, segs_sel, on='seg', how='left')
     _log_sanity(
