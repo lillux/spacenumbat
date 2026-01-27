@@ -520,7 +520,7 @@ def log_beta_binomial_pmf(k: np.ndarray,
         An array of log PMF values corresponding to the inputs.
     """
     # Compute log of the combination coefficient (n choose k).
-    #log_coef = np.log(comb(n, k))
+    #log_coef = np.log(comb(n, k)) # log(0) warnings
     valid = (k >= 0) & (k <= n)
     log_coef = np.full_like(k, -np.inf, dtype=float)
     log_coef[valid] = (gammaln(n[valid] + 1)
