@@ -133,7 +133,7 @@ def check_segs_fix(segs_consensus_fix: Optional[pd.DataFrame]) -> Optional[pd.Da
     # If seg column is integer, convert to string: CHROM_SEG
     if pd.api.types.is_integer_dtype(segs_consensus_fix['seg']):
         segs_consensus_fix = segs_consensus_fix.copy()
-        segs_consensus_fix['seg'] = segs_consensus_fix['CHROM'].astype(str) + '_' + segs_consensus_fix['seg'].astype(str)
+        segs_consensus_fix['seg'] = segs_consensus_fix['CHROM'].astype("string") + '_' + segs_consensus_fix['seg'].astype("string")
 
     # segs_consensus_fix = segs_consensus_fix.sort_values(['CHROM']).copy()
     segs_consensus_fix['cnv_state_post'] = segs_consensus_fix['cnv_state']
@@ -184,7 +184,7 @@ def check_segs_loh(segs_loh: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     # If seg column is integer, convert to string: CHROM_SEG
     if pd.api.types.is_integer_dtype(segs_loh['seg']):
         segs_loh = segs_loh.copy()
-        segs_loh['seg'] = segs_loh['CHROM'].astype(str) + '_' + segs_loh['seg'].astype(str)
+        segs_loh['seg'] = segs_loh['CHROM'].astype("string") + '_' + segs_loh['seg'].astype("string")
 
     # Add loh = True column
     segs_loh = segs_loh.copy()
@@ -246,7 +246,7 @@ def check_filter_segments(filter_segments_path: Union[Path, None]) -> pd.DataFra
     # Coerce columns to expected types and check for errors
     if not pd.api.types.is_string_dtype(df['CHROM']):
         try:
-            df['CHROM'] = df['CHROM'].astype(str)
+            df['CHROM'] = df['CHROM'].astype("string")
         except Exception:
             raise ValueError("Column 'CHROM' cannot be converted to string")
 

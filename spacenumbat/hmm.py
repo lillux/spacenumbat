@@ -101,8 +101,8 @@ def viterbi_loh(HMM:Mapping[str, Any]):
 
     z[-1] = np.argmax(nu[-1,])
     for i in range(n-2,-1,-1):
-        z[i] = np.argmax(logPi[:,:,i+1][:,np.int32(z[i+1])] + nu[i,])
-    z = z.astype(np.int32)
+        z[i] = np.argmax(logPi[:,:,i+1][:,np.int64(z[i+1])] + nu[i,])
+    z = z.astype(np.int64)
     #LL = np.max(nu[n-1,])
     HMM['states'] = np.array(HMM['states'])[z]
 
@@ -383,10 +383,10 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     small_segs = n_genes_per_seg.loc[n_genes_per_seg['n_genes'] <= min_genes, 'seg']
     # Set 'cnv_state' to NaN for these segments
     bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = np.nan
+    bulk.CHROM = bulk.CHROM.astype("string") # TODO check validity of conversion
     # Fill NaN values in 'cnv_state' forward and backward within each chromosome
     bulk['cnv_state'] = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].ffill().bfill()
     # Check if any chromosome has all NaN in 'cnv_state'
-    bulk.CHROM = bulk.CHROM.astype("string") # TODO check validity of conversion
     chrom_na = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].apply(lambda x: x.isna().all()).reset_index(name='all_na')
 
     # THIS RAISE ERROR IF FEW GENES ARE FOUND IN A CHROMOSOME
