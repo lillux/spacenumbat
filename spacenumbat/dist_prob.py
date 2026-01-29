@@ -6,7 +6,7 @@ Created on Mon Dec  2 16:08:02 2024
 @author: lillux
 """
 import numpy as np
-from scipy.special import comb, betaln
+from scipy.special import comb, betaln, gammaln
 from scipy.optimize import minimize
 from scipy.stats import nbinom
 from numba import njit, prange
@@ -442,7 +442,7 @@ def fit_lnpois(
         initial_guess,
         method='L-BFGS-B',
         bounds=bounds,
-        options={'disp': disp},
+        #options={'disp': disp},
         tol=1e-5
     )
 
@@ -520,7 +520,13 @@ def log_beta_binomial_pmf(k: np.ndarray,
         An array of log PMF values corresponding to the inputs.
     """
     # Compute log of the combination coefficient (n choose k).
-    log_coef = np.log(comb(n, k))
+    #log_coef = np.log(comb(n, k)) # log(0) warnings
+    valid = (k >= 0) & (k <= n)
+    log_coef = np.full_like(k, -np.inf, dtype=float)
+    log_coef[valid] = (gammaln(n[valid] + 1)
+                       - gammaln(k[valid] + 1)
+                       - gammaln(n[valid] - k[valid] + 1))
+
     # Calculate PMF using beta functions.
     log_pmf = log_coef + betaln(k + alpha, n - k + beta) - betaln(alpha, beta)
     return log_pmf

@@ -897,7 +897,7 @@ def get_exp_likelihoods(
     mu: Optional[float] = None,
     sigma: Optional[float] = None,
     disp: bool = False,
-    n_points: int = 256
+    n_points: int = 200
     ) -> pd.DataFrame:
     """
     Compute expression-model likelihood summaries per segment.
@@ -1084,7 +1084,7 @@ def calc_phi_mle_lnpois(
         x0=[start],
         method='L-BFGS-B',
         bounds=[(lower, upper)],
-        options={'disp': disp},
+        #options={'disp': disp},
         tol = 1e-6 # added later
     )
     
@@ -1339,7 +1339,7 @@ def get_exp_post(
     diploid_chroms: Optional[List[str]] = None,
     use_loh: Optional[bool] = None,
     segs_loh: Optional[pd.DataFrame] = None,
-    ncores: int = 30,
+    ncores: int = 1,
     verbose: bool = True,
     debug: bool = False,
     n_points: int = 200
@@ -1437,7 +1437,14 @@ def get_exp_post(
             sc_exp_data.loc[:,'Y_obs'] = exp_sc[cell, sc_exp_data.index].X.toarray().ravel()
             sc_exp_data.loc[:,'lambda_ref'] = lambdas_ref.loc[sc_exp_data.index,ref]
             sc_exp_data.loc[:,'lambda_obs'] = sc_exp_data.Y_obs / sc_exp_data.Y_obs.sum()
-            sc_exp_data.loc[:,'logFC'] = np.log2(sc_exp_data.lambda_obs) - np.log2(sc_exp_data.lambda_ref)
+            #sc_exp_data.loc[:,'logFC'] = np.log2(sc_exp_data.lambda_obs) - np.log2(sc_exp_data.lambda_ref)
+            safe_lambda_obs = pd.Series(np.where(sc_exp_data.lambda_obs > 0, 
+                                                 sc_exp_data.lambda_obs, 
+                                                 np.nan), index=sc_exp_data.index)
+            safe_lambda_ref = pd.Series(np.where(sc_exp_data.lambda_ref > 0,
+                                                 sc_exp_data.lambda_ref,
+                                                 np.nan), index=sc_exp_data.index)
+            sc_exp_data.loc[:,'logFC'] = np.log2(safe_lambda_obs) - np.log2(safe_lambda_ref)
             cell_lik = get_exp_likelihoods(exp_counts=sc_exp_data,
                                            use_loh=use_loh,
                                            diploid_chroms=diploid_chroms,
@@ -1474,6 +1481,12 @@ def get_exp_post(
     # gather good result
     good_results = [r for r in results if not isinstance(r, Exception)]
     exp_post = pd.concat(good_results).reset_index(drop=True)
+    
+    exp_post.CHROM = exp_post.CHROM.astype("string")
+    exp_post.seg = exp_post.seg.astype("string")
+    segs_consensus.CHROM = segs_consensus.CHROM.astype("string")
+    segs_consensus.seg = segs_consensus.seg.astype("string")
+
     _log_sanity(
         exp_post,
         "get_exp_post:exp_post",
@@ -1507,9 +1520,9 @@ def get_exp_post(
     for c in prior_cols:
         exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
     log.info('Disabling system warnings...')
-    # warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
-    # warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     log.info('System warnings enabled.')
     exp_posterior['seg_label'] = exp_posterior.apply(lambda r: f"{r['seg']}({r['cnv_state']})", axis=1)
 
@@ -1663,23 +1676,23 @@ def get_allele_post(
 
     # Compute pAD based on genotype: if GT == '1|0' then pAD = AD, else pAD = DP - AD.
     allele_counts = df_allele.copy()
-    _log_sanity(
-        allele_counts,
-        "get_allele_post:df_allele",
-        columns=['cell', 'CHROM', 'snp_id', 'GT', 'AD', 'DP'],
-    )
+    #_log_sanity(
+    #    allele_counts,
+    #    "get_allele_post:df_allele",
+    #    columns=['cell', 'CHROM', 'snp_id', 'GT', 'AD', 'DP'],
+    #)
     allele_counts['pAD'] = np.where(allele_counts['GT'] == '1|0',
                                     allele_counts['AD'],
                                     allele_counts['DP'] - allele_counts['AD'])
     # Inner join with haplotypes (only relevant columns)
     haplo_sel = haplotypes.loc[:,['CHROM', 'seg', 'cnv_state', 'snp_id', 'haplo_post']]
     allele_counts = allele_counts.merge(haplo_sel, on=['CHROM', 'snp_id'], how='inner')
-    _log_sanity(
-        allele_counts,
-        "get_allele_post:after_haplotype_merge",
-        columns=['cell', 'CHROM', 'seg', 'cnv_state', 'snp_id', 'DP', 'AD'],
-        extra={"rows_pre_merge": int(df_allele.shape[0])},
-    )
+    #_log_sanity(
+    #    allele_counts,
+    #    "get_allele_post:after_haplotype_merge",
+    #    columns=['cell', 'CHROM', 'seg', 'cnv_state', 'snp_id', 'DP', 'AD'],
+    #    extra={"rows_pre_merge": int(df_allele.shape[0])},
+    #)
     # Filter rows where cnv_state is 'neu'
     allele_counts = allele_counts[allele_counts['cnv_state'] != 'neu']
     # Compute major and minor allele counts and MAF.
@@ -1691,7 +1704,8 @@ def get_allele_post(
     allele_counts['minor_count'] = allele_counts['DP'] - allele_counts['major_count']
     allele_counts['MAF'] = allele_counts['major_count'] / allele_counts['DP']
     #warnings.filterwarnings('always')
-
+    
+    allele_counts = allele_counts.sort_values(["cell", "CHROM", "POS"], key=natsort.natsort_keygen())
     allele_counts['n_chrom_snp'] = allele_counts.groupby(['cell', 'CHROM'], sort=False, observed=True)['POS'].transform('count')
     allele_counts['inter_snp_dist'] = allele_counts.groupby(['cell', 'CHROM'], sort=False, observed=True)['POS'].diff()
     # Filter rows where inter_snp_dist > 250 or is NA.
@@ -1714,11 +1728,11 @@ def get_allele_post(
                                                     'p_bamp':'prior_bamp',
                                                     'p_bdel':'prior_bdel'})
     allele_post = allele_post.merge(segs_cons_temp, on='seg')
-    _log_sanity(
-        allele_post,
-        "get_allele_post:allele_post_merged",
-        columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel', 'MAF', 'total'],
-    )
+    #_log_sanity(
+    #    allele_post,
+    #    "get_allele_post:allele_post_merged",
+    #    columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel', 'MAF', 'total'],
+    #)
     
     # Rowwise compute log-likelihood values using the binomial log-PMF.
     def compute_ll(row):
@@ -1740,9 +1754,9 @@ def get_allele_post(
     
     allele_post = allele_post.apply(compute_ll, axis=1)
     # Compute the overall posterior probabilities.
-    # warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     allele_post = compute_posterior(allele_post)
-    # warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     # Create a seg_label by concatenating seg and cnv_state.
     allele_post['seg_label'] = allele_post['seg'].astype("string") + "(" + allele_post['cnv_state'].astype("string") + ")"
     
@@ -1878,24 +1892,25 @@ def get_joint_post(
            joint_post_sp[col] = joint_post_sp[col].fillna(0)
     
     # Left join with segs_consensus
-    segs_sel = segs_consensus.loc[:,['seg_cons', 'seg_start', 'seg_end'] +
-                                                 [col for col in segs_consensus if col in {'n_genes',
-                                                                                           'n_snps',
-                                                                                           'p_loh',
-                                                                                           'p_amp',
-                                                                                           'p_del',
-                                                                                           'p_bamp',
-                                                                                           'p_bdel',
-                                                                                           'LLR', 
-                                                                                           'LLR_x', 
-                                                                                           'LLR_y'}]].copy()
+    segs_sel = segs_consensus.loc[:,
+                                  ['seg_cons', 'seg_start', 'seg_end'] +
+                                  [col for col in segs_consensus if col in {'n_genes',
+                                                                            'n_snps',
+                                                                            'p_loh',
+                                                                            'p_amp',
+                                                                            'p_del',
+                                                                            'p_bamp',
+                                                                            'p_bdel',
+                                                                            'LLR', 
+                                                                            'LLR_x', 
+                                                                            'LLR_y'}]].copy()
     
     segs_sel = segs_sel.rename(columns={'seg_cons':'seg',
-                                                       'p_loh':'prior_loh',
-                                                       'p_amp':'prior_amp',
-                                                       'p_del':'prior_del',
-                                                       'p_bamp':'prior_bamp',
-                                                       'p_bdel':'prior_bdel'})
+                                        'p_loh':'prior_loh',
+                                        'p_amp':'prior_amp',
+                                        'p_del':'prior_del',
+                                        'p_bamp':'prior_bamp',
+                                        'p_bdel':'prior_bdel'})
     
     joint_post_sp = pd.merge(joint_post_sp, segs_sel, on='seg', how='left')
     _log_sanity(

@@ -296,8 +296,11 @@ def run_allele_hmm_s5(pAD: np.ndarray,
     logPi = np.zeros((N, M, M))
     for i in range(N):
         trans_mat = calc_trans_mat_s5(p_s[i], t)
-        logPi[i] = np.log(trans_mat)
-    
+        #logPi[i] = np.log(trans_mat)
+        logPi[i] = np.log(trans_mat,
+                          out=np.full_like(trans_mat, -np.inf),
+                          where=trans_mat > 0)
+        
     # Set uniform prior if not provided.
     if prior is None:
         prior = np.full(M, 1 / M)
@@ -946,9 +949,12 @@ def run_joint_hmm_s15(
     # Build final logPi by taking log of As_sub
     As_sub_np = np.array(As_sub)  # shape (M, M, N)
     As_sub_reordered = np.moveaxis(As_sub_np, 2, 0)  # shape (N, M, M)
-    logPi = np.log(As_sub_reordered, out=np.zeros_like(As_sub_reordered))
+    #logPi = np.log(As_sub_reordered, out=np.zeros_like(As_sub_reordered))
+    logPi = np.log(As_sub_reordered,
+                   out=np.full_like(As_sub_reordered, -np.inf),
+                   where=As_sub_reordered > 0)
 
-    # 8) Construct the HMM dictionary
+    # Construct the HMM dictionary
     hmm = {"x":      pAD,
            "d":      DP,
            "y":      Y_obs,
@@ -964,11 +970,10 @@ def run_joint_hmm_s15(
            "states": states_sub,
            "p_s":    p_s}
 
-    # Call Viterbi routine:
-    #    That function returns a length-N array of 0-based state indices
+    # Call Viterbi algorithm:
     z_idx = viterbi_joint(hmm)
 
-    # Map these indices back to the state names
+    # Map indices back to the state names
     MPC = [states_sub[i] for i in z_idx]
     return MPC
 
@@ -1235,7 +1240,10 @@ def get_allele_hmm(
 
     hmm = {
         "x": np.asarray(pAD, dtype=float),
-        "logPi": np.log(Pi_3d),  # shape(N,2,2)
+        #"logPi": np.log(Pi_3d),  # shape(N,2,2)
+        "logPi": np.log(Pi_3d,
+                        out=np.full_like(Pi_3d, -np.inf),
+                        where=Pi_3d > 0),
         "delta": prior,          # shape(2,)
         "alpha": alpha_mat,      # shape(N,2)
         "beta":  beta_mat,       # shape(N,2)

@@ -543,7 +543,9 @@ def switch_prob(
     if nu == 0:
         p = np.zeros(len(distance))
     else:
-        p = np.exp(np.log(1 - np.exp(-2 * nu * distance)) - np.log(2))
+        #p = np.exp(np.log(1 - np.exp(-2 * nu * distance)) - np.log(2))
+        p = (1 - np.exp(-2 * nu * distance)) * 0.5
+
         p = np.maximum(p, min_p)
 
     p[np.isnan(p)] = 0
@@ -824,8 +826,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     # # Merge bulk and overlaps_df
     bulk.snp_id = bulk.snp_id.astype("string")
     bulk.CHROM = bulk.CHROM.astype("string")
-    overlaps_df.snp_id = bulk.snp_id.astype("string")
-    overlaps_df.CHROM = bulk.CHROM.astype("string")
+    overlaps_df.snp_id = overlaps_df.snp_id.astype("string")
+    overlaps_df.CHROM = overlaps_df.CHROM.astype("string")
     bulk = bulk.merge(overlaps_df, on=['snp_id', 'CHROM'], how=how)    
     # # Assign 'seg' from 'seg_cons'
     bulk.loc[:,'seg'] = bulk.loc[:,'seg_cons']
@@ -1849,7 +1851,7 @@ def find_common_diploid(
         results_list = [process_bulk(bulk) for bulk in sample_groups]
     
     # Combine results
-    bulks = pd.concat(results_list)
+    bulks = pd.concat(results_list,ignore_index=True)
     # If there's any loh:
     if 'loh' in bulks.columns and bulks['loh'].any():
         # Replace cnv_state with 'loh' where loh is True
@@ -2432,12 +2434,14 @@ def log1mexp(x: float) -> float:
     ValueError
         If x < 0.
     """
+    if x == 0:
+        return -np.inf
 
     if x < 0:
         raise ValueError("Inputs need to be non-negative!")
 
     if x <= np.log(2):
-        return np.log(1.0 - np.exp(-x))
+        return np.log(-np.expm1(-x))
     else:
         return np.log1p(-np.exp(-x))
 
