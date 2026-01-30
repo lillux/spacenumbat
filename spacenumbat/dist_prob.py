@@ -233,7 +233,9 @@ def poilog1(xs: Union[np.ndarray, Sequence[float]],
     nrN = len(xs)
     val = np.empty(nrN, dtype=np.float64)
     for i in prange(nrN):
-        val[i] = poilog_numba(xs[i], mys[i], sigs[i]**2, n_points)
+       #val[i] = poilog_numba(xs[i], mys[i], sigs[i]**2, n_points) #TODO: evaluate differences
+        val[i] = poilog_numba(xs[i], mys[i], sigs[i], n_points)
+
 
     return val
 
