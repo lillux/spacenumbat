@@ -1486,6 +1486,7 @@ def get_exp_post(
     exp_post.seg = exp_post.seg.astype("string")
     segs_consensus.CHROM = segs_consensus.CHROM.astype("string")
     segs_consensus.seg = segs_consensus.seg.astype("string")
+    segs_consensus.seg_cons = segs_consensus.seg_cons.astype("string")
 
     _log_sanity(
         exp_post,
