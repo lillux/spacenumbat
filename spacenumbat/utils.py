@@ -194,8 +194,8 @@ def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
 
     # Strip 'chr' prefix
     # Only check if the first entry starts with "chr"
-    if df["CHROM"].astype(str).str.contains(r"^chr").iloc[0]:
-        df = df.assign(CHROM=df["CHROM"].astype(str).str.replace(r"^chr", "", regex=True))
+    if df["CHROM"].astype("string").str.contains(r"^chr").iloc[0]:
+        df = df.assign(CHROM=df["CHROM"].astype("string").str.replace(r"^chr", "", regex=True))
 
     # Keep chr 1-22
     autosomes = [str(i) for i in range(1, 23)]
@@ -1276,7 +1276,7 @@ def detect_clonal_loh(
                             (bulk.loc[:,'gene'] == gene)]
             gene_snps = tmp_bulk[(~tmp_bulk.loc[:,'AD'].isna()) &
                                 (tmp_bulk.loc[:,'DP'] > min_depth)].shape[0]
-            Y_obs = tmp_bulk.loc[:,'Y_obs'].dropna().unique().astype(np.int32).sum()
+            Y_obs = tmp_bulk.loc[:,'Y_obs'].dropna().unique().astype(np.int64).sum()
             lambda_ref = tmp_bulk.loc[:,'lambda_ref'].dropna().unique().item()
             logFC = tmp_bulk.loc[:,'logFC'].dropna().unique().item()
             d_obs = tmp_bulk.loc[:,'d_obs'].dropna().unique().item()
@@ -1284,11 +1284,11 @@ def detect_clonal_loh(
             bulk_snps['Y_obs'].append(Y_obs)
             bulk_snps['lambda_ref'].append(lambda_ref)
             bulk_snps['logFC'].append(logFC)
-            bulk_snps['d_obs'].append(np.int32(d_obs))
+            bulk_snps['d_obs'].append(np.int64(d_obs))
             bulk_snps['gene'].append(tmp_bulk.gene.values[0])
-            bulk_snps['gene_start'].append(tmp_bulk.gene_start.astype(np.int32).values[0])
-            bulk_snps['gene_end'].append(tmp_bulk.gene_end.astype(np.int32).values[0])
-            bulk_snps['gene_length'].append(np.array(tmp_bulk.gene_end.values[0] - tmp_bulk.gene_start.values[0]).astype(np.int32))
+            bulk_snps['gene_start'].append(tmp_bulk.gene_start.astype(np.int64).values[0])
+            bulk_snps['gene_end'].append(tmp_bulk.gene_end.astype(np.int64).values[0])
+            bulk_snps['gene_length'].append(np.array(tmp_bulk.gene_end.values[0] - tmp_bulk.gene_start.values[0]).astype(np.int64))
             bulk_snps['CHROM'].append(chrom)
     
     bulk_snps_df = pd.DataFrame(bulk_snps)
@@ -1301,7 +1301,7 @@ def detect_clonal_loh(
                      bulk_snps_df.d_obs.unique())
     
     mu, sig = fit
-    bulk_snps_df.gene_length = bulk_snps_df.gene_length.values.astype(np.int32)
+    bulk_snps_df.gene_length = bulk_snps_df.gene_length.values.astype(np.int64)
     snp_fit = fit_snp_rate(bulk_snps_df.gene_snps.values, bulk_snps_df.gene_length.values)
     snp_rate_ref, snp_sig = snp_fit
     
@@ -1455,7 +1455,7 @@ def fill_neu_segs(segs_consensus: pd.DataFrame, segs_neu: pd.DataFrame) -> pd.Da
     if 'cnv_state' not in combined.columns:
         combined['cnv_state'] = np.nan
     combined['cnv_state'] = combined['cnv_state'].fillna('neu')
-    # combined.loc[:,'CHROM'] = combined.CHROM.astype('string')
+    combined.loc[:,'CHROM'] = combined.CHROM.astype('string')
     combined = combined.sort_values(['CHROM','seg_start'], key=natsort.natsort_keygen()).reset_index(drop=True)
     
     combined_group = combined.groupby('CHROM', group_keys=False, observed=True, sort=False)
@@ -2280,7 +2280,8 @@ def approx_theta_post(pAD, DP, p_s, lower=0.001, upper=0.499, start=0.25, gamma=
         method='L-BFGS-B',
         bounds=[(lower, upper)],  # single param => single tuple bound
         options={"maxiter": 1000,
-                 "disp": disp}
+                 #"disp": disp
+                 }
     )
     
     mu = res.x[0]  # best param
@@ -2542,7 +2543,8 @@ def approx_phi_post(Y_obs, lambda_ref, d, mu=None, sig=None, lower_val=0.2, uppe
         method='L-BFGS-B',
         bounds=[(lower_val, upper_val)],
         options={'maxiter': 1000,
-                 'disp': disp}
+                 #'disp': disp
+                 }
         )
     
     mu = res.x[0]  # best param

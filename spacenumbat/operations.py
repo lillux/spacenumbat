@@ -1956,7 +1956,7 @@ def get_joint_post(
     
     joint_post_sp = joint_post_sp.apply(compute_states, axis=1) # bottleneck
     # Create seg_label from seg and cnv_state.
-    joint_post_sp['seg_label'] = joint_post_sp['seg'].astype(str) + "(" + joint_post_sp['cnv_state'].astype(str) + ")"
+    joint_post_sp['seg_label'] = joint_post_sp['seg'].astype("string") + "(" + joint_post_sp['cnv_state'].astype("string") + ")"
 
     return joint_post_sp
 
@@ -2089,7 +2089,7 @@ def expand_states(
             how='inner'
         )
         # Append the cnv_state to the seg identifier.
-        sc_post_multi['seg'] = sc_post_multi['seg'].astype(str) + '_' + sc_post_multi['cnv_state'].astype(str)
+        sc_post_multi['seg'] = sc_post_multi['seg'].astype("string") + '_' + sc_post_multi['cnv_state'].astype("string")
         
         # For each row, dynamically select the posterior values based on cnv_state.
         # This assumes that sc_post contains columns named like 'p_amp', 'Z_amp', etc.
@@ -2121,10 +2121,10 @@ def expand_states(
         # Sort by 'cell', 'CHROM', and 'seg'.
         sc_post = sc_post.sort_values(by=['cell', 'CHROM', 'seg'])
         # Create seg_label by concatenating seg and cnv_state.
-        sc_post['seg_label'] = sc_post['seg'].astype(str) + "(" + sc_post['cnv_state'].astype(str) + ")"
+        sc_post['seg_label'] = sc_post['seg'].astype("string") + "(" + sc_post['cnv_state'].astype("string") + ")"
         # Convert seg_label to a categorical preserving order of appearance.
-        unique_labels = sc_post['seg_label'].drop_duplicates().tolist()
-        sc_post['seg_label'] = pd.Categorical(sc_post['seg_label'], categories=unique_labels, ordered=True)
+        #unique_labels = sc_post['seg_label'].drop_duplicates().tolist()
+        #sc_post['seg_label'] = pd.Categorical(sc_post['seg_label'], categories=unique_labels, ordered=True)
     else:
         log.info("No multi-allelic CNVs, skipping expansion.")
     
