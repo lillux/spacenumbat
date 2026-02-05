@@ -21,7 +21,7 @@ from skbio import DistanceMatrix as SKDM
 import spacenumbat
 from spacenumbat import (utils, diagnostics, clustering, 
                          operations, plot, spatial_utils,
-                         tree)
+                         tree, tree_sk)
 
 from spacenumbat._log import configure, get_logger
 
@@ -584,82 +584,32 @@ def run_numbat(
     
     P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
     P.to_csv(os.path.join(out_dir, f"geno_{i}.tsv"), sep="\t")
+    
+    
+    treeML = tree_sk.P_to_candidate_tree(P_df=P,
+                                         n_jobs=ncores)
+    
+    # gtree = tree.get_gtree(treeML,
+    #                        P,
+    #                        n_cut=n_cut,
+    #                        max_cost=max_cost)
+    
+    # G_m = tree.label_genotype(tree.get_mut_graph(gtree))
+    
+    # log.info(f"Tree building completed, pass {i}")
+    
+    # clone_post = operations.get_clone_post(gtree, exp_post, allele_post)
+    # clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
 
-    P.loc['outgroup',:] = np.zeros((1,P.shape[1]))
-    labels = list(P.index)
+    # normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
+    # msg = f"Found {len(normal_cells)} normal cells."
+    # log.info(msg)
     
-    dist_mat = pairwise_distances(P, metric='euclidean', n_jobs=ncores)
-    dist_mat = (dist_mat + dist_mat.T) * 0.5
-    np.fill_diagonal(dist_mat, 0.0)
     
-    # build both guide trees
-    dm_skbio = SKDM(dist_mat, labels)
     
-    tree_upgma = tree.root_and_prune(tree.build_upgma_tree(dm_skbio, labels),
-                                     outgroup_name='outgroup')
-    log.info('UPGMA performed')
-    
-    tree_nj = tree.root_and_prune(tree.build_nj_tree(dm_skbio, labels),
-                                  outgroup_name='outgroup')
-    log.info('NJ performed')
-    
+    #return exp_post, allele_post, segs_consensus_retest, count_mat, clone_post, G_m
+    return exp_post, allele_post, segs_consensus_retest, count_mat, treeML #clone_post, G_m
 
-    # likelihoods calculation
-    upgma_score, tnode_upgma = tree.tree_score_wrapper(tree_upgma,
-                                                       P.drop(index='outgroup'))
-    upgma_score_ll = upgma_score['l_tree']
-    log.info(f'UPGMA tree is {upgma_score_ll}')
-    
-    nj_score, tnode_nj = tree.tree_score_wrapper(tree_nj,
-                                                 P.drop(index='outgroup'))
-    nj_score_ll = nj_score['l_tree']
-    log.info(f'NJ tree is {nj_score_ll}')
-    
-    # choose the seed tree
-    if upgma_score_ll >= nj_score_ll:
-        tree_init = tree_upgma
-        log.info("Using UPGMA tree as seed (higher likelihood).")
-    else:
-        tree_init = tree_nj
-        log.info("Using NJ tree as seed (higher likelihood).")
-    
-    # Dist matrix without outgroup
-    mask = [lab != "outgroup" for lab in labels]        # labels is list(P.index)
-    dist_no_out = dist_mat[np.ix_(mask, mask)]          # square slice
-    labels_no_out = [lab for lab in labels if lab != "outgroup"]
-    
-    dm_skbio = SKDM(dist_no_out, labels_no_out)   # sets == tree tips
-    
-    ## run greedy NNI ML search
-    tree_list  = tree.perform_nni_ml(tree_init,
-                                     dm_skbio=dm_skbio,
-                                     P_df=P.drop(index='outgroup'),
-                                     eps=eps,
-                                     max_iter=max_nni,
-                                     ncores=ncores_nni)
-    
-    treeML = tree_list[-1]      
-    
-    gtree = tree.get_gtree(treeML,
-                           P.drop(index="outgroup"),
-                           n_cut=n_cut,
-                           max_cost=max_cost)
-    
-    G_m = tree.label_genotype(tree.get_mut_graph(gtree))
-    
-    log.info(f"Tree building completed, pass {i}")
-    
-    clone_post = operations.get_clone_post(gtree, exp_post, allele_post)
-    clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
-
-    normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
-    msg = f"Found {len(normal_cells)} normal cells."
-    log.info(msg)
-    
-    
-    
-    return exp_post, allele_post, segs_consensus_retest, count_mat, clone_post, G_m
-    
     
     
     
