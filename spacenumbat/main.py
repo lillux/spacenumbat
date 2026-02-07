@@ -586,7 +586,7 @@ def run_numbat(
     P.to_csv(os.path.join(out_dir, f"geno_{i}.tsv"), sep="\t")
     
     
-    treeML = tree_sk.P_to_candidate_tree(P_df=P,
+    treeML = tree.P_to_candidate_tree(P_df=P,
                                          n_jobs=ncores)
     
     # gtree = tree.get_gtree(treeML,

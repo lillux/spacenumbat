@@ -1,1313 +1,516 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Tue Dec 16 12:06:28 2025
+Created on Tue Feb  3 17:21:12 2026
 
 @author: carlino.calogero
+
 """
 
-import math
-from collections import defaultdict, deque
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Tuple, List, Dict, Optional
 
-import networkx as nx
-import numpy as np
 import pandas as pd
-
+from numba import njit, prange
+from sklearn.metrics import pairwise_distances
+import numpy as np
 import skbio
-from skbio import DistanceMatrix as SKDM
-# from skbio.tree import nj
+from skbio import DistanceMatrix
 from skbio.tree import TreeNode
 
-from Bio import Phylo
-from Bio.Phylo.BaseTree import Clade, Tree
-from io import StringIO
-from scipy.spatial.distance import pdist, squareform          # faster than sklearn 
-
-import tqdm
-
-from spacenumbat._log import get_logger
-log = get_logger(__name__)
-#log.info("This is an info message.")
 
 
-def biophylo_to_skbio(tree_bp: Phylo.BaseTree.Tree) -> TreeNode:
-    buf = StringIO()
-    Phylo.write(tree_bp, buf, "newick")
-    return TreeNode.read([buf.getvalue()])
-
-def skbio_to_biophylo(tnode: TreeNode) -> Phylo.BaseTree.Tree:
-    buf = StringIO()
-    tnode.write(buf, format="newick")         # to_newick()
-    newick = buf.getvalue()    
-    return Phylo.read(StringIO(newick), "newick")
+def _subtree_key(node: TreeNode) -> Tuple[int, str]:
+    tips = list(node.tips()) if not node.is_tip() else [node]
+    n = len(tips)
+    min_tip = min((t.name or "" for t in tips), default="")
+    return (n, min_tip)
 
 
-# tree builders
-def build_upgma_tree(dist_mat: SKDM, labels: list[str]) -> Phylo.BaseTree.Tree:
-    """
-    Build a UPGMA tree with scikit‑bio,
-    then return it as a Biopython Tree and in post‑order.
-    """
-    # run UPGMA
-    tnode = skbio.tree.upgma(dist_mat)
-    # convert to Newick
-    tree = skbio_to_biophylo(tnode)
-    return tree #reorder_postorder(tree)
+def canonicalize_tree_inplace(tree: TreeNode, right: bool = True) -> TreeNode:
+    for n in tree.postorder():
+        if n.is_tip():
+            continue
+        n.children.sort(key=_subtree_key)
+        if right:
+            n.children.reverse()
+    return tree
 
-def build_nj_tree(dist_mat: SKDM, labels: list[str]) -> Phylo.BaseTree.Tree:
-    """
-    Build a Neighbor‑Joining tree with scikit‑bio,
-    then return it as a Biopython Tree and in post‑order.
-    """
-    # run NJ
-    tnode = skbio.tree.nj(dist_mat)
-    # convert to Newick
-    tree = skbio_to_biophylo(tnode)
-    return tree #reorder_postorder(tree)
 
-def root_and_prune(tree: Phylo.BaseTree.Tree, outgroup_name: str = "outgroup") -> Phylo.BaseTree.Tree:
-    """
-    Root the tree on `outgroup` and then delete that tip.
-    """
-    tree.root_with_outgroup(outgroup_name)
-    tree.prune(target=outgroup_name)
-    return tree #reorder_postorder(tree)
-
-def all_children(tree: Phylo.BaseTree.Tree, label_order: list[str]) -> tuple[dict[int, list[int]], dict[Clade, int]]:
-    """Return dict(parent_id -> [child_id1, child_id2]) with tip IDs respecting P_df row order."""
-    # Map leaves strictly via label list
-    leaves = [tree.find_any(name=lab) for lab in label_order]
-    internals = tree.get_nonterminals(order='postorder')
-    id_map = {cl: i for i, cl in enumerate(leaves + internals, start=0)} # was start=1
-    children = {id_map[p]: [id_map[c] for c in p.clades] for p in internals}
-    return children, id_map
-
-def cgetQ(logQ: np.ndarray, children_dict: dict[int, list[int]], node_order: list[int]) -> np.ndarray:
-    """Propagate log‑likelihoods upward."""
-    for node in node_order:
-        ch = children_dict[node]
-        logQ[node] = logQ[ch[0]] + logQ[ch[1]]
-    return logQ
-
-# def score_tree(tree: Phylo.BaseTree.Tree, P_df: pd.DataFrame, get_l_matrix: bool = False) -> dict:
-#     """Score tree"""
-#     #tree = reorder_postorder(tree)
-#     children_dict, id_map = all_children(tree, list(P_df.index))
+def build_distance_matrix_from_P(
+    P_with_outgroup: pd.DataFrame,
+    metric: str = "euclidean",
+    n_jobs: int = 1,
+    ) -> DistanceMatrix:
     
-#     P     = P_df.values
-#     eps   = 1e-10
-#     logP1 = np.log(np.clip(P,  eps, 1-eps))
-#     logP0 = np.log(np.clip(1-P, eps, 1-eps))
-
-#     n, m  = P.shape
-#     n_int = len(children_dict)    # number of internal nodes
-#     logQ  = np.zeros((n + n_int, m))
-    
-#     # log‑odds
-#     for clade, idx in id_map.items():
-#         if clade.is_terminal():
-#             logQ[idx] = logP1[idx] - logP0[idx]
-    
-#     # internal nodes in post‑order (Biopython)
-#     node_order = [id_map[cl] for cl in tree.get_nonterminals(order='postorder')]
-#     logQ = cgetQ(logQ, children_dict, node_order)
-    
-#     if get_l_matrix:
-#         l_matrix = logQ + logP0.sum(axis=0)
-#         l_tree   = np.sum(l_matrix.max(axis=0))
-#     else:
-#         l_matrix = None
-#         l_tree   = logQ.max(axis=0).sum() + logP0.sum()
-    
-#     return {"l_tree": l_tree, "logQ": logQ, "l_matrix": l_matrix}
+    labels = list(P_with_outgroup.index)
+    D = pairwise_distances(P_with_outgroup.values, metric=metric, n_jobs=n_jobs)
+    D = (D + D.T) * 0.5
+    np.fill_diagonal(D, 0.0)
+    return DistanceMatrix(D, labels)
 
 
-def score_tree(tree: Phylo.BaseTree.Tree, P_df: pd.DataFrame, get_l_matrix: bool = False) -> dict:
+def build_upgma_tree(dm) -> TreeNode:
+    t = skbio.tree.upgma(dm)
+    canonicalize_tree_inplace(t, right=True)  # to mimic ladderize/reorder
+    return t
+
+
+def build_nj_tree(dm: DistanceMatrix) -> TreeNode:
+    t = skbio.tree.nj(dm)
+    canonicalize_tree_inplace(t, right=True)
+    return t
+
+
+def root_and_prune_outgroup(tree: TreeNode, outgroup: str) -> TreeNode:
     """
-    Scoring in log-space with explicit row labeling.
-
-    Row order used internally (returned as row_labels):
-      - tips: EXACT order of P_df.index
-      - internal nodes: postorder returned by tree.get_nonterminals(order='postorder'),
-        labeled Node0, Node1, ...
-
-    Returns dict with:
-      - l_tree: scalar likelihood
-      - logQ: (n_tips + n_int) x m
-      - l_matrix: same shape (optional)
-      - row_labels: list[str] length (n_tips + n_int)
+    - Reroot on the edge leading to outgroup
+    - Remove the outgroup tip
+    - Prune unary nodes
     """
+    # Re-root "above" the outgroup, inserting
+    # a new root between outgroup and ingroup.
+    rooted = tree.root_by_outgroup([outgroup], above=True, reset=True, inplace=False)
 
-    tip_labels = list(P_df.index)
-    # Find leaf clades in P_df order
-    leaves: List[Clade] = []
-    for lab in tip_labels:
-        cl = tree.find_any(name=lab)
-        if cl is None:
-            raise ValueError(f"Tip '{lab}' not found in tree.")
-        if not cl.is_terminal():
-            # Should not happen
-            raise ValueError(f"Name '{lab}' found in tree but is not terminal.")
-        leaves.append(cl)
+    # Drop the outgroup tip
+    keep = [t.name for t in rooted.tips() if t.name != outgroup]
+    ingroup = rooted.shear(keep)
 
-    # Internal clades in postorder
-    internals: List[Clade] = list(tree.get_nonterminals(order="postorder"))
+    # Clean up any unary nodes after pruning
+    ingroup.prune()
 
-    # Define row indices in logQ/logQ-based matrices
-    id_map: Dict[Clade, int] = {cl: i for i, cl in enumerate(leaves + internals)}
+    return ingroup
 
-    # Build children mapping by row id (binary required)
-    children_dict: Dict[int, List[int]] = {}
-    for p in internals:
-        pid = id_map[p]
-        child_ids = [id_map[c] for c in p.clades]
-        # if len(child_ids) != 2:
-        #     raise ValueError("Non-binary node encountered; expected exactly 2 children.")
-        children_dict[pid] = child_ids
 
-    # Node order for DP = internal row ids in postorder
-    node_order = [id_map[p] for p in internals]
+def assert_P_invariants(P_df: pd.DataFrame) -> None:
+    if not isinstance(P_df, pd.DataFrame):
+        raise TypeError("P_df must be a pandas DataFrame.")
+    if P_df.shape[0] == 0 or P_df.shape[1] == 0:
+        raise ValueError("P_df must be non-empty (n_cells x n_segments).")
+    if not P_df.index.is_unique:
+        raise ValueError("P_df.index (cell barcodes) must be unique.")
+    if P_df.index.isnull().any():
+        raise ValueError("P_df.index contains null barcodes.")
+    if P_df.columns.has_duplicates:
+        raise ValueError("P_df.columns (segments) must be unique.")
+    if P_df.columns.isnull().any():
+        raise ValueError("P_df.columns contains null segment IDs.")
 
-    # Robust row labels aligned to logQ row order
-    internal_labels = [f"Node{i}" for i in range(len(internals))]  # 0-based
-    row_labels = tip_labels + internal_labels
 
-    # Likelihood computation
-    P = P_df.values.astype(float, copy=False)
-    eps = 1e-10
-    logP1 = np.log(np.clip(P, eps, 1 - eps))
-    logP0 = np.log(np.clip(1 - P, eps, 1 - eps))
+def assert_tree_matches_P(tree: TreeNode, P_df: pd.DataFrame) -> None:
+    tips = [t.name for t in tree.tips()]
+    if any(x is None or x == "" for x in tips):
+        raise ValueError("Tree contains unnamed tips; barcode names were lost.")
+    if len(tips) != len(set(tips)):
+        raise ValueError("Tree contains duplicate tip names.")
+    missing = set(P_df.index) - set(tips)
+    extra = set(tips) - set(P_df.index)
+    if missing or extra:
+        raise ValueError(
+            f"Tree tips do not match P_df.index.\n"
+            f"  missing_in_tree={len(missing)}\n"
+            f"  extra_in_tree={len(extra)}"
+        )
+    return
+
+@dataclass
+class ScorePlan:
+    n_tips: int
+    n_int: int
+    child1: np.ndarray   # (n_int,) global row ids
+    child2: np.ndarray   # (n_int,) global row ids
+    row_labels: List[str]
+
+
+def build_score_plan(tree: TreeNode, P_index: List[str]) -> Tuple[ScorePlan, Dict[TreeNode, int]]:
+    """
+    Returns:
+      - ScorePlan for scoring (postorder internals)
+      - node_to_row mapping for TreeNode -> global row id
+    """
+    tip_to_id = {name: i for i, name in enumerate(P_index)}
+
+    internal_post = [u for u in tree.postorder() if not u.is_tip()]
+    n = len(P_index)
+    n_int = len(internal_post)
+
+    node_to_row: Dict[TreeNode, int] = {}
+
+    # tips: map by name
+    for u in tree.tips():
+        if u.name not in tip_to_id:
+            raise ValueError(f"Tip '{u.name}' not found in P_df.index")
+        node_to_row[u] = tip_to_id[u.name]
+
+    # internals: appended in postorder
+    for i, u in enumerate(internal_post):
+        node_to_row[u] = n + i
+
+    child1 = np.empty(n_int, dtype=np.int64)
+    child2 = np.empty(n_int, dtype=np.int64)
+
+    for i, u in enumerate(internal_post):
+        if len(u.children) != 2:
+            raise ValueError("Non-binary internal node encountered; expected bifurcating tree.")
+        a, b = u.children
+        child1[i] = node_to_row[a]
+        child2[i] = node_to_row[b]
+
+    row_labels = list(P_index) + [f"Node{i}" for i in range(n_int)]
+    return ScorePlan(n_tips=n, n_int=n_int, child1=child1, child2=child2, row_labels=row_labels), node_to_row
+
+
+@njit(cache=True)
+def _propagate_logQ_numba(logQ: np.ndarray, child1: np.ndarray, child2: np.ndarray, n_tips: int) -> None:
+    """
+    logQ[0:n_tips] already filled for tips.
+    Fill internal rows in postorder: row = n_tips+i, children = child1[i], child2[i].
+    """
+    n_int = child1.shape[0]
+    for i in range(n_int):
+        uid = n_tips + i
+        c1 = child1[i]
+        c2 = child2[i]
+        logQ[uid, :] = logQ[c1, :] + logQ[c2, :]
+
+
+def compute_logQ_for_tree(
+    plan: ScorePlan,
+    P_df: pd.DataFrame,
+    *,
+    clip_eps: float = 1e-10,
+    ) -> Tuple[np.ndarray, float]:
+    """
+    Returns:
+      logQ (n_tips+n_int, m)
+      L0 = sum(log(1-P))
+    """
+    P = np.clip(P_df.values.astype(np.float64, copy=False), clip_eps, 1.0 - clip_eps)
+    logP0 = np.log1p(-P)
+    logP1 = np.log(P)
+    L0 = float(logP0.sum())
 
     n, m = P.shape
-    n_int = len(internals)
-    logQ = np.zeros((n + n_int, m), dtype=float)
+    logQ = np.empty((plan.n_tips + plan.n_int, m), dtype=np.float64)
 
-    # Tip rows are exactly the first n rows (aligned to P_df order)
     logQ[:n, :] = logP1 - logP0
+    _propagate_logQ_numba(logQ, plan.child1, plan.child2, plan.n_tips)
 
-    # Internal propagation
-    logQ = cgetQ(logQ, children_dict, node_order)
+    return logQ, L0
+
+
+@dataclass(frozen=True)
+class ScoreTreeResult:
+    l_tree: float
+    logQ: np.ndarray
+    l_matrix: Optional[np.ndarray]
+    row_labels: List[str]
+    
+    
+def score_tree_treenode_fast(
+    tree: TreeNode,
+    P_df: pd.DataFrame,
+    *,
+    get_l_matrix: bool = False,
+    clip_eps: float = 1e-10,
+    ) -> ScoreTreeResult:
+    """
+    Fast scorer using the ScorePlan + numba propagation.
+    Returns l_tree.
+    """
+    assert_P_invariants(P_df)
+    assert_tree_matches_P(tree, P_df)
+
+    plan, _ = build_score_plan(tree, list(P_df.index))
+    logQ, L0 = compute_logQ_for_tree(plan, P_df, clip_eps=clip_eps)
 
     if get_l_matrix:
-        l_matrix = logQ + logP0.sum(axis=0)
-        l_tree = float(np.sum(np.max(l_matrix, axis=0)))
+        P = np.clip(P_df.values.astype(np.float64, copy=False), clip_eps, 1.0 - clip_eps)
+        logP0 = np.log1p(-P)
+        col_add = logP0.sum(axis=0)
+        l_matrix = logQ + col_add[None, :]
+        l_tree = float(l_matrix.max(axis=0).sum())
     else:
         l_matrix = None
-        l_tree = float(np.sum(np.max(logQ, axis=0)) + np.sum(logP0))
+        l_tree = float(logQ.max(axis=0).sum() + L0)
 
-    return {"l_tree": l_tree, "logQ": logQ, "l_matrix": l_matrix, "row_labels": row_labels}
-
-
-# def tree_score_wrapper(tree_bp: Phylo.BaseTree.Tree, P_df: pd.DataFrame) -> tuple[float, TreeNode]:
-#     tnode = biophylo_to_skbio(tree_bp)
-#     llik = score_tree(tree_bp, P_df)
-#     return llik, tnode
+    return ScoreTreeResult(
+        l_tree=l_tree,
+        logQ=logQ,
+        l_matrix=l_matrix,
+        row_labels=plan.row_labels)
 
 
-def tree_score_wrapper(tree_bp: Phylo.BaseTree.Tree, P_df: pd.DataFrame):
+@njit(cache=True, parallel=True)
+def _col_max1_max2_argmax(logQ: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Wrapper kept compatible with your workflow.
-    Returns (score_dict, tnode_skbio) if you still use the skbio conversion elsewhere.
+    For each column j:
+      max1[j] = max over rows
+      argmax[j] = row index achieving max1
+      max2[j] = 2nd max over rows
     """
+    nrows, m = logQ.shape
+    max1 = np.empty(m, dtype=np.float64)
+    max2 = np.empty(m, dtype=np.float64)
+    argm = np.empty(m, dtype=np.int64)
 
-    # Biopython -> skbio TreeNode
-    buf = StringIO()
-    Phylo.write(tree_bp, buf, "newick")
-    tnode = TreeNode.read([buf.getvalue()])
+    neg_inf = -1.0e300
 
-    score = score_tree(tree_bp, P_df, get_l_matrix=False)
-    return score, tnode
+    for j in prange(m):
+        m1 = neg_inf
+        m2 = neg_inf
+        a = -1
+        for i in range(nrows):
+            v = logQ[i, j]
+            if v > m1:
+                m2 = m1
+                m1 = v
+                a = i
+            elif v > m2:
+                m2 = v
+        max1[j] = m1
+        max2[j] = m2
+        argm[j] = a
 
-def perform_nni_ml(tree_init, dm_skbio, P_df, ncores=1, eps=1e-6, max_iter=20):
-    tree_cur = biophylo_to_skbio(tree_init).copy()
-    best_ll  = score_tree(tree_init, P_df)['l_tree']
-    history  = [tree_init]
+    return max1, argm, max2
 
-    for _ in tqdm.tqdm(range(max_iter)):
-        # one NNI sweep
-        tree_next = skbio.tree.nni(tree_cur, dm_skbio) # raises if taxa mismatch
 
-        # evaluate
-        ll_new, _ = tree_score_wrapper(skbio_to_biophylo(tree_next), P_df)
-        ll_new = ll_new['l_tree']
+def internal_edges_for_rooted_nni(tree: TreeNode) -> List[Tuple[TreeNode, TreeNode]]:
+    """
+    Rooted internal edges: parent and child are both internal.
+    Equivalent to your _internal_edges_for_nni but on TreeNode objects.
+    """
+    edges: List[Tuple[TreeNode, TreeNode]] = []
+    for child in tree.postorder():
+        parent = child.parent
+        if parent is None:
+            continue
+        if parent.is_tip() or child.is_tip():
+            continue
+        edges.append((parent, child))
+    return edges
 
-        if ll_new - best_ll > eps:
-            best_ll = ll_new
-            tree_cur = tree_next
-            history.append(skbio_to_biophylo(tree_cur))
-        else:
-            break  # converged
+
+def build_nni_edge_arrays(
+    tree: TreeNode,
+    node_to_row: Dict[TreeNode, int],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    For each internal edge (p1->p2):
+      e1 = sibling of p2 under p1
+      e2,e3 = children of p2
+
+    Returns arrays (length E):
+      p2_rows, e1_rows, e2_rows, e3_rows
+    """
+    edges = internal_edges_for_rooted_nni(tree)
+
+    p2_rows = np.empty(len(edges), dtype=np.int64)
+    e1_rows = np.empty(len(edges), dtype=np.int64)
+    e2_rows = np.empty(len(edges), dtype=np.int64)
+    e3_rows = np.empty(len(edges), dtype=np.int64)
+
+    for i, (p1, p2) in enumerate(edges):
+        if len(p1.children) != 2 or len(p2.children) != 2:
+            raise ValueError("Non-binary node encountered; expected bifurcating tree.")
+
+        # sibling e1
+        s = p1.children[0] if p1.children[1] is p2 else p1.children[1]
+        a, b = p2.children[0], p2.children[1]
+
+        p2_rows[i] = node_to_row[p2]
+        e1_rows[i] = node_to_row[s]
+        e2_rows[i] = node_to_row[a]
+        e3_rows[i] = node_to_row[b]
+
+    return p2_rows, e1_rows, e2_rows, e3_rows
+
+
+@njit(cache=True, parallel=True)
+def _nni_scores_from_logQ(
+    logQ: np.ndarray,
+    L0: float,
+    max1: np.ndarray,
+    argmax: np.ndarray,
+    max2: np.ndarray,
+    p2_rows: np.ndarray,
+    e1_rows: np.ndarray,
+    e2_rows: np.ndarray,
+    e3_rows: np.ndarray,
+    ) -> np.ndarray:
+    """
+    NNI scoring:
+      Only row p2 changes:
+        cand0: logQ[p2] = logQ[e1] + logQ[e3]
+        cand1: logQ[p2] = logQ[e1] + logQ[e2]
+      Score per candidate = L0 + sum_j max( max_except_p2[j], new_row[j] )
+
+    Returns scores of shape (E, 2) for E internal edges.
+    """
+    E = p2_rows.shape[0]
+    m = logQ.shape[1]
+    out = np.empty((E, 2), dtype=np.float64)
+
+    for i in prange(E):
+        p2 = p2_rows[i]
+        e1 = e1_rows[i]
+        e2 = e2_rows[i]
+        e3 = e3_rows[i]
+
+        s0 = L0
+        s1 = L0
+
+        for j in range(m):
+            base = max2[j] if argmax[j] == p2 else max1[j]
+
+            v0 = logQ[e1, j] + logQ[e3, j]
+            v1 = logQ[e1, j] + logQ[e2, j]
+
+            s0 += v0 if v0 > base else base
+            s1 += v1 if v1 > base else base
+
+        out[i, 0] = s0
+        out[i, 1] = s1
+
+    return out
+    
+
+def _swap_subtrees_inplace(P: TreeNode, C: TreeNode, S: TreeNode, X: TreeNode) -> None:
+    """
+    Rooted NNI swap:
+      P has children {C, S}; C has children {X, other}
+      swap S and X:
+        P children -> {C, X}
+        C children -> {S, other}
+    """
+    if C.parent is not P or S.parent is not P or X.parent is not C:
+        raise RuntimeError("Invalid rooted NNI swap configuration.")
+    P.remove(S)
+    C.remove(X)
+    P.append(X)
+    C.append(S)
+    return
+    
+
+def perform_nni_ml_greedy_local(
+    tree_init: TreeNode,
+    P_df: pd.DataFrame,
+    *,
+    eps: float = 1e-5,
+    max_iter: int = 100,
+    verbose: bool = True,
+    clip_eps: float = 1e-10,
+    ) -> List[TreeNode]:
+    """
+    Greedy ML search using rooted NNI neighbors, but scoring all candidates
+    without copying trees:
+      - build logQ once for current tree
+      - compute per-column max1/argmax/max2
+      - for each internal edge, score 2 NNI alternatives by updating only row p2
+      - pick best move; apply swap once; repeat
+    """
+    # Make copy
+    cur = tree_init.copy()
+    canonicalize_tree_inplace(cur, right=True)  # keep deterministic
+
+    history = [cur.copy()]
+
+    for it in range(1, max_iter + 1):
+        # plan + mapping aligned to P_df.index
+        plan, node_to_row = build_score_plan(cur, list(P_df.index))
+
+        # Compute logQ and L0
+        logQ, L0 = compute_logQ_for_tree(plan, P_df, clip_eps=clip_eps)
+
+        # Current score (max over rows per column + L0)
+        max1, argmax, max2 = _col_max1_max2_argmax(logQ)
+        cur_score = float(max1.sum() + L0)
+
+        # Build NNI edge arrays
+        edges = internal_edges_for_rooted_nni(cur)
+        if not edges:
+            if verbose:
+                print(f"[NNI-local] no internal edges at iter={it}, score={cur_score:.6g}")
+            break
+
+        p2_rows, e1_rows, e2_rows, e3_rows = build_nni_edge_arrays(cur, node_to_row)
+
+        # Score all candidates fast (E x 2)
+        scores = _nni_scores_from_logQ(logQ, L0, max1, argmax, max2, p2_rows, e1_rows, e2_rows, e3_rows)
+
+        # Find best move
+        flat = scores.reshape(-1)
+        best_flat = int(np.argmax(flat))
+        best_edge = best_flat // 2
+        best_cand = best_flat % 2
+        best_score = float(flat[best_flat])
+
+        # Convergence check
+        if (best_score - cur_score) <= eps:
+            if verbose:
+                print(f"[NNI-local] converge at iter={it}, score={cur_score:.6g}")
+            break
+
+        # Apply the best move IN PLACE (no copies)
+        p1, p2 = edges[best_edge]
+
+        # sibling S
+        if len(p1.children) != 2 or len(p2.children) != 2:
+            raise ValueError("Non-binary node encountered at move application.")
+        S = p1.children[0] if p1.children[1] is p2 else p1.children[1]
+        A, B = p2.children[0], p2.children[1]
+
+        # cand0: swap S with A ; cand1: swap S with B
+        X = A if best_cand == 0 else B
+        _swap_subtrees_inplace(p1, p2, S, X)
+
+        # Canonicalize once after acceptance
+        canonicalize_tree_inplace(cur, right=True)
+
+        history.append(cur.copy())
+
+        if verbose:
+            print(f"[NNI-local] iter={it}, score={best_score:.6g}, move=edge#{best_edge}, cand={best_cand}")
 
     return history
 
 
-# utilities
-def _root_of_digraph(G: nx.DiGraph) -> int:
-    """
-    Return the unique root (node with in-degree 0)
-    """
-    roots = [n for n in G.nodes if G.in_degree(n) == 0]
-    if not roots:
-        raise ValueError("No root (in-degree 0) found.")
-    if len(roots) > 1:
-        # pick the first deterministically
-        roots.sort()
-    return roots[0]
-
-def _bfs_rank(G: nx.DiGraph, root: int) -> Dict[int, int]:
-    """
-    BFS rank (distance in edges from root). Root has 0; unreachable nodes absent.
-    """
-    return dict(nx.single_source_shortest_path_length(G, root))
-
-def _mut_burden(gt: str) -> int:
-    """
-    Count of mutations encoded in a comma-separated GT string.
-    """
-    if not gt:
-        return 0
-    # e.g., "a,b,c" -> 3 ; "x" -> 1
-    return gt.count(",") + 1
-
-
-# Phylogeny reconstruction
-# def mark_tumor_lineage(gtree: nx.DiGraph) -> nx.DiGraph:
-#     """
-#     pick the mutation-carrying node whose descendant leaves have 
-#     the largest total mutation burden (by GT), mark that as tumor root,
-#     set node/edge 'compartment' ('tumor' vs 'normal').
-#     """
-#     # nodes carrying any local mutation(s)
-#     mut_nodes = [n for n, d in gtree.nodes(data=True) if d.get("site") not in (None, "")]
-#     if not mut_nodes:
-#         # no mutations: set everything to normal
-#         root = _root_of_digraph(gtree)
-#         ranks = _bfs_rank(gtree, root)
-#         for n in gtree.nodes:
-#             seq = ranks.get(n, -1)
-#             gtree.nodes[n]["seq"] = seq
-#             gtree.nodes[n]["compartment"] = "normal"
-#             gtree.nodes[n]["is_tumor_root"] = (n == root)
-#         for u, v in gtree.edges:
-#             gtree.edges[u, v]["compartment"] = gtree.nodes[v]["compartment"]
-#         return gtree
-
-#     # compute total descendant leaf mutation burden for each candidate root
-#     mut_burdens = []
-#     for node in mut_nodes:
-#         ranks = _bfs_rank(gtree, node)
-#         total = 0
-#         for n, d in gtree.nodes(data=True):
-#             if d.get("leaf") and ranks.get(n, 0) > 0:
-#                 total += _mut_burden(d.get("GT", ""))
-#         mut_burdens.append(total)
-
-#     # choose tumor root (tie -> earliest in mut_nodes order)
-#     tumor_root = mut_nodes[int(np.argmax(mut_burdens))]
-
-#     # annotate nodes
-#     ranks = _bfs_rank(gtree, tumor_root)
-#     for n in gtree.nodes:
-#         seq = ranks.get(n, -1)
-#         gtree.nodes[n]["seq"] = seq
-#         gtree.nodes[n]["compartment"] = "tumor" if seq > 0 else "normal"
-#         gtree.nodes[n]["is_tumor_root"] = (n == tumor_root)
-
-#     # annotate edges with downstream node compartment
-#     for u, v in gtree.edges:
-#         gtree.edges[u, v]["compartment"] = gtree.nodes[v]["compartment"]
-
-#     return gtree
-
-
-def mark_tumor_lineage(gtree: nx.DiGraph) -> nx.DiGraph:
-    """
-    mark_tumor_lineage with deterministic behavior.
-
-    Choose the mutation-carrying node whose descendant leaves have the largest
-    total mutation burden (based on GT), mark that node as tumor_root.
-
-    Adds:
-      - node: seq, compartment, is_tumor_root
-      - edge: compartment (downstream node compartment)
-    """
-    mut_nodes = [n for n, d in gtree.nodes(data=True) if d.get("site") not in (None, "")]
-    if not mut_nodes:
-        root = _root_of_digraph(gtree)
-        ranks = _bfs_rank(gtree, root)
-        for n in sorted(gtree.nodes):
-            seq = ranks.get(n, -1)
-            gtree.nodes[n]["seq"] = seq
-            gtree.nodes[n]["compartment"] = "normal"
-            gtree.nodes[n]["is_tumor_root"] = (n == root)
-        for u, v in gtree.edges:
-            gtree.edges[u, v]["compartment"] = gtree.nodes[v]["compartment"]
-        return gtree
-
-    # Deterministic tie-breaking: sort candidate nodes
-    mut_nodes = sorted(mut_nodes)
-
-    mut_burdens: List[int] = []
-    for node in mut_nodes:
-        ranks = _bfs_rank(gtree, node)
-        total = 0
-        # IMPORTANT: unreachable leaves should not be counted.
-        for n, d in gtree.nodes(data=True):
-            if d.get("leaf"):
-                if ranks.get(n, -1) > 0:
-                    total += _mut_burden(d.get("GT", ""))
-        mut_burdens.append(total)
-
-    # choose tumor root (tie -> smallest node id due to sorting above)
-    tumor_root = mut_nodes[int(np.argmax(mut_burdens))]
-
-    ranks = _bfs_rank(gtree, tumor_root)
-    for n in sorted(gtree.nodes):
-        seq = ranks.get(n, -1)
-        gtree.nodes[n]["seq"] = seq
-        gtree.nodes[n]["compartment"] = "tumor" if seq > 0 else "normal"
-        gtree.nodes[n]["is_tumor_root"] = (n == tumor_root)
-
-    for u, v in gtree.edges:
-        gtree.edges[u, v]["compartment"] = gtree.nodes[v]["compartment"]
-
-    return gtree
-
-
-## Just added
-def _unique_root_to_node_path_in_tree(G: nx.DiGraph, root: int, target: int) -> List[int]:
-    """
-    Deterministically recover the unique root->target path in a rooted tree.
-    If the graph is not a tree (multiple parents), we choose the smallest parent
-    path deterministically, but you should treat that as a warning condition.
-    """
-    if target == root:
-        return [root]
-
-    # Build parents map. If multiple parents exist, pick deterministically.
-    parents = list(G.predecessors(target))
-    if not parents:
-        raise nx.NetworkXNoPath(f"No path from root={root} to target={target} (no parent).")
-
-    # If multiple parents, choose the one with smallest id to be deterministic.
-    # (In a proper tree, there is exactly one parent.)
-    parent = min(parents)
-
-    # Recurse up; this is safe if the structure is acyclic.
-    return _unique_root_to_node_path_in_tree(G, root, parent) + [target]
-
-
-# def label_genotype(G: nx.DiGraph) -> nx.DiGraph:
-#     """
-#     - node 'label' is the mutation label carried at that node ('' allowed)
-#     - compute node 'GT' = concatenation of labels along root->node path
-#     - assign 'clone' as DFS preorder visit order (0-based)
-#     """
-#     # id_to_label
-#     id_to_label = {n: G.nodes[n].get("label", "") for n in G.nodes}
-#     root = _root_of_digraph(G)
-
-#     # compute GT by shortest path from root (tree/DAG assumed)
-#     GT = {}
-#     for v in G.nodes:
-#         path = nx.shortest_path(G, source=root, target=v)
-#         muts = [id_to_label[x] for x in path if id_to_label.get(x, "") != ""]
-#         GT[v] = ",".join(muts)
-
-#     nx.set_node_attributes(G, GT, "GT")
-
-#     # clone = DFS visit order (0-based for consistency)
-#     order = list(nx.dfs_preorder_nodes(G, source=root))
-#     clone_map = {n: i for i, n in enumerate(order)}
-#     nx.set_node_attributes(G, clone_map, "clone")
-
-#     return G
-
-# def label_genotype(G: nx.DiGraph) -> nx.DiGraph:
-#     """
-#     R-equivalent-ish genotype labeling with determinism.
-
-#     - node 'label' is the mutation label at that node ('' allowed)
-#     - node 'GT' = concatenation of labels along root->node path
-#     - node 'clone' = DFS preorder visit order (0-based), with sorted successors
-#     """
-#     root = _root_of_digraph(G)
-#     id_to_label = {n: (G.nodes[n].get("label", "") or "") for n in G.nodes}
-
-#     # Compute GT using a deterministic unique root->node path.
-#     # If the graph is truly a tree/DAG with unique parent, this matches igraph's intent.
-#     GT: Dict[int, str] = {}
-#     for v in sorted(G.nodes):
-#         try:
-#             path = _unique_root_to_node_path_in_tree(G, root, v)
-#         except nx.NetworkXNoPath:
-#             # unreachable: keep empty GT
-#             GT[v] = ""
-#             continue
-
-#         muts = [id_to_label[x] for x in path if id_to_label.get(x, "") != ""]
-#         GT[v] = ",".join(muts)
-
-#     nx.set_node_attributes(G, GT, "GT")
-
-#     # Deterministic DFS preorder: sort successors at each step.
-#     order: List[int] = []
-#     stack = [root]
-#     seen = set()
-
-#     while stack:
-#         u = stack.pop()
-#         if u in seen:
-#             continue
-#         seen.add(u)
-#         order.append(u)
-#         # push in reverse sorted order so that smallest successor is visited first
-#         succ = sorted(G.successors(u), reverse=True)
-#         stack.extend(succ)
-
-#     clone_map = {n: i for i, n in enumerate(order)}
-#     nx.set_node_attributes(G, clone_map, "clone")
-
-#     return G
-
-
-def _deterministic_dfs_preorder(G: nx.DiGraph, root: int) -> List[int]:
-    """
-    Deterministic DFS preorder (0-based clone order).
-    Ensures stable order independent of insertion order.
-    """
-    order: List[int] = []
-    stack = [root]
-    seen = set()
-
-    while stack:
-        u = stack.pop()
-        if u in seen:
-            continue
-        seen.add(u)
-        order.append(u)
-
-        # reverse sorted so smallest successor is visited first when popped
-        succ = sorted(G.successors(u), reverse=True)
-        stack.extend(succ)
-
-    # include any disconnected nodes deterministically at end
-    for n in sorted(G.nodes):
-        if n not in seen:
-            order.append(n)
-
-    return order
-
-
-def label_genotype(G: nx.DiGraph) -> nx.DiGraph:
-    """
-    Deterministic genotype labeling on the mutation graph.
-
-    - GT = concatenation of node 'label' along root->node path
-    - clone = deterministic DFS preorder (0-based)
-    """
-    root = _root_of_digraph(G)
-    id_to_label = {n: (G.nodes[n].get("label", "") or "") for n in G.nodes}
-
-    GT: Dict[int, str] = {}
-    for v in sorted(G.nodes):
-        try:
-            path = _unique_root_to_node_path_in_tree(G, root, v)
-        except nx.NetworkXNoPath:
-            GT[v] = ""
-            continue
-        muts = [id_to_label[x] for x in path if id_to_label.get(x, "") != ""]
-        GT[v] = ",".join(muts)
-
-    nx.set_node_attributes(G, GT, "GT")
-
-    order = _deterministic_dfs_preorder(G, root)
-    clone_map = {n: i for i, n in enumerate(order)}
-    nx.set_node_attributes(G, clone_map, "clone")
-
-    return G
-
-
-#  label_edges on mutation graph
-def label_edges(G: nx.DiGraph) -> nx.DiGraph:
-    """
-    Add edge attributes: 'from_label', 'to_label', and 'label' = 'from_label->to_label'.
-    """
-    for u, v in G.edges:
-        fl = G.nodes[u].get("label", "")
-        tl = G.nodes[v].get("label", "")
-        G.edges[u, v]["from_label"] = fl
-        G.edges[u, v]["to_label"] = tl
-        G.edges[u, v]["label"] = f"{fl}->{tl}"
-    return G
-
-
-# transfer_links (copy node 'node' id to edges)
-def transfer_links(G: nx.DiGraph) -> nx.DiGraph:
-    """
-    For each edge, copy the upstream/downstream node's 'node' attribute to
-    edge attrs 'from_node' and 'to_node'.
-    """
-    for u, v in G.edges:
-        G.edges[u, v]["from_node"] = G.nodes[u].get("node")
-        G.edges[u, v]["to_node"] = G.nodes[v].get("node")
-    return G
-
-
-# # contract_nodes (merge adjacent vertices)
-# def contract_nodes(G: nx.DiGraph,
-#                    vset: List[str],
-#                    node_tar: Optional[str] = None,
-#                    debug: bool = False) -> nx.DiGraph:
-#     """
-#     Merge a set of adjacent vertices whose node attribute 'label' is in vset.
-#     - New node id is the smallest original id in the set.
-#     - New 'label' is comma-joined sorted labels.
-#     - Preserve 'node' from the first by default, or override with node_tar if given.
-#     - Rebuild simple DiGraph (no parallel edges, no self-loops).
-#     """
-#     # map labels -> node ids
-#     label_to_id = defaultdict(list)
-#     for n, d in G.nodes(data=True):
-#         lab = d.get("label", "")
-#         label_to_id[lab].append(n)
-
-#     # minimally enforce one id per label; 
-#     vset_ids = sorted([label_to_id[lab][0] for lab in vset if label_to_id.get(lab)])
-#     if len(vset_ids) <= 1:
-#         return G.copy()
-
-#     new_id = min(vset_ids)
-#     keep_ids = set(G.nodes) - set(vset_ids) | {new_id}
-
-#     # build mapping: contracted ids -> new_id, others stay
-#     map_id = {}
-#     for n in G.nodes:
-#         map_id[n] = new_id if n in vset_ids else n
-
-#     # build new graph
-#     H = nx.DiGraph()
-#     # nodes
-#     for n in keep_ids:
-#         H.add_node(n, **G.nodes[n])
-
-#     # merged node attributes
-#     merged_labels = sorted([G.nodes[i].get("label", "") for i in vset_ids if G.nodes[i].get("label", "") != ""])
-#     H.nodes[new_id]["label"] = ",".join(merged_labels)
-#     if node_tar is not None:
-#         H.nodes[new_id]["node"] = node_tar  # override
-
-#     # edges
-#     for u, v, ed in G.edges(data=True):
-#         uu, vv = map_id[u], map_id[v]
-#         if uu == vv:
-#             continue  # drop self-loop
-#         # combine; keep last attribute set is fine for our use
-#         H.add_edge(uu, vv)
-#     # refresh sequential 'id' attribute (0-based)
-#     for i, n in enumerate(sorted(H.nodes)):
-#         H.nodes[n]["id"] = i
-
-#     if debug:
-#         return H
-
-#     H = label_edges(H)
-#     return H
-
-
-def contract_nodes(
-    G: nx.DiGraph,
-    vset: List[str],
-    node_tar: Optional[str] = None,
-    debug: bool = False,
-    ) -> nx.DiGraph:
-    """
-    Deterministic contraction.
-
-    R does:
-      - reorder vset according to DFS order from root (igraph::dfs)
-      - contract with min(vertex id) as representative, label becomes sorted-joined
-      - simplify graph and relabel edges
-
-    This version:
-      - finds node ids whose 'label' in vset
-      - reorders those ids by DFS order from root (deterministic)
-      - merges into the smallest id among them (stable)
-      - sets merged label to comma-joined sorted labels (like R)
-      - preserves/overrides 'node' attribute with node_tar if provided
-      - rebuilds simple DiGraph, then labels edges
-    """
-    if not vset:
-        return G.copy()
-
-    # label -> node ids (could be multiple ids with same label; we keep all)
-    label_to_ids: Dict[str, List[int]] = defaultdict(list)
-    for n, d in G.nodes(data=True):
-        label_to_ids[d.get("label", "") or ""].append(n)
-
-    # collect all ids corresponding to requested labels
-    vset_ids: List[int] = []
-    for lab in vset:
-        vset_ids.extend(label_to_ids.get(lab, []))
-
-    vset_ids = sorted(set(vset_ids))
-    if len(vset_ids) <= 1:
-        return G.copy()
-
-    # reorder by DFS order from root (like R's vorder based on dfs order)
-    root = _root_of_digraph(G)
-
-    dfs_order = []
-    stack = [root]
-    seen = set()
-    while stack:
-        u = stack.pop()
-        if u in seen:
-            continue
-        seen.add(u)
-        dfs_order.append(u)
-        # deterministic
-        succ = sorted(G.successors(u), reverse=True)
-        stack.extend(succ)
-
-    rank = {n: i for i, n in enumerate(dfs_order)}
-    vset_ids = sorted(vset_ids, key=lambda x: rank.get(x, 10**18))
-
-    new_id = min(vset_ids)
-
-    # mapping old -> new
-    map_id = {n: (new_id if n in vset_ids else n) for n in G.nodes}
-
-    # build new graph H
-    H = nx.DiGraph()
-
-    # add nodes: keep all non-merged plus the representative
-    keep_ids = set(G.nodes) - set(vset_ids) | {new_id}
-    for n in keep_ids:
-        # If n is representative, copy its attrs; then we'll overwrite label/node if needed.
-        H.add_node(n, **G.nodes[n])
-
-    # merged node label: sorted labels of the merged set (R sorts)
-    merged_labels = []
-    for nid in vset_ids:
-        lab = G.nodes[nid].get("label", "") or ""
-        if lab != "":
-            merged_labels.append(lab)
-    merged_labels = sorted(merged_labels)
-    H.nodes[new_id]["label"] = ",".join(merged_labels)
-
-    if node_tar is not None:
-        H.nodes[new_id]["node"] = node_tar
-
-    # add edges (simple, drop self-loops)
-    for u, v in G.edges:
-        uu, vv = map_id[u], map_id[v]
-        if uu == vv:
-            continue
-        H.add_edge(uu, vv)
-
-    # reassign sequential 'id' deterministically (by DFS order if possible)
-    # This avoids shifting ids randomly vs topology.
-    rootH = _root_of_digraph(H)
-    dfsH = []
-    stack = [rootH]
-    seen = set()
-    while stack:
-        u = stack.pop()
-        if u in seen:
-            continue
-        seen.add(u)
-        dfsH.append(u)
-        succ = sorted(H.successors(u), reverse=True)
-        stack.extend(succ)
-
-    # append any disconnected nodes deterministically
-    for n in sorted(H.nodes):
-        if n not in seen:
-            dfsH.append(n)
-
-    for i, n in enumerate(dfsH):
-        H.nodes[n]["id"] = i  # 0-based
-
-    if debug:
-        return H
-
-    # edge relabeling and link transfer will be handled by caller, but keep parity with your pipeline:
-    H = label_edges(H)
-    return H
-
-
-# move costs / optimal move
-def get_move_cost(muts: str, node_ori: str, node_tar: str, l_matrix: pd.DataFrame) -> float:
-    """
-    Sum over mutations: l_matrix[node_ori, mut] - l_matrix[node_tar, mut].
-    Empty muts, missing nodes, or missing columns => +inf (i.e., disallow move).
-    """
-
-    # No mutations to move
-    if not muts:
-        return math.inf
-
-    # Nodes must be valid row labels
-    if node_ori is None or node_tar is None:
-        return math.inf
-    if node_ori not in l_matrix.index or node_tar not in l_matrix.index:
-        return math.inf
-
-    # Keep only mutation columns that exist
-    muts_list = muts.split(",") if "," in muts else [muts]
-    muts_in = [m for m in muts_list if m in l_matrix.columns]
-    if not muts_in:
-        return math.inf
-
-    return sum(l_matrix.loc[node_ori, muts_in] - l_matrix.loc[node_tar, muts_in])
-
-
-# def get_move_opt(G: nx.DiGraph, l_matrix: pd.DataFrame) -> Dict[str, object]:
-#     best = {"cost": math.inf}
-#     outdeg = dict(G.out_degree())
-
-#     for u, v in G.edges:
-#         ed = G.edges[u, v]
-#         from_label = ed.get("from_label", "")
-#         to_label   = ed.get("to_label", "")
-#         from_node  = ed.get("from_node", None)
-#         to_node    = ed.get("to_node", None)
-
-#         # If either node mapping is missing, this edge cannot be reassigned
-#         up_cost = get_move_cost(to_label, to_node, from_node, l_matrix)
-#         down_cost = get_move_cost(from_label, from_node, to_node, l_matrix)
-
-#         # Prevent a 'down' move if branching
-#         if outdeg.get(u, 0) > 1:
-#             down_cost = math.inf
-
-#         for direction, cost in (("up", up_cost), ("down", down_cost)):
-#             if cost < best.get("cost", math.inf):
-#                 best = {
-#                     "from": u, "to": v,
-#                     "from_label": from_label, "to_label": to_label,
-#                     "from_node": from_node, "to_node": to_node,
-#                     "direction": direction, "cost": cost,
-#                 }
-#     return best
-
-
-def get_move_opt(G: nx.DiGraph, l_matrix: pd.DataFrame) -> Dict[str, object]:
-    """
-    get_move_opt:
-      - compute 'up' and 'down' costs per edge
-      - disallow down move if branching (out-degree > 1)
-      - take global minimum cost move
-    """
-    best = {"cost": math.inf}
-    outdeg = dict(G.out_degree())
-
-    # Deterministic edge iteration
-    edges_sorted = sorted(G.edges)
-
-    for u, v in edges_sorted:
-        ed = G.edges[u, v]
-        from_label = ed.get("from_label", "") or ""
-        to_label = ed.get("to_label", "") or ""
-        from_node = ed.get("from_node", None)
-        to_node = ed.get("to_node", None)
-
-        up_cost = get_move_cost(to_label, to_node, from_node, l_matrix)
-        down_cost = get_move_cost(from_label, from_node, to_node, l_matrix)
-
-        # prevent a down move if branching
-        if outdeg.get(u, 0) > 1:
-            down_cost = math.inf
-
-        # deterministic tie-break: prefer 'up' before 'down' if equal cost,
-        # and earlier (u,v) due to sorted edges.
-        for direction, cost in (("up", up_cost), ("down", down_cost)):
-            if cost < best.get("cost", math.inf):
-                best = {
-                    "from": u, "to": v,
-                    "from_label": from_label, "to_label": to_label,
-                    "from_node": from_node, "to_node": to_node,
-                    "direction": direction, "cost": float(cost),
-                }
-
-    return best
-
-
-# simplify_history
-def simplify_history(G: nx.DiGraph,
-                     l_matrix: pd.DataFrame,
-                     max_cost: float = 150.0,
-                     n_cut: int = 0,
-                     verbose: bool = True) -> nx.DiGraph:
-    """
-    Iteratively contract edges by cheapest move (up/down) while cost < max_cost,
-    or until ecount(G) <= n_cut.
-    """
-    if n_cut > 0:
-        max_cost = math.inf
-
-    # ensure required edge labels exist
-    G = label_edges(G)
-    G = transfer_links(G)
-
-    # conservative bound on iterations
-    for _ in range(len(G.edges)):
-        move_opt = get_move_opt(G, l_matrix)
-        if (move_opt["cost"] < max_cost) and (G.number_of_edges() > n_cut):
-            if move_opt["direction"] == "up":
-                # merge child into parent, keep parent's 'node'
-                G = contract_nodes(G,
-                                   vset=[move_opt["from_label"], move_opt["to_label"]],
-                                   node_tar=move_opt["from_node"])
-                if verbose:
-                    log.info(f"opt_move:{move_opt['to_label']}->{move_opt['from_label']}, cost={move_opt['cost']:.3g}")
-            else:
-                # merge parent into child, keep child's 'node'
-                G = contract_nodes(G,
-                                   vset=[move_opt["from_label"], move_opt["to_label"]],
-                                   node_tar=move_opt["to_node"])
-                if verbose:
-                    log.info(f"opt_move:{move_opt['from_label']}->{move_opt['to_label']}, cost={move_opt['cost']:.3g}")
-            
-            G = transfer_links(G)
-
-        else:
-            break
-    return G
-
-
-# get_ordered_tips
-def get_ordered_tips(tree: "Phylo.BaseTree.Tree") -> List[str]:
-    """
-    Biopython: traverse edges in postorder and list terminal clades in that order.
-    """
-    tips = []
-    for cl in tree.find_clades(order="postorder"):
-        if cl.is_terminal():
-            tips.append(cl.name)
-    return tips
-
-
-# get_mut_graph
-def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
-    """
-    Convert a single-cell phylogeny (with per-node last_mut, site) into a mutation graph:
-    - contract nodes by identical 'last_mut'
-    - node attrs: 'label' = last_mut, 'id' (0-based), 'node' linking back to tree node name (where site appears)
-    - edges induced by parent-child relations between contracted groups
-    """
-    # distinct mutation-carrying nodes (name, site)
-    mut_nodes_rows = []
-    for n, d in gtree.nodes(data=True):
-        site = d.get("site")
-        if site not in (None, ""):
-            mut_nodes_rows.append({"name": d.get("name"), "site": site})
-    mut_nodes_df = pd.DataFrame(mut_nodes_rows).drop_duplicates()
-
-    # group original nodes by last_mut
-    last_groups: Dict[str, List[int]] = defaultdict(list)
-    for n, d in gtree.nodes(data=True):
-        last = d.get("last_mut", "")
-        last_groups[last].append(n)
-
-    # create mutation graph nodes in sorted order of label
-    labels = sorted(last_groups.keys())
-    label_to_id = {lab: i for i, lab in enumerate(labels)}
-    G = nx.DiGraph()
-    for lab, nid in label_to_id.items():
-        G.add_node(nid, label=lab, id=nid)
-
-    # edges between contracted groups
-    for u, v in gtree.edges:
-        lu = gtree.nodes[u].get("last_mut", "")
-        lv = gtree.nodes[v].get("last_mut", "")
-        if lu == lv:
-            continue
-        G.add_edge(label_to_id[lu], label_to_id[lv])
-
-    # label edges
-    G = label_edges(G)
-
-    # attach back-pointer 'node' using site==label
-    site_to_node = dict(mut_nodes_df[["site", "name"]].itertuples(index=False, name=None))
-    for n in G.nodes:
-        lab = G.nodes[n].get("label", "")
-        if lab in site_to_node:
-            G.nodes[n]["node"] = site_to_node[lab]
-        else:
-            G.nodes[n]["node"] = None
-
-    G = transfer_links(G)
-    return G
-
-
-# get_tree_post and get_gtree (wire-up)
-def _clade_name_map(tree: Phylo.BaseTree.Tree) -> Dict[Clade, str]:
-    """
-    Deterministic naming:
-      - tips: keep original names
-      - internal nodes: Node0..Node{k-1} in postorder
-    Must match score_tree() internal labeling.
-    """
-    name_map: Dict[Clade, str] = {}
-    for cl in tree.get_terminals():
-        name_map[cl] = cl.name
-    for i, cl in enumerate(tree.get_nonterminals(order='postorder')):
-        name_map[cl] = f"Node{i}"
-    return name_map
-
-
-def phylo_to_graph(tree: Phylo.BaseTree.Tree,
-                   name_map: Dict[Clade, str],
-                   traversal_order: str = "postorder",
-                   debug: bool = False) -> nx.DiGraph:
-    """Convert tree -> DiGraph with node attrs and deterministic names."""
-    G = nx.DiGraph()
-    clades = list(tree.find_clades(order=traversal_order))
-    id_map = {cl: i for i, cl in enumerate(clades)}
-    root_id = id_map[tree.root]
-
-    for clade in clades:
-        idx = id_map[clade]
-        G.add_node(idx, name=name_map[clade])
-        for child in clade.clades:
-            bl = child.branch_length if child.branch_length is not None else 0.0
-            G.add_edge(idx, id_map[child], weight=bl)
-
-    for node in G.nodes:
-        G.nodes[node]["leaf"] = (G.out_degree(node) == 0)
-        G.nodes[node]["root"] = (node == root_id)
-
-    depth = nx.single_source_shortest_path_length(G, root_id)
-    for node, d in depth.items():
-        G.nodes[node]["depth"] = d
-        G.nodes[node]["id"] = node
-
-    for u, v in G.edges:
-        G.edges[u, v]["leaf"] = G.nodes[v]["leaf"]
-
-    if debug:
-        nodes_df = pd.DataFrame.from_dict({n: d for n, d in G.nodes(data=True)}, orient="index")
-        edges_df = nx.to_pandas_edgelist(G)
-        return G, nodes_df, edges_df
-    return G
-
-
-# def mut_to_tree(G: nx.DiGraph, mut_df: pd.DataFrame) -> nx.DiGraph:
-#     """
-
-#     Parameters
-#     ----------
-#     G      : nx.DiGraph
-#              Tree graph with node attrs 'name', 'leaf', 'root', 'depth', 'id'
-#     mut_df : pd.DataFrame
-#              Must have columns:
-#                - 'name'  : matches G.nodes[n]['name']
-#                - 'site'  : comma-separated mutations at that node
-#              Optionally:
-#                - 'clone' : clone label per genotype
-
-#     Returns
-#     -------
-#     G      : nx.DiGraph (modified in place)
-#              - Nodes get new attrs: 'site', 'n_mut', 'GT', 'last_mut', (optional) 'clone'
-#              - Edges get new attr: 'length' (and synced to 'weight')
-#     """
+def P_to_candidate_tree(
+    P_df: pd.DataFrame,
+    outgroup_name: str = "outgroup",
+    skip_nj: bool = False,
+    n_jobs: int = 1,
+    eps_nni: float = 1e-5,
+    max_nni: int = 100,
+    verbose: bool = True,
+    ) -> pd.DataFrame:
     
-#     # Ensure n_mut column
-#     if "n_mut" not in mut_df:
-#         mut_df["n_mut"] = mut_df["site"].str.split(",").apply(len)
-    
-#     # Build quick lookups
-#     node_info = mut_df.set_index("name")[["site", "n_mut"]].to_dict("index")
-    
-#     # Attach site and n_mut to each node
-#     for n, data in G.nodes(data=True):
-#         name = data.get("name", "")
-#         info = node_info.get(name, {"site": "", "n_mut": 0})
-#         data["site"]  = info["site"]
-#         data["n_mut"] = info["n_mut"]
-    
-#     # Convert n_mut to edge length, enforce min tip‐length 0.2
-#     for u, v, ed in G.edges(data=True):
-#         ln = G.nodes[v]["n_mut"]
-#         if G.nodes[v]["leaf"]:
-#             ln = max(ln, 0.2)
-#         ed["length"] = ln
-#         # ed["weight"] = ln
-    
-#     # Build a lookup: id -> local mutation string
-#     node_to_mut = {n: (d["site"] or "") for n, d in G.nodes(data=True)}
-    
-#     # Locate the unique root (flagged earlier in phylo_to_graph)
-#     root = next(n for n, d in G.nodes(data=True) if d.get("root"))
-    
-#     # Traverse the tree breadth-first and accumulate mutations
-#     # keep a running list of mutations for every node seen so far.
-#     G.nodes[root]["GT"] = node_to_mut[root]
-#     G.nodes[root]["last_mut"] = (node_to_mut[root].split(",")[-1] if node_to_mut[root] else "")
-    
-#     queue = deque([root])
-#     while queue:
-#         parent = queue.popleft()
-#         # split the parent genotype into a Python list ('' -> [])
-#         parent_gt = (G.nodes[parent]["GT"].split(",") if G.nodes[parent]["GT"] else [])
-    
-#         # visit all children (successors) in breadth-first order
-#         for child in G.successors(parent):
-#             queue.append(child)
-    
-#             child_local = (node_to_mut[child].split(",") if node_to_mut[child] else [])
-    
-#             # cumulative genotype along the path
-#             cum_gt = parent_gt + child_local
-#             G.nodes[child]["GT"] = ",".join(cum_gt)
-    
-#             # last mutation on that path
-#             G.nodes[child]["last_mut"] = cum_gt[-1] if cum_gt else ""
-    
-#     # if GT is empty but node carries local mutations, copy them
-#     for n, d in G.nodes(data=True):
-#         if d["GT"] == "" and d["site"]:
-#             d["GT"] = d["site"]
+    # Build guide trees (UPGMA/NJ, root+prune outgroup)
+    P_with_out = P_df.copy()
+    P_with_out.loc[outgroup_name, :] = 0.0
 
-#     # propagate clone IDs by GT
-#     if isinstance(mut_df, pd.DataFrame) and {"GT", "clone"}.issubset(mut_df.columns):
-#         # prefer one clone per GT (drop duplicates), cast to int where possible
-#         gt_clone = (
-#             mut_df[["GT", "clone"]]
-#             .dropna()
-#             .drop_duplicates(subset=["GT"])
-#         )
-#         gt_to_clone = dict(zip(gt_clone["GT"], gt_clone["clone"]))
-#         for n, d in G.nodes(data=True):
-#             gt = d.get("GT", "")
-#             if gt in gt_to_clone:
-#                 d["clone"] = gt_to_clone[gt]
+    dm = build_distance_matrix_from_P(P_with_out, metric="euclidean", n_jobs=n_jobs)
 
-#     return G
+    t_upgma = root_and_prune_outgroup(build_upgma_tree(dm), outgroup=outgroup_name)
 
+    if skip_nj:
+        t_init = t_upgma
+    else:
+        t_nj = root_and_prune_outgroup(build_nj_tree(dm), outgroup=outgroup_name)
+        up = score_tree_treenode_fast(t_upgma, P_df, get_l_matrix=False).l_tree
+        nj = score_tree_treenode_fast(t_nj, P_df, get_l_matrix=False).l_tree
+        t_init = t_upgma if up >= nj else t_nj
 
+    canonicalize_tree_inplace(t_init, right=True)
 
-def mut_to_tree(G: nx.DiGraph, mut_df: pd.DataFrame) -> nx.DiGraph:
-    """
-    Port of R mut_to_tree with deterministic traversal and robust mutation accumulation.
-
-    Join key: node attribute 'name' == mut_df['name'].
-
-    Adds/updates node attrs: site, n_mut, GT, last_mut, (optional) clone
-    Adds/updates edge attrs: length
-    """
-    mut_df = mut_df.copy()
-
-    # Ensure n_mut exists
-    if "n_mut" not in mut_df.columns:
-        mut_df["n_mut"] = mut_df["site"].fillna("").astype(str).str.split(",").apply(
-            lambda x: 0 if x == [""] else len(x)
-        )
-
-    node_info = (
-        mut_df.set_index("name")[["site", "n_mut"]]
-        .fillna({"site": "", "n_mut": 0})
-        .to_dict("index")
+    # ML tree search with fast local NNI
+    tree_list = perform_nni_ml_greedy_local(
+        tree_init=t_init,
+        P_df=P_df,
+        eps=eps_nni,
+        max_iter=max_nni,
+        verbose=verbose,
     )
-
-    # attach site & n_mut
-    for n, data in G.nodes(data=True):
-        nm = data.get("name", "")
-        info = node_info.get(nm, {"site": "", "n_mut": 0})
-        data["site"] = info["site"] or ""
-        data["n_mut"] = int(info["n_mut"]) if not pd.isna(info["n_mut"]) else 0
-
-    # edge lengths based on child n_mut (tips min 0.2)
-    for u, v, ed in G.edges(data=True):
-        ln = float(G.nodes[v]["n_mut"])
-        if G.nodes[v].get("leaf", False):
-            ln = max(ln, 0.2)
-        ed["length"] = float(ln)
-
-    node_to_mut = {n: (d.get("site", "") or "") for n, d in G.nodes(data=True)}
-
-    roots = [n for n, d in G.nodes(data=True) if d.get("root")]
-    if not roots:
-        raise ValueError("No root node found (node attr 'root' missing).")
-    root = roots[0]
-
-    # deterministic BFS accumulation: sorted successors
-    G.nodes[root]["GT"] = node_to_mut[root]
-    G.nodes[root]["last_mut"] = (node_to_mut[root].split(",")[-1] if node_to_mut[root] else "")
-
-    queue = deque([root])
-    while queue:
-        parent = queue.popleft()
-        parent_gt = G.nodes[parent]["GT"].split(",") if G.nodes[parent]["GT"] else []
-
-        for child in sorted(G.successors(parent)):
-            queue.append(child)
-            child_local = node_to_mut[child].split(",") if node_to_mut[child] else []
-            child_local = [m for m in child_local if m != ""]
-            cum_gt = parent_gt + child_local
-            G.nodes[child]["GT"] = ",".join(cum_gt)
-            G.nodes[child]["last_mut"] = cum_gt[-1] if cum_gt else ""
-
-    # if GT empty but local site exists, copy it
-    for n, d in G.nodes(data=True):
-        if (d.get("GT", "") == "") and (d.get("site", "") != ""):
-            d["GT"] = d["site"]
-
-    # preserve clone ids if provided GT->clone mapping
-    if {"GT", "clone"}.issubset(mut_df.columns):
-        gt_clone = (
-            mut_df[["GT", "clone"]]
-            .dropna()
-            .drop_duplicates(subset=["GT"])
-        )
-        gt_to_clone = dict(zip(gt_clone["GT"], gt_clone["clone"]))
-        for n, d in G.nodes(data=True):
-            gt = d.get("GT", "")
-            if gt in gt_to_clone:
-                d["clone"] = gt_to_clone[gt]
-
-    return G
-
-
-
-# def annotate_tree(tree: Phylo.BaseTree.Tree, P: pd.DataFrame) -> nx.DiGraph:
-#     sites = list(P.columns)
-
-#     # likelihood matrix (node × site)
-#     tree_stats = score_tree(tree, P, get_l_matrix=True)
-#     l_matrix = pd.DataFrame(tree_stats["l_matrix"], columns=sites)
-
-#     tips = [cl.name for cl in tree.get_terminals()]
-#     n_int = len(list(tree.get_nonterminals()))
-#     internals = [f"Node{i}" for i in range(n_int)]           # 0-based
-#     l_matrix.index = tips + internals
-
-#     # mutation assignment (site -> argmax row)
-#     mut_nodes = []
-#     for site in sites:
-#         row = l_matrix[site].idxmax()
-#         mut_nodes.append({"site": site, "name": row, "l": l_matrix.loc[row, site]})
-#     mut_df = (pd.DataFrame(mut_nodes)
-#                 .groupby("name", sort=False)
-#                 .agg(site=("site", lambda x: ",".join(sorted(x))),
-#                      n_mut=("site", "count"),
-#                      l=("l", "sum"))
-#                 .reset_index())
-
-#     # build graph with consistent names
-#     name_map = _clade_name_map(tree)                      # tips + Node0..Node{n_int-1} in postorder
-#     gtree = phylo_to_graph(tree, name_map=name_map)
-
-#     # attach mutation metadata (node 'name' is the join key)
-#     gtree = mut_to_tree(gtree, mut_df)
-#     return gtree
-
-
-def annotate_tree(tree: Phylo.BaseTree.Tree, P: pd.DataFrame) -> nx.DiGraph:
-    """
-    annotate_tree with robust labeling:
-      - obtains l_matrix with correct row labels from score_tree()
-      - assigns each segment (site) to argmax row label
-      - converts tree->DiGraph with consistent internal naming (Node0.. in postorder)
-      - calls mut_to_tree to decorate nodes/edges
-    """
-    sites = list(P.columns)
-
-    # Score and build properly labeled l_matrix
-    tree_stats = score_tree(tree, P, get_l_matrix=True)
-    l_matrix = pd.DataFrame(
-        tree_stats["l_matrix"],
-        columns=sites,
-        index=tree_stats["row_labels"],   # labeling
-    )
-
-    # Mutation assignment: site -> argmax row label
-    mut_nodes = []
-    for site in sites:
-        row = l_matrix[site].idxmax()
-        mut_nodes.append({"site": site, "name": row, "l": float(l_matrix.loc[row, site])})
-
-    mut_df = (pd.DataFrame(mut_nodes)
-              .groupby("name", sort=False)
-              .agg(site=("site", lambda x: ",".join(sorted(x))),
-                   n_mut=("site", "count"),
-                   l=("l", "sum"),
-                   )
-              .reset_index()
-              )
-
-    # Tree -> graph with names consistent with score_tree internal labels
-    name_map = _clade_name_map(tree)
-    gtree = phylo_to_graph(tree, name_map=name_map, traversal_order="postorder")
-
-    # Attach mutation metadata
-    gtree = mut_to_tree(gtree, mut_df)
-    return gtree
-
-
-# def get_tree_post(tree, P: pd.DataFrame) -> Dict[str, object]:
-#     """
-#     compute l_matrix and a mutation-annotated tree (gtree).
-#     Uses 0-based internal labels (Node0..).
-#     """
-#     sites = list(P.columns)
-#     stats = score_tree(tree, P, get_l_matrix=True)
-#     l_matrix = pd.DataFrame(stats["l_matrix"], columns=sites)
-
-#     tips = [cl.name for cl in tree.get_terminals()]
-#     n_int = len(list(tree.get_nonterminals()))
-#     internals = [f"Node{i}" for i in range(n_int)]  # 0-based
-#     l_matrix.index = tips + internals
-
-#     gtree = annotate_tree(tree, P)
-#     return {"gtree": gtree, "l_matrix": l_matrix}
-
-
-def get_tree_post(tree: Phylo.BaseTree.Tree, P: pd.DataFrame) -> Dict[str, object]:
-    """
-    Compute l_matrix and a mutation-annotated tree (gtree) with robust labeling.
-    """
-    sites = list(P.columns)
-    stats = score_tree(tree, P, get_l_matrix=True)
-
-    l_matrix = pd.DataFrame(
-        stats["l_matrix"],
-        columns=sites,
-        index=stats["row_labels"],  # CRITICAL: robust labeling
-    )
-
-    gtree = annotate_tree(tree, P)
-    return {"gtree": gtree, "l_matrix": l_matrix}
-
-
-def get_gtree(tree, P: pd.DataFrame, n_cut: int = 0, max_cost: float = 0.0) -> nx.DiGraph:
-    """
-    High-level: build gtree, simplify mutation history, relabel genotypes, update original gtree,
-    and mark tumor lineage.
-    """
-    # L-matrix + annotated phylogeny
-    tree_post = get_tree_post(tree, P)
-
-    # mutation graph -> simplify -> label genotypes
-    G_m = get_mut_graph(tree_post["gtree"])
-    G_m = simplify_history(G_m, tree_post["l_matrix"], max_cost=max_cost, n_cut=n_cut, verbose=True)
-    G_m = label_genotype(G_m)
-
-    # extract per-node mutation assignments from mutation graph
-    mut_nodes = []
-    Vdf = pd.DataFrame([{**{"id": n}, **d} for n, d in G_m.nodes(data=True)])
-    mut_nodes = Vdf.rename(columns={"node": "name", "label": "site"})[["name", "site", "clone", "GT"]]
-
-    # update original tree with he above assignments & tumor/normal labels
-    gtree = mut_to_tree(tree_post["gtree"], mut_nodes)
-    gtree = mark_tumor_lineage(gtree)
-    return gtree
-
-
-
-
-
+    treeML = tree_list[-1]
+    
+    return treeML

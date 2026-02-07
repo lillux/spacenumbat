@@ -11,7 +11,7 @@ from . import diagnostics
 from . import plot
 from . import operations
 from . import tree
-from . import tree_sk
+from . import phylo
 
 from .main import run_numbat
 
