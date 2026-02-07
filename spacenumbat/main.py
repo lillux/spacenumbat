@@ -21,7 +21,7 @@ from skbio import DistanceMatrix as SKDM
 import spacenumbat
 from spacenumbat import (utils, diagnostics, clustering, 
                          operations, plot, spatial_utils,
-                         tree, tree_sk)
+                         tree, phylo)
 
 from spacenumbat._log import configure, get_logger
 
@@ -583,32 +583,33 @@ def run_numbat(
     p_min = 1e-10
     
     P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
-    P.to_csv(os.path.join(out_dir, f"geno_{i}.tsv"), sep="\t")
-    
+    P_saving_path = os.path.join(out_dir, f"geno_{i}.tsv")
+    P.to_csv(P_saving_path, sep="\t")
+    log.info(f"P matrix has been saved at {P_saving_path}")
     
     treeML = tree.P_to_candidate_tree(P_df=P,
                                          n_jobs=ncores)
     
-    # gtree = tree.get_gtree(treeML,
-    #                        P,
-    #                        n_cut=n_cut,
-    #                        max_cost=max_cost)
+    gtree = tree.get_gtree(treeML,
+                           P,
+                           n_cut=n_cut,
+                           max_cost=max_cost)
     
-    # G_m = tree.label_genotype(tree.get_mut_graph(gtree))
+    G_m = tree.label_genotype(tree.get_mut_graph(gtree))
     
-    # log.info(f"Tree building completed, pass {i}")
+    log.info(f"Tree building completed, pass {i}")
     
-    # clone_post = operations.get_clone_post(gtree, exp_post, allele_post)
-    # clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
+    clone_post = phylo.get_clone_post(gtree, exp_post, allele_post)
+    clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
 
-    # normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
-    # msg = f"Found {len(normal_cells)} normal cells."
-    # log.info(msg)
+    normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
+    msg = f"Found {len(normal_cells)} normal cells."
+    log.info(msg)
     
     
     
-    #return exp_post, allele_post, segs_consensus_retest, count_mat, clone_post, G_m
-    return exp_post, allele_post, segs_consensus_retest, count_mat, treeML #clone_post, G_m
+    #return exp_post, allele_post, segs_consensus_retest, count_mat, treeML, clone_post, G_m
+    return clone_post, G_m
 
     
     
