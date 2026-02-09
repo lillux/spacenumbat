@@ -42,7 +42,7 @@ def run_numbat(
     max_entropy=0.5,
     init_k=3,
     min_cells=50,
-    tau=0.2,
+    tau=0.3,
     nu=1,
     max_cost=0,
     n_cut=0,
@@ -243,7 +243,7 @@ def run_numbat(
 
     # check if conficts on given genomic information
     if (not (segs_loh is None) and (segs_loh.shape[0]>0)) and segs_consensus_fix:
-        msg = "Cannot specify both segs_loh and segs_consensus_fix."
+        msg = "Cannot specify both segs_loh and segs_consensus_fix. Breaking pipeline!"
         raise ValueError(msg)
     
     # check provided consensus CNVs
@@ -306,13 +306,20 @@ def run_numbat(
         msg = "Calling segments with clonal LoH."
         log.info(msg)
         
-        bulk = utils.get_bulk(count_mat, lambdas_ref, df_allele, gtf, filter_hla=filter_hla_hg38, filter_segments=filter_segments_df)
-        segs_loh = utils.detect_clonal_loh(bulk, t=t)
+        bulk = utils.get_bulk(count_mat, 
+                              lambdas_ref,
+                              df_allele, 
+                              gtf, 
+                              filter_hla=filter_hla_hg38,
+                              filter_segments=filter_segments_df,
+                              min_depth=min_depth,
+                              nu=nu)
+        segs_loh = utils.detect_clonal_loh(bulk, t=t, min_depth=min_depth)
         
         #TODO remove this
         log.info(f"segs_loh shape is: {segs_loh.shape}\nbulk shape is: {bulk.shape}")       
         
-        if segs_loh.shape[0] > 0:
+        if (segs_loh is not None) and (segs_loh.shape[0] > 0):
             segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
         else:
             log.info('No segments with clonal LoH detected.')
@@ -387,80 +394,81 @@ def run_numbat(
     diagnostics.check_contam(bulk_subtrees0)
     diagnostics.check_exp_noise(bulk_subtrees0)
     
-    #if segs_consensus_fix is None:
+    if segs_consensus_fix is None:
         
-    bulk_test = operations.run_group_hmms(bulk_subtrees,
-                           t = t,
-                           gamma = gamma,
-                           alpha = alpha,
-                           nu = nu,
-                           min_genes = min_genes,
-                           common_diploid = common_diploid,
-                           diploid_chroms = diploid_chroms,
-                           ncores = ncores,
-                           verbose = verbose)
+        bulk_test = operations.run_group_hmms(bulk_subtrees,
+                               t = t,
+                               gamma = gamma,
+                               alpha = alpha,
+                               nu = nu,
+                               min_genes = min_genes,
+                               common_diploid = common_diploid,
+                               diploid_chroms = diploid_chroms,
+                               ncores = ncores,
+                               verbose = verbose)
+        
+        bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
+        
+        if plot:
+            with plt.ioff():  # disables live rendering inside the block
     
-    bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
+                plot_subtrees = plot.plot_bulks(bulk_test, 
+                                                  exp_limit=4, 
+                                                  text_size=10, 
+                                                  title_size=14,
+                                                  panel_vspace=1)
+                plot_subtrees.savefig(os.path.join(out_dir, f"bulk_subtrees{i}.jpg"), dpi=200)
+                plt.close("all")
+           
+        # define consensus CNVs
+        segs_consensus = operations.get_segs_consensus(bulk_test,
+                                       min_LLR = min_LLR,
+                                       min_overlap = min_overlap,
+                                       retest = True)
+                
+        # check termination
+        if np.all(segs_consensus.cnv_state_post == 'neu'):
+            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+            log.info(msg)
+            return msg
+        
+        bulk_retest = operations.retest_bulks(bulk_test,
+                                              segs_consensus,
+                                              diploid_chroms=diploid_chroms,
+                                              gamma=gamma,
+                                              min_LLR=min_LLR,
+                                              ncores=ncores)
+        bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
+        
+        ## define consensus CNVs again
+        segs_consensus_retest = operations.get_segs_consensus(bulk_retest, 
+                                                   min_LLR=min_LLR, 
+                                                   min_overlap=min_overlap, 
+                                                   retest=False) 
+        
+        ## check termination again
+        if np.all(segs_consensus_retest.cnv_state_post == 'neu'):
+            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+            log.info(msg)
+            return msg
     
-    if plot:
-        with plt.ioff():  # disables live rendering inside the block
-
-            plot_subtrees = plot.plot_bulks(bulk_test, 
-                                              exp_limit=4, 
-                                              text_size=10, 
-                                              title_size=14,
-                                              panel_vspace=1)
-            plot_subtrees.savefig(os.path.join(out_dir, f"bulk_subtrees{i}.jpg"), dpi=200)
-            plt.close("all")
-       
-    # define consensus CNVs
-    segs_consensus = operations.get_segs_consensus(bulk_test,
-                                   min_LLR = min_LLR,
-                                   min_overlap = min_overlap,
-                                   retest = True)
-            
-    # check termination
-    if np.all(segs_consensus.cnv_state_post == 'neu'):
-        msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
-        log.info(msg)
-        return msg
+    else: # if seg_consensus_fix #TODO
     
-    bulk_retest = operations.retest_bulks(bulk_test,
-                                          segs_consensus,
-                                          diploid_chroms=diploid_chroms,
-                                          gamma=gamma,
-                                          min_LLR=min_LLR,
-                                          ncores=ncores)
-    bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
-    
-    ## define consensus CNVs again
-    segs_consensus_retest = operations.get_segs_consensus(bulk_retest, 
-                                               min_LLR=min_LLR, 
-                                               min_overlap=min_overlap, 
-                                               retest=False) 
-    
-    ## check termination again
-    if np.all(segs_consensus_retest.cnv_state_post == 'neu'):
-        msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
-        log.info(msg)
-        return msg
-    
-    # else: # if seg_consensus_fix #TODO
-    
-#    log.info('Using fixed consensus CNVs')
-#    segs_consensus = segs_consensus_fix
-    
-#    bulk_subtrees = utils.classify_alleles(
-#        utils.annot_theta_mle(
-#        utils.annot_consensus(
-#            bulk_subtrees, 
-#            segs_consensus)
-#        ))
+        log.info('Using fixed consensus CNVs')
+        segs_consensus = segs_consensus_fix
+         
+        bulk_subtrees = utils.classify_alleles(
+            utils.annot_theta_mle(
+            utils.annot_consensus(
+                bulk_subtrees, 
+                segs_consensus)
+            ))
 
     clones_filt = {k:v for k, v in clones.items() if v['size'] > min_cells}
     
     if len(clones_filt) == 0:      
-        msg = 'No clones remain after filtering by size. Consider reducing min_cells.'
+        msg = ('No clones remain after filtering by size. Consider reducing min_cells.\n'
+               'Interrupting workflow...')
         log.info(msg)
         return(msg)
     
