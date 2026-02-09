@@ -374,16 +374,16 @@ def run_numbat(
     subtrees = {k:v for k,v in nodes_dict.items() if v['size'] > min_cells}
     
     bulk_subtrees = utils.make_group_bulks(groups=subtrees,
-                                 count_mat=count_mat,
-                                 df_allele=df_allele,
-                                 lambdas_ref=lambdas_ref,
-                                 gtf=gtf,
-                                 min_depth=min_depth,
-                                 nu=nu,
-                                 segs_loh=segs_loh,
-                                 filter_hla=filter_hla_hg38,
-                                 filter_segments=filter_chromosome_segments,
-                                 ncores=ncores)
+                                           count_mat=count_mat,
+                                           df_allele=df_allele,
+                                           lambdas_ref=lambdas_ref,
+                                           gtf=gtf,
+                                           min_depth=min_depth,
+                                           nu=nu,
+                                           segs_loh=segs_loh,
+                                           filter_hla=filter_hla_hg38,
+                                           filter_segments=filter_chromosome_segments,
+                                           ncores=ncores)
     
     ### Diagnostics ##TODO
     
@@ -397,15 +397,15 @@ def run_numbat(
     if segs_consensus_fix is None:
         
         bulk_test = operations.run_group_hmms(bulk_subtrees,
-                               t = t,
-                               gamma = gamma,
-                               alpha = alpha,
-                               nu = nu,
-                               min_genes = min_genes,
-                               common_diploid = common_diploid,
-                               diploid_chroms = diploid_chroms,
-                               ncores = ncores,
-                               verbose = verbose)
+                                              t = t,
+                                              gamma = gamma,
+                                              alpha = alpha,
+                                              nu = nu,
+                                              min_genes = min_genes,
+                                              common_diploid = common_diploid,
+                                              diploid_chroms = diploid_chroms,
+                                              ncores = ncores,
+                                              verbose = verbose)
         
         bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
         
@@ -464,6 +464,8 @@ def run_numbat(
                 segs_consensus)
             ))
 
+
+    # retest on clones
     clones_filt = {k:v for k, v in clones.items() if v['size'] > min_cells}
     
     if len(clones_filt) == 0:      
@@ -517,7 +519,10 @@ def run_numbat(
             
     ### test for multi-allelic CNVs
     if multi_allelic:
-        segs_consensus_retest = operations.test_multi_allelic(bulk_clones_retest, segs_consensus_retest, min_LLR = min_LLR, p_min = p_multi)
+        segs_consensus_retest = operations.test_multi_allelic(bulk_clones_retest, 
+                                                              segs_consensus_retest, 
+                                                              min_LLR = min_LLR, 
+                                                              p_min = p_multi)
     
     segs_consensus_retest.to_csv(os.path.join(out_dir, f"segs_consensus_retest_{i}.tsv"), sep="\t")
 
@@ -617,8 +622,8 @@ def run_numbat(
     
     
     
-    #return exp_post, allele_post, segs_consensus_retest, count_mat, treeML, clone_post, G_m
-    return clone_post, G_m
+    return exp_post, allele_post, segs_consensus_retest, count_mat, treeML, clone_post, G_m
+    #return clone_post, G_m
 
     
     
