@@ -64,6 +64,7 @@ def run_numbat(
     p_multi=None,
     check_convergence=False,
     exclude_neu=True,
+    p_min = 1e-10,
     filter_hla_hg38=True, #Just added
     filter_chromosome_segments=None, # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
     spatial=False,
@@ -148,7 +149,9 @@ def run_numbat(
         Whether to initiate phylogeny using a random tree (internal use only). Default is False.
     exclude_neu : bool, optional
         Whether to exclude neutral segments from CNV retesting (internal use only). Default is True.
-    filter_hla_hg38 : bool.
+    p_min : float, optional
+        The minimum threshold for p_cnv. p_cnv values will be clamped to the interval [p_min, 1 - p_min]
+    filter_hla_hg38 : bool
         Filter HLA region on hg38 genomic coordinates, default is True.
     filter_chromosome_segments=None. 
         .tsv or pd.Dataframe with coordinates to skip. Needs: [CHROM, start, end].
@@ -214,10 +217,10 @@ def run_numbat(
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
-    #count_mat = utils.check_anndata(count_mat, count_to_int=False)
-    #df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
+    count_mat = utils.check_anndata(count_mat, count_to_int=False)
+    df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
     df_allele = utils.check_allele_df(df_allele)
-    #lambdas_ref = utils.check_exp_ref(lambdas_ref)
+    lambdas_ref = utils.check_exp_ref(lambdas_ref)
     
     # filter for annotated genes
     gene_shared = set(gtf['gene']).intersection(set(count_mat.var_names.values)).intersection(set(lambdas_ref.index.values))
@@ -580,8 +583,6 @@ def run_numbat(
         log.info(f'Using {n_cnv} CNAs to construct phylogeny')
     
     # construct genotype probability matrix
-    p_min = 1e-10
-    
     P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
     P_saving_path = os.path.join(out_dir, f"geno_{i}.tsv")
     P.to_csv(P_saving_path, sep="\t")
