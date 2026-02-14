@@ -7,16 +7,11 @@ Created on Sun Apr  6 19:55:48 2025
 """
 from typing import Mapping
 import os
-#import tempfile
 import logging
 
 import numpy as np
 import pandas as pd
-#from scipy import sparse
 import matplotlib.pyplot as plt
-
-from sklearn.metrics import pairwise_distances
-from skbio import DistanceMatrix as SKDM
 
 import spacenumbat
 from spacenumbat import (utils, diagnostics, clustering, 
@@ -65,6 +60,7 @@ def run_numbat(
     check_convergence=False,
     exclude_neu=True,
     p_min = 1e-10,
+    plot_results=True,
     filter_hla_hg38=True, #Just added
     filter_chromosome_segments=None, # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
     spatial=False,
@@ -151,6 +147,8 @@ def run_numbat(
         Whether to exclude neutral segments from CNV retesting (internal use only). Default is True.
     p_min : float, optional
         The minimum threshold for p_cnv. p_cnv values will be clamped to the interval [p_min, 1 - p_min]
+    plot_results : bool, optional
+        Whether to produce plot of the data during the analysis workoflow. Default is True.
     filter_hla_hg38 : bool
         Filter HLA region on hg38 genomic coordinates, default is True.
     filter_chromosome_segments=None. 
@@ -264,40 +262,55 @@ def run_numbat(
         
     # Prepare parameter log
     log_lines = [
-    "",
-    f"Spacenumbat version: {spacenumbat.__version__}",
-    "Running under parameters:",
-    f"t = {t}",
-    f"alpha = {alpha}",
-    f"gamma = {gamma}",
-    f"min_cells = {min_cells}",
-    f"init_k = {init_k}",
-    f"max_cost = {max_cost}",
-    f"n_cut = {n_cut}",
-    f"max_iter = {max_iter}",
-    f"max_nni = {max_nni}",
-    f"min_depth = {min_depth}",
-    f"use_loh = {'auto' if use_loh is None else use_loh}",
-    f"segs_loh = {'None' if segs_loh is None else 'Given'}",
-    f"call_clonal_loh = {call_clonal_loh}",
-    f"segs_consensus_fix = {'None' if segs_consensus_fix is None else 'Given'}",
-    f"multi_allelic = {multi_allelic}",
-    f"min_LLR = {min_LLR}",
-    f"min_overlap = {min_overlap}",
-    f"max_entropy = {max_entropy}",
-    f"skip_nj = {skip_nj}",
-    f"diploid_chroms = {'None' if diploid_chroms is None else 'Given'}",
-    f"ncores = {ncores}",
-    f"ncores_nni = {ncores_nni}",
-    f"common_diploid = {common_diploid}",
-    f"tau = {tau}",
-    f"check_convergence = {check_convergence}",
-    f"genome = {genome}",
-    f"Filter HLA region = {filter_hla_hg38}",
-    f"Filtering custom chromosomal region = {filter_chromosome_segments}",
-    "Input metrics:",
-    f"{count_mat.shape[0]} cells"
-    ]
+        "",
+        f"Spacenumbat version: {spacenumbat.__version__}",
+        "Running under parameters:",
+        f"genome = {genome}",
+        f"out_dir = {out_dir}",
+        f"max_iter = {max_iter}",
+        f"max_nni = {max_nni}",
+        f"t = {t}",
+        f"gamma = {gamma}",
+        f"min_LLR = {min_LLR}",
+        f"alpha = {alpha}",
+        f"eps = {eps}",
+        f"max_entropy = {max_entropy}",
+        f"init_k = {init_k}",
+        f"min_cells = {min_cells}",
+        f"tau = {tau}",
+        f"nu = {nu}",
+        f"max_cost = {max_cost}",
+        f"n_cut = {n_cut}",
+        f"min_depth = {min_depth}",
+        f"min_genes = {min_genes}",
+        f"min_overlap = {min_overlap}",
+        f"use_loh = {'auto' if use_loh is None else use_loh}",
+        f"segs_loh = {'None' if segs_loh is None else 'Given'}",
+        f"call_clonal_loh = {call_clonal_loh}",
+        f"segs_consensus_fix = {'None' if segs_consensus_fix is None else 'Given'}",
+        f"exclude_neu = {exclude_neu}",
+        f"common_diploid = {common_diploid}",
+        f"diploid_chroms = {'None' if diploid_chroms is None else 'Given'}",
+        f"skip_nj = {skip_nj}",
+        f"random_init = {random_init}",
+        f"multi_allelic = {multi_allelic}",
+        f"p_multi = {('auto(1-alpha)' if p_multi is None else p_multi)}",
+        f"p_min = {p_min}",
+        f"check_convergence = {check_convergence}",
+        f"plot_results = {plot_results}",
+        f"ncores = {ncores}",
+        f"ncores_nni = {ncores_nni}",
+        f"Filter HLA region = {filter_hla_hg38}",
+        f"Filtering custom chromosomal region = {'None' if filter_segments_df is None else 'Given'}",
+        f"spatial = {spatial}",
+        f"spatial_method = {spatial_method}",
+        f"spatial_decay = {spatial_decay}",
+        f"spatial_method_kwargs = {'None' if spatial_method_kwargs is None else 'Given'}",
+        f"connectivity_key = {connectivity_key}",
+        f"distance_key = {distance_key}",
+        "Input metrics:",
+        f"{count_mat.shape[0]} cells",
+        ]
 
     log.info('\n'.join(log_lines))
     
@@ -409,7 +422,7 @@ def run_numbat(
         
         bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
         
-        if plot:
+        if plot_results:
             with plt.ioff():  # disables live rendering inside the block
     
                 plot_subtrees = plot.plot_bulks(bulk_test, 
@@ -506,7 +519,7 @@ def run_numbat(
     
     bulk_clones_retest.to_csv(os.path.join(out_dir, f"bulk_clones_{i}.tsv"), sep="\t")
 
-    if plot:
+    if plot_results:
         with plt.ioff():  # disables live rendering inside the block
 
             plot_subtrees = plot.plot_bulks(bulk_clones_retest, 
@@ -620,9 +633,25 @@ def run_numbat(
     msg = f"Found {len(normal_cells)} normal cells."
     log.info(msg)
     
+   #if plot_results:
+        #TODO: make plot
+        
+    clone_to_node = operations.clone_to_node_from_Gm(G_m)
+    subtrees = operations.build_subtrees_from_Gm(G_m, clone_post)
+    clones = operations.build_clones_from_clone_post(clone_post)
+    
+    if check_convergence:
+        # convergence
+        converged, segs_consensus_old = operations.check_convergence_and_update(segs_consensus_old=segs_consensus_old,
+                                                                                segs_consensus=segs_consensus_retest,
+                                                                                check_convergence=check_convergence)
+        if converged:
+            log.info("converged")
+            # break
+
     
     
-    return exp_post, allele_post, segs_consensus_retest, count_mat, treeML, clone_post, G_m
+    return exp_post, allele_post, segs_consensus_retest, count_mat, treeML, clone_post, G_m, subtrees, clones
     #return clone_post, G_m
 
     
