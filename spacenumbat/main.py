@@ -617,12 +617,12 @@ def run_numbat(
     treeML = tree.P_to_candidate_tree(P_df=P,
                                          n_jobs=ncores)
     
-    gtree = tree.get_gtree(treeML,
+    gtree = phylo.get_gtree(treeML,
                            P,
                            n_cut=n_cut,
                            max_cost=max_cost)
     
-    G_m = tree.label_genotype(tree.get_mut_graph(gtree))
+    G_m = phylo.label_genotype(phylo.get_mut_graph(gtree))
     
     log.info(f"Tree building completed, pass {i}")
     
