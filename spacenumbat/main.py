@@ -371,6 +371,18 @@ def run_numbat(
         nodes_dict = clustering.get_nodes_celltree(clust, init_k)
         
         ## TODO: optional plot
+        if plot_results:
+            exp_roll_path_png = os.path.join(out_dir, "exp_roll_clust.png")
+            p = plot.plot_exp_roll(clust["gexp_roll_wide"],
+                                   clust["hc"],
+                                   k=3,
+                                   gtf=gtf,
+                                   n_sample=500,
+                                   layer="X_smooth",
+                                   cbar_width=0.3,
+                                   show=False,
+                                   close=True,
+                                   savepath=exp_roll_path_png)
         
     clones = {k:nodes_dict[str(k)] for k in range(init_k+1) if len(nodes_dict[str(k)]['members'])==1}
     
@@ -532,6 +544,8 @@ def run_numbat(
             
     ### test for multi-allelic CNVs
     if multi_allelic:
+        if p_multi is None:
+            p_multi = 1-alpha
         segs_consensus_retest = operations.test_multi_allelic(bulk_clones_retest, 
                                                               segs_consensus_retest, 
                                                               min_LLR = min_LLR, 

@@ -5,14 +5,26 @@ Created on Sat Aug 30 19:30:40 2025
 
 @author: lillux
 """
+from __future__ import annotations
 
-from typing import Optional, Dict, Tuple, Any
+from dataclasses import dataclass
 
+from typing import Optional, Dict, Tuple, Any, Iterable, Set, List, Union
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
+
+import anndata as ad
+
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import Line2D
-import numpy as np
-from natsort import natsorted
+from matplotlib import gridspec
+
+from natsort import natsorted, natsort_keygen
+
+from scipy.cluster.hierarchy import dendrogram, leaves_list, fcluster, linkage
+from scipy.spatial.distance import pdist
 
 
 def plot_psbulk(
@@ -495,5 +507,378 @@ def plot_bulks(
     return fig
 
 
+
+#### plot_exp_roll
+
+@dataclass
+class ExpRollPlotChromPanels:
+    fig: plt.Figure
+    ax_tree: Optional[plt.Axes]
+    ax_chrom: List[plt.Axes]
+
+
+def _normalize_chrom(x: object) -> str:
+    s = str(x).strip()
+    if s.lower().startswith("chr"):
+        s = s[3:].strip()
+    if s in {"M", "m", "Mt", "mt", "MT"}:
+        return "MT"
+    return s
+
+
+def plot_exp_roll(
+    gexp_roll_wide: ad.AnnData,
+    hc: np.ndarray,
+    k: int,
+    gtf: pd.DataFrame,
+    lim: float = 0.8,
+    n_sample: int = 300,
+    reverse: bool = True,
+    plot_tree: bool = True,
+    layer: str = "X_smooth",
+    random_state: int = 0,
+    hide_chrom_labels: Optional[Iterable[object]] = None,
+    chrom_sizes: Optional[Dict[str, int]] = None,
+    min_panel_width: float = 0.35,
+    max_panel_width: float = 4.0,
+    tree_width: float = 2.0,
+    wspace: float = 0.08,
+    sep_lw: float = 2.2,
+    sep_alpha: float = 0.9,
+    show_colorbar: bool = True,
+    cbar_height: float = 0.035,
+    cbar_gap: float = 0.020,
+    cbar_width: float = 0.3,
+    debug: bool = False,
+    show: bool = False,
+    close: bool = False,
+    savepath: Optional[Union[str, Path]] = None,
+    dpi: int = 200,
+    ) -> ExpRollPlotChromPanels:
+    """
+    Plot a genome-ordered expression heatmap with one panel per chromosome.
+
+    Genes are taken from `gexp_roll_wide.var_names`, joined to `gtf` (gene, CHROM, gene_start),
+    and ordered by natsorted chromosome then `gene_start`. Cells are subsampled in the leaf
+    order of `hc`; if `plot_tree=True` a Ward dendrogram is recomputed on the sampled matrix
+    and its leaves define the heatmap row order. Chromosome panel widths are proportional to
+    `chrom_sizes` (if provided) or to the genomic span of displayed genes on that chromosome.
+    Dendrogram and heatmaps share a y-scale of `[0, 10*n_cells]` to match SciPy dendrogram
+    leaf spacing.
+
+    Parameters
+    ----------
+    gexp_roll_wide
+        AnnData-like object with attributes:
+        - `var_names`: gene identifiers (must match `gtf["gene"]`),
+        - `obs_names`: cell identifiers,
+        - `layers[layer]`: expression matrix of shape (n_cells, n_genes) (dense or sparse).
+    hc
+        SciPy linkage matrix for the full set of cells. Used only to obtain an initial
+        dendrogram leaf order for subsampling (`leaves_list(hc)`).
+    k
+        Number of clusters used to compute horizontal separator positions via
+        `scipy.cluster.hierarchy.fcluster` when `plot_tree=True`.
+    gtf
+        Gene annotation table with columns `gene`, `CHROM`, `gene_start`.
+        Optional `gene_end` improves genomic-span estimation when `chrom_sizes` is not provided.
+    lim
+        Color limit; values are clipped to `[-lim, lim]` before plotting.
+    n_sample
+        Maximum number of cells to plot. Cells are sampled uniformly (without replacement)
+        from the `hc` leaf order, then plotted in that order (or dendrogram order if recomputed).
+    reverse
+        If True, reverse the leaf order used for row ordering.
+    plot_tree
+        If True, recompute Ward linkage on the sampled matrix, plot the dendrogram, and reorder
+        rows to match its leaves (keeps dendrogram/heatmaps aligned).
+    layer
+        Key in `gexp_roll_wide.layers` to plot.
+    random_state
+        Seed for the RNG used for cell subsampling.
+    hide_chrom_labels
+        Iterable of chromosome labels to hide after normalization (e.g. `18`, `"18"`, `"X"`, `"MT"`).
+    chrom_sizes
+        Optional mapping `{chrom -> length_bp}` to set chromosome panel width ratios. Keys may
+        include a `"chr"` prefix; values are interpreted as base-pair lengths.
+    min_panel_width, max_panel_width
+        Clamp for chromosome width ratios (after normalization by the median) to keep the layout readable.
+    tree_width
+        Width ratio of the dendrogram column relative to chromosome panels.
+    wspace
+        Horizontal whitespace between panels (GridSpec `wspace`).
+    sep_lw, sep_alpha
+        Line width and alpha for vertical separators drawn between chromosome panels.
+    show_colorbar
+        If True, draw a centered horizontal colorbar above the panels.
+    cbar_height
+        Colorbar axis height in figure coordinates.
+    cbar_gap
+        Vertical gap between the colorbar and the top of the panel area (figure coordinates).
+    cbar_width
+        Fraction (0–1) of the main panel span used by the colorbar; the bar is centered.
+    debug
+        If True, print basic diagnostics (chromosome order, width ratios, number of plotted rows).
+
+    show
+        If True, call `plt.show()` before returning.
+    close
+        If True, call `plt.close(fig)` before returning (useful in pipelines to avoid rendering/memory).
+    savepath
+        If provided, save the figure to this path via `fig.savefig(...)` (parents created as needed).
+    dpi
+        DPI used for saving when `savepath` is provided.
+
+    Returns
+    -------
+    ExpRollPlotChromPanels
+        Container with:
+        - `fig`: matplotlib Figure,
+        - `ax_tree`: dendrogram axis (or None if `plot_tree=False`),
+        - `ax_chrom`: list of chromosome heatmap axes (natsorted chromosome order).
+
+    Raises
+    ------
+    ValueError
+        If required `gtf` columns are missing, no gene overlap is found, or `var_names` contains duplicates.
+    """
+    req = {"gene", "CHROM", "gene_start"}
+    if not req.issubset(gtf.columns):
+        raise ValueError(f"gtf must contain columns: {sorted(req)}")
+
+    hide_set: Set[str] = set()
+    if hide_chrom_labels:
+        hide_set = {_normalize_chrom(x) for x in hide_chrom_labels}
+
+    # genes present in AnnData
+    genes = list(map(str, list(getattr(gexp_roll_wide, "var_names"))))
+    if len(set(genes)) != len(genes):
+        raise ValueError("gexp_roll_wide.var_names contains duplicates; cannot map genes uniquely.")
+    gene_pos = {g: i for i, g in enumerate(genes)}
+
+    # filter & normalize gtf
+    gtf2 = gtf.copy()
+    gtf2["gene"] = gtf2["gene"].astype(str)
+    gtf2["CHROM"] = gtf2["CHROM"].map(_normalize_chrom)
+    gtf2["gene_start"] = pd.to_numeric(gtf2["gene_start"], errors="coerce")
+    if "gene_end" in gtf2.columns:
+        gtf2["gene_end"] = pd.to_numeric(gtf2["gene_end"], errors="coerce")
+    gtf2 = gtf2.dropna(subset=["gene_start"]).copy()
+
+    gtf2 = gtf2[gtf2["gene"].isin(genes)].copy()
+    if gtf2.empty:
+        raise ValueError("No overlap between gexp_roll_wide.var_names and gtf['gene'].")
+
+    natkey = natsort_keygen()
+    chrom_order0 = sorted(gtf2["CHROM"].unique().tolist(), key=natkey)
+    chrom_rank = {c: i for i, c in enumerate(chrom_order0)}
+    gtf2["_chrom_rank"] = gtf2["CHROM"].map(chrom_rank).astype(int)
+    gtf2 = gtf2.sort_values(["_chrom_rank", "gene_start"], kind="mergesort")
+
+    gtf2 = gtf2.drop_duplicates(subset=["gene"], keep="first").copy()
+    chrom_order = sorted(gtf2["CHROM"].unique().tolist(), key=natkey)
+
+    chrom_to_gene_idx: Dict[str, np.ndarray] = {}
+    for c in chrom_order:
+        g_chr = gtf2.loc[gtf2["CHROM"] == c, "gene"].tolist()
+        if g_chr:
+            chrom_to_gene_idx[c] = np.array([gene_pos[g] for g in g_chr], dtype=int)
+
+    chrom_order = [c for c in chrom_order if c in chrom_to_gene_idx]
+    if not chrom_order:
+        raise ValueError("After filtering, no chromosomes have any genes to plot.")
+
+    # sample cells using ORIGINAL hc leaf order
+    cell_names = list(map(str, list(getattr(gexp_roll_wide, "obs_names"))))
+    leaf_idx0 = leaves_list(hc)
+    cell_order_all = [cell_names[i] for i in leaf_idx0]
+    if reverse:
+        cell_order_all = list(reversed(cell_order_all))
+
+    rng = np.random.default_rng(random_state)
+    n_take = min(int(n_sample), len(cell_order_all))
+    if n_take <= 0:
+        raise ValueError("n_sample must be >= 1")
+
+    take = set(rng.choice(cell_order_all, size=n_take, replace=False).tolist())
+    cell_order = [c for c in cell_order_all if c in take]
+
+    cell_pos = {c: i for i, c in enumerate(cell_names)}
+    row_idx = np.array([cell_pos[c] for c in cell_order], dtype=int)
+
+    # extract sampled cell matrix (all genes)
+    X = gexp_roll_wide.layers[layer]
+    X_cell = X[row_idx, :]
+    X_cell = X_cell.toarray() if hasattr(X_cell, "toarray") else np.asarray(X_cell)
+
+    # recompute linkage on sampled cells & get leaf order (NO PLOT)
+    if plot_tree:
+        Z = linkage(pdist(X_cell, metric="euclidean"), method="ward")
+        cl = fcluster(Z, t=k, criterion="maxclust")
+        dd = dendrogram(Z, orientation="left", no_plot=True)
+        leaves = dd["leaves"]
+        if reverse:
+            leaves = leaves[::-1]
+        X_cell = X_cell[leaves, :]
+        cl_plot = cl[leaves]
+    else:
+        Z = None
+        cl_plot = None
+
+    # width ratios
+    chrom_sizes_norm = {_normalize_chrom(k): float(v) for k, v in (chrom_sizes or {}).items()}
+    raw = []
+    for c in chrom_order:
+        if c in chrom_sizes_norm:
+            raw.append(chrom_sizes_norm[c])
+        else:
+            sub = gtf2.loc[gtf2["CHROM"] == c]
+            s0 = float(sub["gene_start"].min())
+            if "gene_end" in sub.columns and sub["gene_end"].notna().any():
+                e1 = float(sub["gene_end"].max())
+            else:
+                e1 = float(sub["gene_start"].max())
+            raw.append(max(1.0, e1 - s0))
+
+    raw = np.asarray(raw, dtype=float)
+    scale = np.median(raw[raw > 0]) if np.any(raw > 0) else 1.0
+    ratios = (raw / scale).tolist()
+    ratios = [float(np.clip(r, min_panel_width, max_panel_width)) for r in ratios]
+
+    # cluster separators
+    if cl_plot is not None:
+        uniq = list(dict.fromkeys(cl_plot.tolist()))
+        rank = {u: i for i, u in enumerate(uniq)}
+        cl_rank = np.array([len(uniq) - rank[c] for c in cl_plot], dtype=int)
+        cluster_change = np.flatnonzero(cl_rank[1:] != cl_rank[:-1]) + 1
+    else:
+        cluster_change = np.array([], dtype=int)
+
+    vmin, vmax = -lim, lim
+    n_rows = X_cell.shape[0]
+
+    if debug:
+        print("chrom_order:", chrom_order)
+        print("ratios:", ratios)
+        print("n_rows:", n_rows)
+
+    # FIGURE / GRID
+    fig = plt.figure(figsize=(14, 6), constrained_layout=False)
+
+    top = 0.96 - cbar_height - cbar_gap if show_colorbar else 0.96
+    bottom = 0.20
+    left = 0.08
+    right = 0.99
+
+    if plot_tree:
+        gs = gridspec.GridSpec(
+            1, 1 + len(chrom_order),
+            width_ratios=[tree_width] + ratios,
+            figure=fig,
+            wspace=wspace,
+            left=left,
+            right=right,
+            top=top,
+            bottom=bottom,
+        )
+        ax_tree = fig.add_subplot(gs[0, 0])
+        ax_chrom = [fig.add_subplot(gs[0, j + 1]) for j in range(len(chrom_order))]
+    else:
+        ax_tree = None
+        gs = gridspec.GridSpec(
+            1, len(chrom_order),
+            width_ratios=ratios,
+            figure=fig,
+            wspace=wspace,
+            left=left,
+            right=right,
+            top=top,
+            bottom=bottom,
+        )
+        ax_chrom = [fig.add_subplot(gs[0, j]) for j in range(len(chrom_order))]
+
+    # DENDROGRAM (PLOT) aligned to heatmap y-extent
+    if ax_tree is not None:
+        dendrogram(
+            Z,
+            orientation="left",
+            no_labels=True,
+            color_threshold=0,
+            above_threshold_color="black",
+            ax=ax_tree,
+        )
+        ax_tree.set_ylim(0, 10 * n_rows)
+        ax_tree.invert_yaxis()
+        ax_tree.axis("off")
+
+    # HEATMAP PANELS
+    im = None
+    for j, c in enumerate(chrom_order):
+        ax = ax_chrom[j]
+        idx = chrom_to_gene_idx[c]
+        C = np.clip(X_cell[:, idx], vmin, vmax)
+
+        im = ax.imshow(
+            C,
+            aspect="auto",
+            interpolation="nearest",
+            vmin=vmin,
+            vmax=vmax,
+            cmap="bwr",
+            origin="upper",
+            extent=(-0.5, C.shape[1] - 0.5, 0, 10 * n_rows),
+        )
+
+        ax.set_ylim(0, 10 * n_rows)
+        ax.invert_yaxis()
+
+        for r in cluster_change:
+            ax.axhline(10 * r, linewidth=0.6, color="black", alpha=0.35)
+
+        ax.set_yticks([])
+        ax.set_xticks([])
+
+        lab = "" if c in hide_set else c
+        ax.set_xlabel(lab, fontsize=9, labelpad=6)
+
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        if j > 0:
+            ax.axvline(-0.5, linewidth=sep_lw, color="black", alpha=sep_alpha)
+
+    # COLORBAR ON TOP (centered, narrow)
+    if show_colorbar and im is not None:
+        span = right - left
+        cw = float(np.clip(cbar_width, 0.05, 1.0)) * span
+        cl = left + 0.5 * (span - cw)
+
+        cax_bottom = top + cbar_gap * 0.5
+        cax = fig.add_axes([cl, cax_bottom, cw, cbar_height])
+
+        cbar = fig.colorbar(im, cax=cax, orientation="horizontal")
+        cbar.set_label("Expression magnitude", fontsize=9)
+        cbar.ax.tick_params(labelsize=8)
+        cax.xaxis.set_ticks_position("top")
+        cax.xaxis.set_label_position("top")
+
+    fig.supylabel("Cells (dendrogram order)", x=0.05)
+    fig.supxlabel("Genomic position (per-chromosome panels; widths proportional)", y=0.13)
+
+    out = ExpRollPlotChromPanels(fig=fig, ax_tree=ax_tree, ax_chrom=ax_chrom)
+
+    # pipeline behavior
+    if savepath is not None:
+        savepath = Path(savepath)
+        savepath.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
+
+    if show:
+        plt.show()
+
+    if close:
+        plt.close(fig)
+
+    return out
 
 
