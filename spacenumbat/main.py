@@ -421,7 +421,7 @@ def run_numbat(
     
     if segs_consensus_fix is None:
         
-        bulk_test = operations.run_group_hmms(bulk_subtrees,
+        bulk_subtrees = operations.run_group_hmms(bulk_subtrees,
                                               t = t,
                                               gamma = gamma,
                                               alpha = alpha,
@@ -432,12 +432,12 @@ def run_numbat(
                                               ncores = ncores,
                                               verbose = verbose)
         
-        bulk_test.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
+        bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
         
         if plot_results:
             with plt.ioff():  # disables live rendering inside the block
     
-                plot_subtrees = plot.plot_bulks(bulk_test, 
+                plot_subtrees = plot.plot_bulks(bulk_subtrees, 
                                                   exp_limit=4, 
                                                   text_size=10, 
                                                   title_size=14,
@@ -446,7 +446,7 @@ def run_numbat(
                 plt.close("all")
            
         # define consensus CNVs
-        segs_consensus = operations.get_segs_consensus(bulk_test,
+        segs_consensus = operations.get_segs_consensus(bulk_subtrees,
                                        min_LLR = min_LLR,
                                        min_overlap = min_overlap,
                                        retest = True)
@@ -457,22 +457,22 @@ def run_numbat(
             log.info(msg)
             return msg
         
-        bulk_retest = operations.retest_bulks(bulk_test,
+        bulk_subtrees = operations.retest_bulks(bulk_subtrees,
                                               segs_consensus,
                                               diploid_chroms=diploid_chroms,
                                               gamma=gamma,
                                               min_LLR=min_LLR,
                                               ncores=ncores)
-        bulk_retest.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
+        bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
         
         ## define consensus CNVs again
-        segs_consensus_retest = operations.get_segs_consensus(bulk_retest, 
+        segs_consensus = operations.get_segs_consensus(bulk_subtrees, 
                                                    min_LLR=min_LLR, 
                                                    min_overlap=min_overlap, 
                                                    retest=False) 
         
         ## check termination again
-        if np.all(segs_consensus_retest.cnv_state_post == 'neu'):
+        if np.all(segs_consensus.cnv_state_post == 'neu'):
             msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
             log.info(msg)
             return msg
@@ -491,15 +491,15 @@ def run_numbat(
 
 
     # retest on clones
-    clones_filt = {k:v for k, v in clones.items() if v['size'] > min_cells}
+    clones = {k:v for k, v in clones.items() if v['size'] > min_cells}
     
-    if len(clones_filt) == 0:      
+    if len(clones) == 0:      
         msg = ('No clones remain after filtering by size. Consider reducing min_cells.\n'
                'Interrupting workflow...')
         log.info(msg)
         return(msg)
     
-    bulk_clones = utils.make_group_bulks(groups = clones_filt,
+    bulk_clones = utils.make_group_bulks(groups = clones,
                                count_mat = count_mat,
                                df_allele = df_allele,
                                lambdas_ref = lambdas_ref,
@@ -522,7 +522,7 @@ def run_numbat(
                                    retest = False)
     
     bulk_clones_retest = operations.retest_bulks(bulks = bulk_clones_group,
-                                  segs_consensus = segs_consensus_retest,
+                                  segs_consensus = segs_consensus,
                                   gamma = gamma,
                                   use_loh = use_loh,
                                   min_LLR = min_LLR,
@@ -546,17 +546,17 @@ def run_numbat(
     if multi_allelic:
         if p_multi is None:
             p_multi = 1-alpha
-        segs_consensus_retest = operations.test_multi_allelic(bulk_clones_retest, 
-                                                              segs_consensus_retest, 
+        segs_consensus = operations.test_multi_allelic(bulk_clones_retest, 
+                                                              segs_consensus, 
                                                               min_LLR = min_LLR, 
                                                               p_min = p_multi)
     
-    segs_consensus_retest.to_csv(os.path.join(out_dir, f"segs_consensus_retest_{i}.tsv"), sep="\t")
+    segs_consensus.to_csv(os.path.join(out_dir, f"segs_consensus_{i}.tsv"), sep="\t")
 
     ### Evaluate CNV per cell
     log.info("Evaluating CNV per cell")
     
-    segs_consensus_retest_corrected = segs_consensus_retest.copy()
+    segs_consensus_retest_corrected = segs_consensus.copy()
     segs_consensus_retest_corrected.loc[:,'cnv_state'] = [row.cnv_state if row.cnv_state == 'neu' else row.cnv_state_post for idx, row in segs_consensus_retest_corrected.iterrows()]
     
     exp_post = operations.get_exp_post(segs_consensus_retest_corrected,
@@ -569,7 +569,7 @@ def run_numbat(
                         ncores=ncores,
                         verbose=True)
     
-    haplotype = operations.get_haplotype_post(bulk_retest, 
+    haplotype = operations.get_haplotype_post(bulk_subtrees, 
                                               segs_consensus_retest_corrected)
     
     allele_post = operations.get_allele_post(df_allele=df_allele,
@@ -586,7 +586,7 @@ def run_numbat(
     joint_post = operations.get_joint_post(
         exp_post=exp_post,
         allele_post=allele_post,
-        segs_consensus=segs_consensus_retest,
+        segs_consensus=segs_consensus,
         count_mat=count_mat,
         distance_key=distance_key,
         spatial=spatial,
@@ -597,9 +597,9 @@ def run_numbat(
     joint_post.loc[:,'avg_entropy'] = operations.joint_post_entropy(joint_post)
     
     if multi_allelic:
-        exp_post = operations.expand_states(exp_post, segs_consensus_retest)
-        allele_post = operations.expand_states(allele_post, segs_consensus_retest)
-        joint_post = operations.expand_states(joint_post, segs_consensus_retest)
+        exp_post = operations.expand_states(exp_post, segs_consensus)
+        allele_post = operations.expand_states(allele_post, segs_consensus)
+        joint_post = operations.expand_states(joint_post, segs_consensus)
 
         
     exp_post.to_csv(os.path.join(out_dir, f"exp_post_{i}.tsv"), sep="\t")
@@ -657,7 +657,7 @@ def run_numbat(
     if check_convergence:
         # convergence
         converged, segs_consensus_old = operations.check_convergence_and_update(segs_consensus_old=segs_consensus_old,
-                                                                                segs_consensus=segs_consensus_retest,
+                                                                                segs_consensus=segs_consensus,
                                                                                 check_convergence=check_convergence)
         if converged:
             log.info("converged")
@@ -665,7 +665,7 @@ def run_numbat(
 
     
     
-    return exp_post, allele_post, segs_consensus_retest, count_mat, treeML, clone_post, G_m, subtrees, clones
+    return exp_post, allele_post, segs_consensus, count_mat, treeML, clone_post, G_m, subtrees, clones
     #return clone_post, G_m
 
     
