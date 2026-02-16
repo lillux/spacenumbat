@@ -393,7 +393,7 @@ def run_numbat(
 
     ######## Begin iterations #TODO
     
-    for i in max_iter:
+    for i in range(max_iter):
         i = 0 # temporary placeholder for iteration
         log.info(f"Starting iteration {i}")
         
