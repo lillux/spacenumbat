@@ -369,9 +369,9 @@ def run_numbat(
         log.info(f"Initial hierarchical clustering results saved at {os.path.join(out_dir, 'hc_initial_hierarchical_clustering.tsv')}")
         
         # extract cell groupings
-        nodes_dict = clustering.get_nodes_celltree(clust, init_k)
+        subtrees = clustering.get_nodes_celltree(clust, init_k)
         
-        ## TODO: optional plot
+        ## optional plot
         if plot_results:
             exp_roll_path_png = os.path.join(out_dir, "exp_roll_clust.png")
             p = plot.plot_exp_roll(clust["gexp_roll_wide"],
@@ -385,19 +385,19 @@ def run_numbat(
                                    close=True,
                                    savepath=exp_roll_path_png)
         
-    clones = {k:nodes_dict[str(k)] for k in range(init_k+1) if len(nodes_dict[str(k)]['members'])==1}
+    clones = {k:subtrees[str(k)] for k in range(init_k+1) if len(subtrees[str(k)]['members'])==1}
     
     normal_cells = []
     segs_consensus_old = pd.DataFrame()
     
 
-    ######## Begin iterations #TODO
+    ######## Begin iterations
     
     for i in range(max_iter):
         # i = 0 # temporary placeholder for iteration
         log.info(f"Starting iteration {i}")
         
-        subtrees = {k:v for k,v in nodes_dict.items() if v['size'] > min_cells}
+        subtrees = {k:v for k,v in subtrees.items() if v['size'] > min_cells}
         
         bulk_subtrees = utils.make_group_bulks(groups=subtrees,
                                                count_mat=count_mat,
@@ -411,7 +411,7 @@ def run_numbat(
                                                filter_segments=filter_chromosome_segments,
                                                ncores=ncores)
         
-        ### Diagnostics ##TODO
+        ### Diagnostics
         
         if i == 0:
             
