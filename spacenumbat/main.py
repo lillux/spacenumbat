@@ -348,6 +348,7 @@ def run_numbat(
         
     elif init_k == 1:
         log.info("Initializing with all-cell pseudobulk ...")
+        ## TODO
         
         
     else:
@@ -392,280 +393,343 @@ def run_numbat(
 
     ######## Begin iterations #TODO
     
-    # for i in max_iter:
-    i = 0 # temporary placeholder for iteration
-    log.info(f"Starting iteration {i}")
-    
-    subtrees = {k:v for k,v in nodes_dict.items() if v['size'] > min_cells}
-    
-    bulk_subtrees = utils.make_group_bulks(groups=subtrees,
-                                           count_mat=count_mat,
-                                           df_allele=df_allele,
-                                           lambdas_ref=lambdas_ref,
-                                           gtf=gtf,
-                                           min_depth=min_depth,
-                                           nu=nu,
-                                           segs_loh=segs_loh,
-                                           filter_hla=filter_hla_hg38,
-                                           filter_segments=filter_chromosome_segments,
-                                           ncores=ncores)
-    
-    ### Diagnostics ##TODO
-    
-    # if i == 0:
+    for i in max_iter:
+        i = 0 # temporary placeholder for iteration
+        log.info(f"Starting iteration {i}")
         
-    bulk_subtrees0 = bulk_subtrees[bulk_subtrees["sample"] == "0"].copy()
-    
-    diagnostics.check_contam(bulk_subtrees0)
-    diagnostics.check_exp_noise(bulk_subtrees0)
-    
-    if segs_consensus_fix is None:
+        subtrees = {k:v for k,v in nodes_dict.items() if v['size'] > min_cells}
         
-        bulk_subtrees = operations.run_group_hmms(bulk_subtrees,
-                                              t = t,
+        bulk_subtrees = utils.make_group_bulks(groups=subtrees,
+                                               count_mat=count_mat,
+                                               df_allele=df_allele,
+                                               lambdas_ref=lambdas_ref,
+                                               gtf=gtf,
+                                               min_depth=min_depth,
+                                               nu=nu,
+                                               segs_loh=segs_loh,
+                                               filter_hla=filter_hla_hg38,
+                                               filter_segments=filter_chromosome_segments,
+                                               ncores=ncores)
+        
+        ### Diagnostics ##TODO
+        
+        if i == 0:
+            
+            bulk_subtrees0 = bulk_subtrees[bulk_subtrees["sample"] == "0"].copy()
+            
+            diagnostics.check_contam(bulk_subtrees0)
+            diagnostics.check_exp_noise(bulk_subtrees0)
+        
+        if segs_consensus_fix is None:
+            
+            bulk_subtrees = operations.run_group_hmms(bulk_subtrees,
+                                                  t = t,
+                                                  gamma = gamma,
+                                                  alpha = alpha,
+                                                  nu = nu,
+                                                  min_genes = min_genes,
+                                                  common_diploid = common_diploid,
+                                                  diploid_chroms = diploid_chroms,
+                                                  ncores = ncores,
+                                                  verbose = verbose)
+            
+            bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
+            
+            if plot_results:
+                with plt.ioff():  # disables live rendering inside the block
+        
+                    plot_subtrees = plot.plot_bulks(bulk_subtrees, 
+                                                      exp_limit=4, 
+                                                      text_size=10, 
+                                                      title_size=14,
+                                                      panel_vspace=1)
+                    plot_subtrees.savefig(os.path.join(out_dir, f"bulk_subtrees{i}.jpg"), dpi=200)
+                    plt.close("all")
+               
+            # define consensus CNVs
+            segs_consensus = operations.get_segs_consensus(bulk_subtrees,
+                                                           min_LLR = min_LLR,
+                                                           min_overlap = min_overlap,
+                                                           retest = True)
+                    
+            # check termination
+            if np.all(segs_consensus.cnv_state_post == 'neu'):
+                msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+                log.info(msg)
+                return msg
+            
+            # retest segments
+            bulk_subtrees = operations.retest_bulks(bulk_subtrees,
+                                                  segs_consensus,
+                                                  diploid_chroms=diploid_chroms,
+                                                  gamma=gamma,
+                                                  min_LLR=min_LLR,
+                                                  ncores=ncores)
+            bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
+            
+            ## define consensus CNVs again
+            segs_consensus = operations.get_segs_consensus(bulk_subtrees, 
+                                                           min_LLR=min_LLR, 
+                                                           min_overlap=min_overlap, 
+                                                           retest=False) 
+            
+            ## check termination again
+            if np.all(segs_consensus.cnv_state_post == 'neu'):
+                msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+                log.info(msg)
+                return msg
+        
+        else: # if seg_consensus_fix #TODO
+        
+            log.info('Using fixed consensus CNVs')
+            segs_consensus = segs_consensus_fix
+             
+            bulk_subtrees = utils.classify_alleles(
+                utils.annot_theta_mle(
+                utils.annot_consensus(
+                    bulk_subtrees, 
+                    segs_consensus)
+                ))
+    
+    
+        # retest on clones
+        clones = {k:v for k, v in clones.items() if v['size'] > min_cells}
+        
+        if len(clones) == 0:      
+            msg = ('No clones remain after filtering by size. Consider reducing min_cells.\n'
+                   'Interrupting workflow...')
+            log.info(msg)
+            return(msg)
+        
+        bulk_clones = utils.make_group_bulks(groups = clones,
+                                             count_mat = count_mat,
+                                             df_allele = df_allele,
+                                             lambdas_ref = lambdas_ref,
+                                             gtf = gtf,
+                                             min_depth = min_depth,
+                                             nu = nu,
+                                             segs_loh = segs_loh,
+                                             ncores = ncores)
+        
+        bulk_clones = operations.run_group_hmms(bulks = bulk_clones,
+                                                t = t,
+                                                gamma = gamma,
+                                                alpha = alpha,
+                                                nu = nu,
+                                                min_genes = min_genes,
+                                                common_diploid = common_diploid,
+                                                diploid_chroms = diploid_chroms,
+                                                ncores = ncores,
+                                                verbose = verbose,
+                                                retest = False)
+        
+        bulk_clones = operations.retest_bulks(bulks = bulk_clones,
+                                              segs_consensus = segs_consensus,
                                               gamma = gamma,
-                                              alpha = alpha,
-                                              nu = nu,
-                                              min_genes = min_genes,
-                                              common_diploid = common_diploid,
+                                              use_loh = use_loh,
+                                              min_LLR = min_LLR,
                                               diploid_chroms = diploid_chroms,
-                                              ncores = ncores,
-                                              verbose = verbose)
+                                              ncores = ncores)
         
-        bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
-        
+        bulk_clones.to_csv(os.path.join(out_dir, f"bulk_clones_{i}.tsv"), sep="\t")
+    
         if plot_results:
             with plt.ioff():  # disables live rendering inside the block
     
-                plot_subtrees = plot.plot_bulks(bulk_subtrees, 
-                                                  exp_limit=4, 
-                                                  text_size=10, 
-                                                  title_size=14,
-                                                  panel_vspace=1)
-                plot_subtrees.savefig(os.path.join(out_dir, f"bulk_subtrees{i}.jpg"), dpi=200)
+                plot_subtrees = plot.plot_bulks(bulk_clones, 
+                                                exp_limit=4, 
+                                                text_size=10, 
+                                                title_size=14,
+                                                panel_vspace=1)
+                plot_subtrees.savefig(os.path.join(out_dir, f"bulk_clones_{i}.jpg"), dpi=200)
                 plt.close("all")
-           
-        # define consensus CNVs
-        segs_consensus = operations.get_segs_consensus(bulk_subtrees,
-                                       min_LLR = min_LLR,
-                                       min_overlap = min_overlap,
-                                       retest = True)
                 
-        # check termination
-        if np.all(segs_consensus.cnv_state_post == 'neu'):
-            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
-            log.info(msg)
-            return msg
+        ### test for multi-allelic CNVs
+        if multi_allelic:
+            if p_multi is None:
+                p_multi = 1-alpha
+            segs_consensus = operations.test_multi_allelic(bulk_clones,
+                                                           segs_consensus,
+                                                           min_LLR = min_LLR,
+                                                           p_min = p_multi)
         
-        bulk_subtrees = operations.retest_bulks(bulk_subtrees,
-                                              segs_consensus,
-                                              diploid_chroms=diploid_chroms,
-                                              gamma=gamma,
-                                              min_LLR=min_LLR,
-                                              ncores=ncores)
-        bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
+        segs_consensus.to_csv(os.path.join(out_dir, f"segs_consensus_{i}.tsv"), sep="\t")
+    
+        ### Evaluate CNV per cell
+        log.info("Evaluating CNV per cell")
         
-        ## define consensus CNVs again
-        segs_consensus = operations.get_segs_consensus(bulk_subtrees, 
-                                                   min_LLR=min_LLR, 
-                                                   min_overlap=min_overlap, 
-                                                   retest=False) 
+        segs_consensus_retest_corrected = segs_consensus.copy()
+        segs_consensus_retest_corrected.loc[:,'cnv_state'] = [row.cnv_state if row.cnv_state == 'neu' else row.cnv_state_post for idx, row in segs_consensus_retest_corrected.iterrows()]
         
-        ## check termination again
-        if np.all(segs_consensus.cnv_state_post == 'neu'):
-            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
-            log.info(msg)
-            return msg
+        exp_post = operations.get_exp_post(segs_consensus_retest_corrected,
+                                           count_mat=count_mat,
+                                           gtf=gtf,
+                                           lambdas_ref=lambdas_ref,
+                                           use_loh = use_loh,
+                                           segs_loh = segs_loh,
+                                           sc_refs=sc_refs,
+                                           ncores=ncores,
+                                           verbose=verbose)
+        
+        haplotype = operations.get_haplotype_post(bulk_subtrees, 
+                                                  segs_consensus_retest_corrected)
+        
+        allele_post = operations.get_allele_post(df_allele=df_allele,
+                                                 haplotypes=haplotype,
+                                                 segs_consensus=segs_consensus_retest_corrected)
+        
+        
+        count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
+                                                   ncores=ncores,
+                                                   distance_key=distance_key,
+                                                   kind=spatial_decay,
+                                                   connectivity_key=connectivity_key)
+        
     
-    else: # if seg_consensus_fix #TODO
+        joint_post = operations.get_joint_post(
+            exp_post=exp_post,
+            allele_post=allele_post,
+            segs_consensus=segs_consensus,
+            count_mat=count_mat,
+            distance_key=distance_key,
+            spatial=spatial,
+            method=spatial_method,
+            method_kwargs=spatial_method_kwargs
+            )
+            
+        joint_post.loc[:,'avg_entropy'] = operations.joint_post_entropy(joint_post)
+        
+        if multi_allelic:
+            exp_post = operations.expand_states(exp_post, segs_consensus)
+            allele_post = operations.expand_states(allele_post, segs_consensus)
+            joint_post = operations.expand_states(joint_post, segs_consensus)
     
-        log.info('Using fixed consensus CNVs')
-        segs_consensus = segs_consensus_fix
-         
-        bulk_subtrees = utils.classify_alleles(
-            utils.annot_theta_mle(
-            utils.annot_consensus(
-                bulk_subtrees, 
-                segs_consensus)
-            ))
-
-
-    # retest on clones
-    clones = {k:v for k, v in clones.items() if v['size'] > min_cells}
+            
+        exp_post.to_csv(os.path.join(out_dir, f"exp_post_{i}.tsv"), sep="\t")
+        allele_post.to_csv(os.path.join(out_dir, f"allele_post_{i}.tsv"), sep="\t")
+        joint_post.to_csv(os.path.join(out_dir, f"joint_post_{i}.tsv"), sep="\t")
     
-    if len(clones) == 0:      
-        msg = ('No clones remain after filtering by size. Consider reducing min_cells.\n'
-               'Interrupting workflow...')
+        
+        ### Build phylogeny  
+        msg = "Phylogeny reconstruction started."
         log.info(msg)
-        return(msg)
+        
+        # filter CNVs
+        joint_post_filtered = joint_post[(joint_post.cnv_state != 'neu') & 
+                                    (joint_post.avg_entropy < max_entropy) & 
+                                    (joint_post.LLR > min_LLR)].copy()
+            
+        if joint_post_filtered.shape[0] == 0:
+            msg = (f"No CNV remains after filtering by entropy in single cells.\n"
+                     f"Consider increasing max_entropy. Current max_entropy is: {max_entropy}") 
+            log.info(msg)
+            return msg
+        else:
+            n_cnv = joint_post_filtered.seg.unique().shape[0]
+            log.info(f'Using {n_cnv} CNAs to construct phylogeny')
+        
+        # construct genotype probability matrix
+        P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
+        P_saving_path = os.path.join(out_dir, f"geno_{i}.tsv")
+        P.to_csv(P_saving_path, sep="\t")
+        log.info(f"P matrix has been saved at {P_saving_path}")
+        
+        # construct initial tree
+        treeML = tree.P_to_candidate_tree(P_df=P,
+                                          n_jobs=ncores)
+        
+        # construct mutation graph
+        gtree = phylo.get_gtree(treeML,
+                                P,
+                                n_cut=n_cut,
+                                max_cost=max_cost)
+        
+        G_m = phylo.label_genotype(phylo.get_mut_graph(gtree))
+        
+        log.info(f"Tree building completed, pass {i}")
+        
+        clone_post = phylo.get_clone_post(gtree, exp_post, allele_post)
+        clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
     
-    bulk_clones = utils.make_group_bulks(groups = clones,
-                               count_mat = count_mat,
-                               df_allele = df_allele,
-                               lambdas_ref = lambdas_ref,
-                               gtf = gtf,
-                               min_depth = min_depth,
-                               nu = nu,
-                               segs_loh = segs_loh,
-                               ncores = ncores)
+        normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
+        msg = f"Found {len(normal_cells)} normal cells at iteration {i}."
+        log.info(msg)
+        
+       #if plot_results:
+            #TODO: make plot
+            
+        clone_to_node = operations.clone_to_node_from_Gm(G_m)
+        subtrees = operations.build_subtrees_from_Gm(G_m, clone_post)
+        clones = operations.build_clones_from_clone_post(clone_post)
+        
+        if check_convergence:
+            # convergence
+            converged, segs_consensus_old = operations.check_convergence_and_update(segs_consensus_old=segs_consensus_old,
+                                                                                    segs_consensus=segs_consensus,
+                                                                                    check_convergence=check_convergence)
+            if converged:
+                log.info("converged")
+                break
+            
+    # final output profiles
     
-    bulk_clones_group = operations.run_group_hmms(bulks = bulk_clones,
-                                   t = t,
-                                   gamma = gamma,
-                                   alpha = alpha,
-                                   nu = nu,
-                                   min_genes = min_genes,
-                                   common_diploid = common_diploid,
-                                   diploid_chroms = diploid_chroms,
-                                   ncores = ncores,
-                                   verbose = verbose,
-                                   retest = False)
+    bulk_clones = utils.make_group_bulks(groups=clones, 
+                                         count_mat=count_mat, 
+                                         df_allele=df_allele,
+                                         lambdas_ref=lambdas_ref,
+                                         gtf=gtf,
+                                         min_depth=min_depth, 
+                                         nu=nu, 
+                                         segs_loh=segs_loh,
+                                         ncores=ncores)
     
-    bulk_clones_retest = operations.retest_bulks(bulks = bulk_clones_group,
-                                  segs_consensus = segs_consensus,
-                                  gamma = gamma,
-                                  use_loh = use_loh,
-                                  min_LLR = min_LLR,
-                                  diploid_chroms = diploid_chroms,
-                                  ncores = ncores)
+    bulk_clones = operations.run_group_hmms(bulks=bulk_clones, 
+                                            t=t, 
+                                            gamma=gamma, 
+                                            alpha=alpha, 
+                                            nu=nu, 
+                                            min_genes=min_genes, 
+                                            common_diploid=False, 
+                                            ncores=ncores, 
+                                            verbose=verbose, 
+                                            retest=False)
     
-    bulk_clones_retest.to_csv(os.path.join(out_dir, f"bulk_clones_{i}.tsv"), sep="\t")
+    bulk_clones = operations.retest_bulks(bulks=bulk_clones, 
+                                          segs_consensus=segs_consensus, 
+                                          gamma=gamma, 
+                                          use_loh=use_loh,
+                                          min_LLR=min_LLR, 
+                                          diploid_chroms=diploid_chroms, 
+                                          ncores=ncores)
+    
+    final_bulk_clones_saving_path = os.path.join(out_dir, "bulk_clones_final.tsv")
+    bulk_clones.to_csv(final_bulk_clones_saving_path, sep="\t")
 
     if plot_results:
         with plt.ioff():  # disables live rendering inside the block
 
-            plot_subtrees = plot.plot_bulks(bulk_clones_retest, 
-                                              exp_limit=4, 
-                                              text_size=10, 
-                                              title_size=14,
-                                              panel_vspace=1)
-            plot_subtrees.savefig(os.path.join(out_dir, f"bulk_clones_{i}.jpg"), dpi=200)
+            plot_subtrees = plot.plot_bulks(bulk_clones, 
+                                            exp_limit=4, 
+                                            text_size=10, 
+                                            title_size=14,
+                                            panel_vspace=1)
+            plot_subtrees.savefig(os.path.join(out_dir, "bulk_clones_final.jpg"), dpi=250)
             plt.close("all")
             
-    ### test for multi-allelic CNVs
-    if multi_allelic:
-        if p_multi is None:
-            p_multi = 1-alpha
-        segs_consensus = operations.test_multi_allelic(bulk_clones_retest, 
-                                                              segs_consensus, 
-                                                              min_LLR = min_LLR, 
-                                                              p_min = p_multi)
-    
-    segs_consensus.to_csv(os.path.join(out_dir, f"segs_consensus_{i}.tsv"), sep="\t")
-
-    ### Evaluate CNV per cell
-    log.info("Evaluating CNV per cell")
-    
-    segs_consensus_retest_corrected = segs_consensus.copy()
-    segs_consensus_retest_corrected.loc[:,'cnv_state'] = [row.cnv_state if row.cnv_state == 'neu' else row.cnv_state_post for idx, row in segs_consensus_retest_corrected.iterrows()]
-    
-    exp_post = operations.get_exp_post(segs_consensus_retest_corrected,
-                        count_mat=count_mat,
-                        gtf=gtf,
-                        lambdas_ref=lambdas_ref,
-                        use_loh = use_loh,
-                        segs_loh = segs_loh,
-                        sc_refs=sc_refs,
-                        ncores=ncores,
-                        verbose=True)
-    
-    haplotype = operations.get_haplotype_post(bulk_subtrees, 
-                                              segs_consensus_retest_corrected)
-    
-    allele_post = operations.get_allele_post(df_allele=df_allele,
-                                             haplotypes=haplotype,
-                                             segs_consensus=segs_consensus_retest_corrected)
-    
-    count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
-                                               ncores=ncores,
-                                               distance_key=distance_key,
-                                               kind=spatial_decay,
-                                               connectivity_key=connectivity_key)
-    
-
-    joint_post = operations.get_joint_post(
-        exp_post=exp_post,
-        allele_post=allele_post,
-        segs_consensus=segs_consensus,
-        count_mat=count_mat,
-        distance_key=distance_key,
-        spatial=spatial,
-        method=spatial_method,
-        method_kwargs=spatial_method_kwargs
-        )
-        
-    joint_post.loc[:,'avg_entropy'] = operations.joint_post_entropy(joint_post)
-    
-    if multi_allelic:
-        exp_post = operations.expand_states(exp_post, segs_consensus)
-        allele_post = operations.expand_states(allele_post, segs_consensus)
-        joint_post = operations.expand_states(joint_post, segs_consensus)
-
-        
-    exp_post.to_csv(os.path.join(out_dir, f"exp_post_{i}.tsv"), sep="\t")
-    allele_post.to_csv(os.path.join(out_dir, f"allele_post_{i}.tsv"), sep="\t")
-    joint_post.to_csv(os.path.join(out_dir, f"joint_post_{i}.tsv"), sep="\t")
-
-    
-    ### Build phylogeny  
-    msg = "Phylogeny reconstruction started."
-    log.info(msg)
-    
-    joint_post_filtered = joint_post[(joint_post.cnv_state != 'neu') & 
-                                (joint_post.avg_entropy < max_entropy) & 
-                                (joint_post.LLR > min_LLR)].copy()
-        
-    if joint_post_filtered.shape[0] == 0:
-        log.info(f"No CNV remains after filtering by entropy in single cells.\n"
-                 f"Consider increasing max_entropy. Current entropy is: {max_entropy}")
-    else:
-        n_cnv = joint_post_filtered.seg.unique().shape[0]
-        log.info(f'Using {n_cnv} CNAs to construct phylogeny')
-    
-    # construct genotype probability matrix
-    P = operations.get_joint_post_matrix(joint_post_filtered, p_min=p_min)
-    P_saving_path = os.path.join(out_dir, f"geno_{i}.tsv")
-    P.to_csv(P_saving_path, sep="\t")
-    log.info(f"P matrix has been saved at {P_saving_path}")
-    
-    treeML = tree.P_to_candidate_tree(P_df=P,
-                                         n_jobs=ncores)
-    
-    gtree = phylo.get_gtree(treeML,
-                           P,
-                           n_cut=n_cut,
-                           max_cost=max_cost)
-    
-    G_m = phylo.label_genotype(phylo.get_mut_graph(gtree))
-    
-    log.info(f"Tree building completed, pass {i}")
-    
-    clone_post = phylo.get_clone_post(gtree, exp_post, allele_post)
-    clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
-
-    normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
-    msg = f"Found {len(normal_cells)} normal cells."
-    log.info(msg)
-    
-   #if plot_results:
-        #TODO: make plot
-        
-    clone_to_node = operations.clone_to_node_from_Gm(G_m)
-    subtrees = operations.build_subtrees_from_Gm(G_m, clone_post)
-    clones = operations.build_clones_from_clone_post(clone_post)
-    
-    if check_convergence:
-        # convergence
-        converged, segs_consensus_old = operations.check_convergence_and_update(segs_consensus_old=segs_consensus_old,
-                                                                                segs_consensus=segs_consensus,
-                                                                                check_convergence=check_convergence)
-        if converged:
-            log.info("converged")
-            # break
+    log.info(f"All done! Pipeline terminated. Results are at:\n{out_dir}")
 
     
     
-    return exp_post, allele_post, segs_consensus, count_mat, treeML, clone_post, G_m, subtrees, clones
+    return (exp_post,
+            allele_post, 
+            segs_consensus,
+            count_mat,
+            treeML,
+            clone_post,
+            G_m, 
+            subtrees, 
+            clones, 
+            bulk_clones)
     #return clone_post, G_m
 
     
