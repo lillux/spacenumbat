@@ -394,7 +394,7 @@ def run_numbat(
     ######## Begin iterations #TODO
     
     for i in range(max_iter):
-        i = 0 # temporary placeholder for iteration
+        # i = 0 # temporary placeholder for iteration
         log.info(f"Starting iteration {i}")
         
         subtrees = {k:v for k,v in nodes_dict.items() if v['size'] > min_cells}
