@@ -3033,8 +3033,8 @@ def retest_cnv(bulk:pd.DataFrame,
             'p_bdel':np.where(np.isnan(p_bdel), 0, p_bdel),
             'LLR_x':LLR_x,
             'LLR_y':LLR_y,
-            'LLR': LLR_x + LLR_y,
-            #'LLR': logBF # This is in the original implementation, overwriting 'LLR' as defined before. I guess it is wrong.
+            #'LLR': LLR_x + LLR_y,
+            'LLR': logBF # This is in the original implementation, overwriting 'LLR' as defined before. I guess it is wrong.
         })
     
         segs_post.loc[:,'cnv_state_post'] = segs_post.loc[:,['p_loh', 'p_amp', 'p_del', 'p_bamp', 'p_bdel']].idxmax(axis=1).apply(lambda x: x.split('_')[-1])
