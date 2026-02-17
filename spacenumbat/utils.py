@@ -1881,7 +1881,7 @@ def find_common_diploid(
         reduced = gr.merge(slack=1)  # Union of imbalanced segments
         segs_imbal = reduced.df.rename(columns={'Chromosome': 'CHROM', 'Start': 'seg_start', 'End': 'seg_end'})
         segs_imbal['seg_length'] = segs_imbal['seg_end'] - segs_imbal['seg_start']
-        
+        segs_imbal.CHROM = segs_imbal['CHROM'].astype("string")
         # Assign segment names and cnv_state
         segs_imbal = segs_imbal.sort_values(['CHROM', 'seg_start'], key=natsort.natsort_keygen())
         segs_imbal['seg'] = segs_imbal.groupby('CHROM', sort=False, observed=True).cumcount() + 1
@@ -1918,7 +1918,7 @@ def find_common_diploid(
                                 'n_genes':n_genes})
     seg = []
     for name, group in segs_bal_df.groupby('seg', sort=False, observed=True):
-        if (np.any(group.n_genes > 50)) & (np.any(group.n_snps > 50)):
+        if np.any((group.n_genes > 50) & (group.n_snps > 50)): # any on both
             seg.append(name)
     segs_bal = natsorted(np.unique(seg))
     
@@ -3412,9 +3412,9 @@ def analyze_bulk(
                 return re.search(pattern, x).group(1)
             except AttributeError:
                 return np.nan
-        suffix_out = bulk.state[events].apply(lambda x : tryextract(state_suffix, x))
+        suffix_out = bulk.state[events].apply(lambda x : tryextract(state_suffix, x)).astype("string")
         naindex = suffix_out[suffix_out.isna()].index
-        suffix_out[naindex] = bulk.cnv_state_post[naindex]
+        suffix_out[naindex] = bulk.cnv_state_post[naindex].astype("string")
         new_sp = pd.Series(np.repeat(np.nan, bulk.shape[0]), dtype='string')
         new_sp[events] = ['_'.join((sp, su)) for sp, su in zip(bulk.cnv_state_post[suffix_out.index].values, suffix_out.values)]
         new_sp[~events] = bulk.cnv_state_post[~events].astype('string')
