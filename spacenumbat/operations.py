@@ -2224,7 +2224,7 @@ def build_subtrees_from_Gm(
     clone_vertex_col: str = "clone",
     gt_opt_col: str = "GT_opt",
     cell_col: str = "cell",
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[int, Dict[str, Any]]:
     """
 
     """
@@ -2233,48 +2233,45 @@ def build_subtrees_from_Gm(
     if cell_col not in clone_post.columns:
         raise ValueError(f"clone_post must contain column '{cell_col}'.")
 
-    # Build vertex dataframe: id, GT, clone (and keep other attrs if you want)
+    # Keep node id exactly as in Gm
     v_rows = []
-    for vid, attrs in Gm.nodes(data=True):
+    node_labels = sorted(Gm.nodes())
+    for vid in node_labels:
+        attrs = Gm.nodes[vid]
+
         gt = attrs.get(gt_vertex_col, "")
         if gt is None or (isinstance(gt, float) and np.isnan(gt)):
             gt = ""
         gt = str(gt)
 
-        cl = attrs.get(clone_vertex_col, None)
-        # keep clone as int if possible
-        if cl is None or (isinstance(cl, float) and np.isnan(cl)):
-            cl_val = None
-        else:
-            cl_val = int(cl)
-
-        v_rows.append({"id": int(vid), "GT": gt, "clone": cl_val})
+        cl = attrs.get(clone_vertex_col, np.nan)  # keep NA-like values
+        v_rows.append({"id": int(vid), "GT": gt, "clone": cl})
 
     vdf = pd.DataFrame(v_rows)
 
-    # Ensure clone_post join key is string
+    # Prepare clone_post join key as string (NA -> "")
     cp = clone_post.copy()
     cp[gt_opt_col] = cp[gt_opt_col].fillna("").astype(str)
 
-    subtrees: List[Dict[str, Any]] = []
+    out: Dict[int, Dict[str, Any]] = {}
 
-    for c in sorted(Gm.nodes()):
+    for c in node_labels:
         reachable = list(nx.dfs_preorder_nodes(Gm, source=c))
         sub_v = vdf[vdf["id"].isin(reachable)]
         joined = sub_v.merge(cp, left_on="GT", right_on=gt_opt_col, how="inner")
-        members = [m for m in pd.unique(joined["GT"].astype(str)) if m != ""]
-        clones = [x for x in pd.unique(joined["clone"]) if pd.notna(x)]
-        cells = joined[cell_col].astype(str).tolist()
+        members = pd.unique(joined["GT"]).tolist()
+        clones = pd.unique(joined["clone"]).tolist()
+        cells = joined[cell_col].tolist()
         size = len(cells)
 
-        subtrees.append({"sample": int(c),
-                         "members": members,
-                         "clones": clones,
-                         "cells": cells,
-                         "size": size,
-                         })
+        out[c] = {"sample": c,
+                  "members": members,
+                  "clones": clones,
+                  "cells": cells,
+                  "size": size,
+                 }
 
-    return subtrees
+    return out
 
 
 def build_clones_from_clone_post(
@@ -2282,23 +2279,36 @@ def build_clones_from_clone_post(
     clone_opt_col: str = "clone_opt",
     gt_opt_col: str = "GT_opt",
     cell_col: str = "cell",
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[Any, Dict[str, Any]]:
     """
 
+    Returns
+    -------
+    Dict[key, dict]
+        key is clone_opt (same as 'sample'), value is the per-clone dict.
     """
+    for col in (clone_opt_col, gt_opt_col, cell_col):
+        if col not in clone_post.columns:
+            raise ValueError(f"clone_post must contain column '{col}'.")
+
     cp = clone_post.copy()
-    cp[clone_opt_col] = cp[clone_opt_col].astype(int)
-    cp[gt_opt_col] = cp[gt_opt_col].fillna("").astype(str)
-    cp[cell_col] = cp[cell_col].astype(str)
 
-    out: List[Dict[str, Any]] = []
+    # map NA -> "".
+    cp[gt_opt_col] = cp[gt_opt_col].fillna("")
 
-    for clone_id, df in cp.groupby(clone_opt_col, sort=True):
-        out.append({"sample": int(clone_id),
-                    "members": list(pd.unique(df[gt_opt_col])),
-                    "cells": df[cell_col].tolist(),
-                    "size": int(len(df)),
-                    })
+    out: Dict[Any, Dict[str, Any]] = {}
+
+    for clone_key, df in cp.groupby(clone_opt_col, sort=True, dropna=True):
+        members = pd.unique(df[gt_opt_col]).tolist()
+        cells = df[cell_col].tolist()
+        size = len(cells)
+
+        out[clone_key] = {"sample": clone_key,
+                          "members": members,
+                          "cells": cells,
+                          "size": size,
+                         }
+
     return out
 
 
