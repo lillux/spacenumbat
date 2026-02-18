@@ -720,20 +720,6 @@ def combine_bulk(
             genes_exclude.extend(to_filter)
         bulk = bulk.drop(index=genes_exclude)
     
-    # Fix observed counts, collapsing multiple SNPs per gene
-    #gene_collect = {}
-    #Y_obs_fix = []
-    #for chrom in bulk['CHROM'].unique():
-    #    chrom_bulk = bulk[bulk['CHROM'] == chrom]
-    #    for idx, row in chrom_bulk.iterrows():
-    #        if pd.notna(row.gene) and row.gene in gene_collect:
-    #            gene_collect[row.gene][row.snp_id] = row.Y_obs
-    #            Y_obs_fix.append(np.nan)
-    #        else:
-    #            gene_collect[row.gene] = {row.snp_id: row.Y_obs}
-    #            Y_obs_fix.append(row.Y_obs)
-    #bulk['Y_obs'] = Y_obs_fix
-    
     # get rid of duplicate gene expression values, collapsing multiple SNPs per gene
     dup_mask = bulk["gene"].notna() & bulk.duplicated(subset=["CHROM", "gene"], keep="first")
     bulk.loc[dup_mask, "Y_obs"] = np.nan
@@ -789,7 +775,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     
     # Alternative pyranges usage
     # bulk_ranges
-    bulk.loc[:,'End'] = bulk.POS
+    bulk.loc[:,'End'] = bulk.POS + 1 #TODO: just added +1 
     bulk = bulk.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
     bulk_ranges = pr.PyRanges(df=bulk) 
     
@@ -798,7 +784,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     segs_consensus_ranges = pr.PyRanges(df=segs_consensus) 
     
     # Find overlaps between bulk and segs_consensus
-    overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
+    #overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
+    overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=0) # TODO: just added
     overlaps_df = overlaps.df
     
     # # renaming
@@ -1156,7 +1143,9 @@ def t_test_pval(x: ArrayLike, y: ArrayLike) -> float:
     if x.size <= 1 or y.size <= 1:
         return 1.0
     # Perform two-sample t-test (assuming equal var)
-    _, pvalue = ttest_ind(x, y, equal_var=True, nan_policy='omit')
+    #_, pvalue = ttest_ind(x, y, equal_var=True, nan_policy='omit')
+    _, pvalue = ttest_ind(x, y, equal_var=False, nan_policy='omit')
+
     return pvalue
 
 
