@@ -305,14 +305,15 @@ def fit_ref_sse_ad(
         return np.sum(np.power(np.log(lambdas_obs) -
                                np.log(np.matmul(lambdas_ref, x / np.sum(x))),
                                2))
-
+    bounds = [(1e-6, None)] * n_ref
     par = np.ones(n_ref) / n_ref
     fit = scipy.optimize.minimize(
         fun=kl_to_min,
         x0=par,
         method='L-BFGS-B',
         tol=1e-6,
-        options={'disp': verbose}
+        bounds=bounds,
+        #options={'disp': verbose}
     )
 
     x = fit.x
@@ -330,7 +331,7 @@ def filter_genes(
     filter_segments: Optional[pd.DataFrame] = None,
     filter_hla: bool = True,
     verbose: bool = False
-) -> List[str]:
+    ) -> List[str]:
     """
     Filter genes based on expression and annotation criteria.
 
@@ -521,7 +522,7 @@ def switch_prob(
     distance: NDArray,
     nu: float = 1,
     min_p: float = 1e-10
-) -> NDArray:
+    ) -> NDArray:
     """
     Calculate switch probabilities based on genetic distances and parameter nu.
 
@@ -548,7 +549,8 @@ def switch_prob(
 
         p = np.maximum(p, min_p)
 
-    p[np.isnan(p)] = 0
+    # p[np.isnan(p)] = 0 
+    p[np.isnan(distance)] = 0 # Faithful
     return p
 
 
