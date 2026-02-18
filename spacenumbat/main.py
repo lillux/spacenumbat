@@ -359,7 +359,7 @@ def run_numbat(
                            sc_refs=sc_refs,
                            ncores=ncores,
                            filter_hla=filter_hla_hg38,
-                           filter_segments=filter_chromosome_segments,
+                           filter_segments=filter_segments_df,
                            verbose=verbose)
         # save window-smoothed normalized expression profiles as AnnData
         log.info("Saving clustering results")
@@ -408,7 +408,7 @@ def run_numbat(
                                                nu=nu,
                                                segs_loh=segs_loh,
                                                filter_hla=filter_hla_hg38,
-                                               filter_segments=filter_chromosome_segments,
+                                               filter_segments=filter_segments_df,
                                                ncores=ncores)
         
         ### Diagnostics

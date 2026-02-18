@@ -338,7 +338,7 @@ def l_lnpois(
     sig: Union[float, np.ndarray],
     phi: float = 1,
     n_points: int = 256
-) -> float:
+    ) -> float:
     """
     Compute the log-likelihood of observed counts `Y_obs` under a lognormal-Poisson model.
 
