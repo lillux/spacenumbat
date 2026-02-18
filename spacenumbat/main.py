@@ -578,13 +578,13 @@ def run_numbat(
                                                  haplotypes=haplotype,
                                                  segs_consensus=segs_consensus_retest_corrected)
         
-        
-        count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
-                                                   ncores=ncores,
-                                                   distance_key=distance_key,
-                                                   kind=spatial_decay,
-                                                   connectivity_key=connectivity_key)
-        
+        if spatial:
+            count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
+                                                       ncores=ncores,
+                                                       distance_key=distance_key,
+                                                       kind=spatial_decay,
+                                                       connectivity_key=connectivity_key)
+            
     
         joint_post = operations.get_joint_post(
             exp_post=exp_post,

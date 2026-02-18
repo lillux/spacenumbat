@@ -210,7 +210,6 @@ class ScoreTreeResult:
 def score_tree_treenode_fast(
     tree: TreeNode,
     P_df: pd.DataFrame,
-    *,
     get_l_matrix: bool = False,
     clip_eps: float = 1e-10,
     ) -> ScoreTreeResult:
@@ -395,7 +394,6 @@ def _swap_subtrees_inplace(P: TreeNode, C: TreeNode, S: TreeNode, X: TreeNode) -
 def perform_nni_ml_greedy_local(
     tree_init: TreeNode,
     P_df: pd.DataFrame,
-    *,
     eps: float = 1e-5,
     max_iter: int = 100,
     verbose: bool = True,
