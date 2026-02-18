@@ -2267,10 +2267,11 @@ def build_subtrees_from_Gm(
         joined = sub_v.merge(cp, left_on="GT", right_on=gt_opt_col, how="inner")
         members = pd.unique(joined["GT"]).tolist()
         clones = pd.unique(joined["clone"]).tolist()
+        clones = [str(clone) for clone in clones]
         cells = joined[cell_col].tolist()
         size = len(cells)
 
-        out[c] = {"sample": c,
+        out[str(c)] = {"sample": str(c),
                   "members": members,
                   "clones": clones,
                   "cells": cells,
@@ -2309,7 +2310,7 @@ def build_clones_from_clone_post(
         cells = df[cell_col].tolist()
         size = len(cells)
 
-        out[clone_key] = {"sample": clone_key,
+        out[str(clone_key)] = {"sample": str(clone_key),
                           "members": members,
                           "cells": cells,
                           "size": size,

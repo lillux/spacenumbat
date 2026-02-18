@@ -779,7 +779,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     # bulk_ranges
     bulk.loc[:,'End'] = bulk.POS
     bulk = bulk.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
-    bulk["Start"] = bulk["Start"]-1
+    bulk["Start"] = bulk["Start"]-1 #TODO just added
     bulk_ranges = pr.PyRanges(df=bulk) 
     
     # segs_consensus_ranges
