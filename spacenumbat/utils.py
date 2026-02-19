@@ -76,29 +76,55 @@ def annotate_genes(
     - SNP positions are treated as zero-length intervals for overlap detection.
     - Duplicate SNPs are removed during processing to avoid redundant annotations.
     """
-    # Rename some gtf columns. Needed for PyRanges.
-    gtf = gtf.rename(columns={'gene_start':'Start', 'gene_end':'End', 'CHROM':'Chromosome'})
+    
+    snps = df.loc[:, ["snp_id", "CHROM", "POS"]].drop_duplicates().reset_index(drop=True)  
+    snps["snp_index"] = [i for i in range(snps.shape[0])]
 
-    # Take unique SNPs and rename columns for PyRanges
-    snps = df[['snp_id', 'CHROM', 'POS']].drop_duplicates()
-    snps = snps.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
-    snps.loc[:, 'End'] = snps.loc[:, 'Start']
+    snps_pr_df = pd.DataFrame({"Chromosome": snps["CHROM"].astype(str),
+                               "Start": snps["POS"].astype(np.int64),
+                               "End": snps["POS"].astype(np.int64),
+                               "snp_index": snps["snp_index"].astype(np.int64),
+                               "snp_id": snps["snp_id"],
+                              })
 
-    # Create PyRanges for SNPs and GTF
-    snps_pr = PyRanges(df=snps)
-    gtf_pr = PyRanges(df=gtf)
+    gtf2 = gtf.copy()
+    gtf2["gene_index"] = [i for i in range(gtf2.shape[0])]
+    gtf_pr_df = pd.DataFrame({"Chromosome": gtf2["CHROM"].astype(str),
+                              "Start": gtf2["gene_start"].astype(np.int64),
+                              "End": gtf2["gene_end"].astype(np.int64),
+                              "gene": gtf2["gene"],
+                              "gene_index": gtf2["gene_index"].astype(np.int64),
+                             })
 
-    # Find overlaps between SNPs and genes, remove duplicates
-    hits = snps_pr.join(gtf_pr).df.drop_duplicates('snp_id')
+    snps_pr = pr.PyRanges(snps_pr_df)
+    gtf_pr = pr.PyRanges(gtf_pr_df)
 
-    # Add gene names to snps
-    snps = snps.merge(hits.loc[:, ['snp_id', 'gene']], on='snp_id', how='left')
+    # overlaps
+    hits = snps_pr.join(gtf_pr).df
 
-    # Left join with SNPs to original df (dropping existing gene columns)
-    df = df.loc[:, df.columns.difference(['gene', 'gene_start', 'gene_end'], sort=False)].merge(
-        snps.loc[:, ['snp_id', 'gene']], on='snp_id', how='left')
+    if not hits.empty:
+        hits = hits.sort_values(["snp_index", "gene"], 
+                                kind="mergesort").drop_duplicates(subset=["snp_index"], 
+                                                                  keep="first").loc[:, ["snp_index", 
+                                                                                        "gene"]]
+    else:
+        hits = pd.DataFrame({"snp_index": snps["snp_index"], "gene": pd.NA}).iloc[0:0]
 
-    return df
+    # left join gene onto snps (by snp_index)
+    snps_annot = snps.merge(hits, on="snp_index", how="left")
+
+    # drop existing gene columns then left join
+    out = df.drop(columns=[c for c in ["gene", "gene_start", "gene_end"] if c in df.columns])
+    out = out.merge(snps_annot.loc[:, ["snp_id", "CHROM", "POS", "gene"]],
+                    on=["snp_id", "CHROM", "POS"],
+                    how="left",)
+    
+    out.CHROM = out.CHROM.astype("string")
+    out.cell = out.cell.astype("string")
+    out.gene = out.gene.astype("string")
+    out.snp_id = out.snp_id.astype("string")
+
+    return out
     
 
 def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=True) -> ad.AnnData:
@@ -779,7 +805,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     # bulk_ranges
     bulk.loc[:,'End'] = bulk.POS
     bulk = bulk.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
-    bulk["Start"] = bulk["Start"]-1 #TODO just added
+    bulk["Start"] = bulk["Start"]
     bulk_ranges = pr.PyRanges(df=bulk) 
     
     # segs_consensus_ranges
