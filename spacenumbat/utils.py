@@ -815,7 +815,7 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     # Find overlaps between bulk and segs_consensus
     #overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
     #overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=0) # TODO: just added
-    overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=0) # TODO: just added
+    overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=1) # TODO: just added
     overlaps_df = overlaps.df
     
     # # renaming
@@ -1819,7 +1819,7 @@ def find_common_diploid(
     # Ensure 'sample' column exists
     if 'sample' not in bulks.columns:
         bulks = bulks.copy()
-        bulks['sample'] = '1'
+        bulks['sample'] = '0'
     
     # Define balanced regions in each sample
     sample_groups = [df for _, df in bulks.groupby('sample', observed=True, sort=False)]
