@@ -378,7 +378,11 @@ def get_segs_consensus(
     bulks = bulks[bulks['seg_start'] != bulks['seg_end']]
     
     segs_all = bulks[info_cols].drop_duplicates().copy()
-    segs_all.loc[(segs_all['LLR'].isna()) | (segs_all['LLR']<min_LLR), 'cnv_state'] = 'neu'
+    #segs_all.loc[(segs_all['LLR'].isna()) | (segs_all['LLR']<min_LLR), 'cnv_state'] = 'neu'
+    segs_all.cnv_state = np.where(
+        (segs_all['LLR'].isna() | (segs_all['LLR']<min_LLR)), 
+        "neu",
+        segs_all.cnv_state)
     segs_star = segs_all[segs_all['cnv_state']!='neu'].copy()
     if segs_star.shape[0] == 0:
         msg = "All segments have been predicted to be neutral. Try to decrease min_LLR."
@@ -388,47 +392,49 @@ def get_segs_consensus(
     
     if retest:
         segs_cnv = segs_all[segs_all['cnv_state']!='neu'].copy()
+        segs_cnv = segs_cnv.sort_values("CHROM", key=natsort.natsort_keygen())
         # build PyRanges from segs_cnv
         pr_cnv = pr.PyRanges(
-            pd.DataFrame({
-                'Chromosome': segs_cnv['CHROM'],
-                'Start': segs_cnv['seg_start'],
-                'End': segs_cnv['seg_end']
-            })
-        ).merge()
+            pd.DataFrame({'Chromosome': segs_cnv['CHROM'],
+                          'Start': segs_cnv['seg_start'],
+                          'End': segs_cnv['seg_end']
+                          })
+            ).merge()
     
         # build PyRanges from segs_star
         pr_star = pr.PyRanges(
-            pd.DataFrame({
-                'Chromosome': segs_star['CHROM'],
-                'Start': segs_star['seg_start'],
-                'End': segs_star['seg_end']
-            })
-        ).merge()
+            pd.DataFrame({'Chromosome': segs_star['CHROM'],
+                          'Start': segs_star['seg_start'],
+                          'End': segs_star['seg_end']
+                          })
+            ).merge()
     
         # find segments in between CNVs regions
         pr_retest = pr_cnv.subtract(pr_star)
         df_retest = pr_retest.as_df()
-        df_retest = df_retest[df_retest['End']> df_retest['Start']]
+        df_retest = df_retest[(df_retest['End'] - df_retest['Start']) > 0]
         # add cnv_state 'retest'
         df_retest['cnv_state'] = 'retest'
         df_retest['cnv_state_post'] = 'retest'
         df_retest = df_retest.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
+        df_retest.CHROM = df_retest.CHROM.astype("string") # TODO: just added 19/02/2026
+        
     else:
         df_retest = pd.DataFrame()
     
     # union of neutral segments
-    segs_neu_input = segs_all[segs_all['cnv_state']=='neu']
+    segs_neu_input = segs_all[segs_all['cnv_state']=='neu'].sort_values("CHROM", key=natsort.natsort_keygen())
     pr_neu = pr.PyRanges(
-        pd.DataFrame({
-            'Chromosome': segs_neu_input['CHROM'],
-            'Start': segs_neu_input['seg_start'],
-            'End': segs_neu_input['seg_end']
-        })
-    ).merge()
+        pd.DataFrame({'Chromosome': segs_neu_input['CHROM'],
+                      'Start': segs_neu_input['seg_start'],
+                      'End': segs_neu_input['seg_end']
+                      })
+        ).merge()
+    
     df_neu = pr_neu.as_df()
     df_neu = df_neu.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
     df_neu['seg_length'] = df_neu['seg_end']-df_neu['seg_start']
+    df_neu.CHROM = df_neu.CHROM.astype("string") # TODO: just added 19/02/2026
     
     # if all segs_all['cnv_state'] == 'neu'
     if (segs_all['cnv_state']!='neu').sum() == 0:
