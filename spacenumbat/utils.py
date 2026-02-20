@@ -805,7 +805,8 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     # bulk_ranges
     bulk.loc[:,'End'] = bulk.POS
     bulk = bulk.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
-    bulk["Start"] = bulk["Start"]
+    #bulk["Start"] = bulk["Start"]
+    
     bulk_ranges = pr.PyRanges(df=bulk) 
     
     # segs_consensus_ranges
@@ -813,9 +814,9 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     segs_consensus_ranges = pr.PyRanges(df=segs_consensus) 
     
     # Find overlaps between bulk and segs_consensus
-    #overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1)
+    overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1) # original implementation from me
     #overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=0) # TODO: just added
-    overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=1) # TODO: just added
+    #overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=1) # TODO: just added # last
     overlaps_df = overlaps.df
     
     # # renaming
