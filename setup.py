@@ -13,7 +13,8 @@ setup(name = 'spacenumbat',
                        'scipy',
                        'anndata',
                        'pyranges',
-                       'joblib'],
+                       'joblib',
+                       'scikit-bio'],
                        
       classifiers=[
           'Development Status :: 3 - Alpha',
