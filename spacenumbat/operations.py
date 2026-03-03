@@ -378,16 +378,15 @@ def get_segs_consensus(
     bulks = bulks[bulks['seg_start'] != bulks['seg_end']]
     
     segs_all = bulks[info_cols].drop_duplicates().copy()
-    #segs_all.loc[(segs_all['LLR'].isna()) | (segs_all['LLR']<min_LLR), 'cnv_state'] = 'neu'
     segs_all.cnv_state = np.where(
         (segs_all['LLR'].isna() | (segs_all['LLR']<min_LLR)), 
         "neu",
         segs_all.cnv_state)
     segs_star = segs_all[segs_all['cnv_state']!='neu'].copy()
-    if segs_star.shape[0] == 0:
-        msg = "All segments have been predicted to be neutral. Try to decrease min_LLR."
-        log.info(msg)
-        return
+    #if segs_star.shape[0] == 0:
+    #    msg = "All segments have been predicted to be neutral. Try to decrease min_LLR."
+    #    log.info(msg)
+    #    return
     segs_star = resolve_cnvs(segs_star, min_overlap=min_overlap, debug=False)
     
     if retest:
