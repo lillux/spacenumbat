@@ -20,6 +20,7 @@ _DATA_FILES: Dict[str, str] = {
     "hg38": "gtf_hg38.tsv",
     "hg19": "gtf_hg19.tsv",
     "mm10": "gtf_mm10.tsv",
+    "ref_hca" : "ref_hca.tsv",
 }
 
 # Internal cache to hold loaded DataFrames
