@@ -198,7 +198,8 @@ def plot_psbulk(
 
     # Baseline correction for expression track
     if not allele_only and "logFC" in df.columns and "mu" in df.columns:
-        df["logFC"] = df["logFC"] - df["mu"]
+        #df["logFC"] = df["logFC"] - df["mu"]
+        df["logFC"] = df["logFC"] - (df["mu"] / np.log(2.0))
 
     # Build long-form data (logFC, pHF)
     D = df.copy()
