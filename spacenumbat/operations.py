@@ -374,7 +374,9 @@ def get_segs_consensus(
         df['seg_start'] = df['POS'].min()
         df['seg_end']   = df['POS'].max()
         return df
-    bulks = bulks.groupby(groupcols, group_keys=False, observed=True, sort=False)[bulks.columns].apply(seg_start_end_aggregator).reset_index(drop=True)
+    bulks = (bulks.groupby(groupcols, group_keys=False, observed=True, sort=False)[bulks.columns]
+             .apply(seg_start_end_aggregator)
+             .reset_index(drop=True))
     bulks = bulks[bulks['seg_start'] != bulks['seg_end']]
     
     segs_all = bulks[info_cols].drop_duplicates().copy()
@@ -391,49 +393,66 @@ def get_segs_consensus(
     
     if retest:
         segs_cnv = segs_all[segs_all['cnv_state']!='neu'].copy()
-        segs_cnv = segs_cnv.sort_values("CHROM", key=natsort.natsort_keygen())
-        # build PyRanges from segs_cnv
-        pr_cnv = pr.PyRanges(
-            pd.DataFrame({'Chromosome': segs_cnv['CHROM'],
-                          'Start': segs_cnv['seg_start'],
-                          'End': segs_cnv['seg_end']
-                          })
-            ).merge()
-    
-        # build PyRanges from segs_star
-        pr_star = pr.PyRanges(
-            pd.DataFrame({'Chromosome': segs_star['CHROM'],
-                          'Start': segs_star['seg_start'],
-                          'End': segs_star['seg_end']
-                          })
-            ).merge()
-    
-        # find segments in between CNVs regions
-        pr_retest = pr_cnv.subtract(pr_star)
-        df_retest = pr_retest.as_df()
-        df_retest = df_retest[(df_retest['End'] - df_retest['Start']) > 0]
-        # add cnv_state 'retest'
-        df_retest['cnv_state'] = 'retest'
-        df_retest['cnv_state_post'] = 'retest'
-        df_retest = df_retest.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
-        df_retest.CHROM = df_retest.CHROM.astype("string") # TODO: just added 19/02/2026
+        
+        if segs_cnv.shape[0] == 0:
+            df_retest = pd.DataFrame(columns=["CHROM", "seg_start", "seg_end", "cnv_state", "cnv_state_post"])
+        else:
+            segs_cnv = segs_cnv.sort_values("CHROM", key=natsort.natsort_keygen())
+            # build PyRanges from segs_cnv
+            pr_cnv = pr.PyRanges(
+                pd.DataFrame({'Chromosome': segs_cnv['CHROM'],
+                              'Start': segs_cnv['seg_start'],
+                              'End': segs_cnv['seg_end']
+                              })
+                ).merge()
+            
+            # if segs_star empty -> return segs_cnv
+            if segs_star.shape[0] == 0:
+                pr_retest = pr_cnv
+            else:
+                # build PyRanges from segs_star
+                pr_star = pr.PyRanges(
+                    pd.DataFrame({'Chromosome': segs_star['CHROM'],
+                                  'Start': segs_star['seg_start'],
+                                  'End': segs_star['seg_end']
+                                  })
+                    ).merge()
+            
+                # find segments in between CNVs regions
+                pr_retest = pr_cnv.subtract(pr_star)
+                
+            df_retest = pr_retest.as_df()
+            if df_retest.shape[0] == 0:
+                    df_retest = pd.DataFrame(columns=["CHROM", "seg_start", "seg_end", "cnv_state", "cnv_state_post"])
+            else:
+                df_retest = df_retest[(df_retest['End'] - df_retest['Start']) > 0]
+                # add cnv_state 'retest'
+                df_retest['cnv_state'] = 'retest'
+                df_retest['cnv_state_post'] = 'retest'
+                df_retest = df_retest.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
+                df_retest.CHROM = df_retest.CHROM.astype("string") # TODO: just added 19/02/2026
         
     else:
         df_retest = pd.DataFrame()
     
     # union of neutral segments
     segs_neu_input = segs_all[segs_all['cnv_state']=='neu'].sort_values("CHROM", key=natsort.natsort_keygen())
-    pr_neu = pr.PyRanges(
-        pd.DataFrame({'Chromosome': segs_neu_input['CHROM'],
-                      'Start': segs_neu_input['seg_start'],
-                      'End': segs_neu_input['seg_end']
-                      })
-        ).merge()
     
-    df_neu = pr_neu.as_df()
-    df_neu = df_neu.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
-    df_neu['seg_length'] = df_neu['seg_end']-df_neu['seg_start']
-    df_neu.CHROM = df_neu.CHROM.astype("string") # TODO: just added 19/02/2026
+    if segs_neu_input.shape[0] == 0:
+        df_neu = pd.DataFrame(columns=["CHROM", "seg_start", "seg_end", "seg_length"])
+    else:
+    
+        pr_neu = pr.PyRanges(
+            pd.DataFrame({'Chromosome': segs_neu_input['CHROM'],
+                          'Start': segs_neu_input['seg_start'],
+                          'End': segs_neu_input['seg_end']
+                          })
+            ).merge()
+        
+        df_neu = pr_neu.as_df()
+        df_neu = df_neu.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
+        df_neu['seg_length'] = df_neu['seg_end']-df_neu['seg_start']
+        df_neu.CHROM = df_neu.CHROM.astype("string") # TODO: just added 19/02/2026
     
     # if all segs_all['cnv_state'] == 'neu'
     if (segs_all['cnv_state']!='neu').sum() == 0:
@@ -442,10 +461,13 @@ def get_segs_consensus(
             rows = rows.copy()
             n_ = len(rows)
             postfix = utils.generate_postfix(range(n_))
-            rows['seg'] = [f"{row['CHROM']}{pfx}" for row, pfx in zip(rows.to_dict('records'), postfix)]
+            rows["seg"] = [f"{chrom}{pfx}" for chrom, pfx in zip(rows["CHROM"].astype(str), postfix)]
             rows['cnv_state'] = 'neu'
             rows['cnv_state_post'] = 'neu'
             return rows
+        
+        if df_neu.shape[0] == 0:
+            return df_neu.assign(seg=pd.Series(dtype="object"), cnv_state="neu", cnv_state_post="neu")
     
         df_neu = df_neu.groupby('CHROM', group_keys=False, sort=False, observed=True)[df_neu.columns].apply(assign_seg).reset_index(drop=True)
         return df_neu
