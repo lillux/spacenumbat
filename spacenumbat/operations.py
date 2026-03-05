@@ -1493,11 +1493,25 @@ def get_exp_post(
     #with _progressbar.tqdm_joblib(tqdm.tqdm(desc="Processing cells", total=len(cells))) as progress_bar:
         # Use the top-level function for parallel execution:
         #results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
+    n_jobs = int(np.max([1, np.min((len(cells), cpu_count(), ncores))]))
+    parallel_kwargs = {
+        "n_jobs": n_jobs,
+        # `process_cell` closes over large AnnData/DataFrame objects. Using threads here
+        # avoids repeatedly serializing those objects into child processes, which can
+        # otherwise trigger worker crashes and excessive memory usage on large samples.
+        "backend": "threading",
+        # Keep dispatch bounded to avoid building up too many pending tasks/results
+        # at once when cell count is large.
+        "pre_dispatch": n_jobs,
+    }
+    if verbose:
+        log.info(f'Running expression likelihood jobs on {n_jobs} core')
+
     if use_pbar:
         with _progressbar.tqdm_joblib(total=len(cells), desc="Processing cells", disable=not verbose):
-            results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
+            results = Parallel(**parallel_kwargs)(delayed(process_cell)(cell) for cell in cells)
     else:
-        results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
+        results = Parallel(**parallel_kwargs)(delayed(process_cell)(cell) for cell in cells)
 
     # check for errors
     bad = [isinstance(r, Exception) for r in results]
@@ -2369,4 +2383,3 @@ def check_convergence_and_update(
     if converged:
         return True, segs_consensus_old
     return False, segs_consensus.copy()
-
