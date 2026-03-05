@@ -46,6 +46,7 @@ def run_numbat(
     min_overlap=0.45,
     ncores=1,
     ncores_nni=None,
+    use_pbar=False,
     random_init=False,
     segs_loh=None,
     call_clonal_loh=False,
@@ -119,6 +120,10 @@ def run_numbat(
         Number of threads to use. Default is 1.
     ncores_nni : int, optional
         Number of threads to use for nearest neighbor interchange (NNI). Default is the same as ncores.
+    use_pbar : bool, optional
+        Global switch for tqdm progress bars in the pipeline. If True, enable
+        tqdm-based progress displays where available; if False, disable them.
+        Default is False.
     max_iter : int, optional
         Maximum number of iterations to run the phylogeny optimization. Default is 2.
     max_nni : int, optional
@@ -300,6 +305,7 @@ def run_numbat(
         f"plot_results = {plot_results}",
         f"ncores = {ncores}",
         f"ncores_nni = {ncores_nni}",
+        f"use_pbar = {use_pbar}",
         f"Filter HLA region = {filter_hla_hg38}",
         f"Filtering custom chromosomal region = {'None' if filter_segments_df is None else 'Given'}",
         f"spatial = {spatial}",
@@ -327,7 +333,7 @@ def run_numbat(
                               filter_segments=filter_segments_df,
                               min_depth=min_depth,
                               nu=nu)
-        segs_loh = utils.detect_clonal_loh(bulk, t=t, min_depth=min_depth)
+        segs_loh = utils.detect_clonal_loh(bulk, t=t, min_depth=min_depth, use_pbar=use_pbar)
         
         #TODO remove this
         log.info(f"segs_loh shape is: {segs_loh.shape}\nbulk shape is: {bulk.shape}")       
@@ -569,7 +575,8 @@ def run_numbat(
                                            segs_loh = segs_loh,
                                            sc_refs=sc_refs,
                                            ncores=ncores,
-                                           verbose=verbose)
+                                           verbose=verbose,
+                                           use_pbar=use_pbar)
         
         haplotype = operations.get_haplotype_post(bulk_subtrees, 
                                                   segs_consensus_retest_corrected)

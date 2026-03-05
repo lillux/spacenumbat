@@ -1236,7 +1236,8 @@ def detect_clonal_loh(
     bulk: pd.DataFrame,
     t: float = 1e-5,
     snp_rate_loh: float = 5,
-    min_depth: int = 0
+    min_depth: int = 0,
+    use_pbar: bool = False
     ) -> Optional[pd.DataFrame]:
     """
     Detect clonal Loss of Heterozygosity (LOH) segments from bulk-level allelic data.
@@ -1258,6 +1259,9 @@ def detect_clonal_loh(
         Reference SNP mutation rate for LOH state in the HMM, by default 5.
     min_depth : int, optional
         Minimum depth (DP) for SNP inclusion, by default 0.
+    use_pbar : bool, optional
+        If True, show tqdm progress while iterating chromosomes during clonal
+        LOH detection. Default is False.
 
     Returns
     -------
@@ -1289,7 +1293,7 @@ def detect_clonal_loh(
              'gene_length':[]}
     
     chrom_unique = bulk.CHROM.unique()
-    for chrom in tqdm.tqdm(chrom_unique):
+    for chrom in tqdm.tqdm(chrom_unique, disable=not use_pbar):
         gene_unique = bulk[bulk.loc[:, 'CHROM'] == chrom].gene.unique()
         for gene in gene_unique:
             tmp_bulk = bulk[(bulk.loc[:,'CHROM'] == chrom) &

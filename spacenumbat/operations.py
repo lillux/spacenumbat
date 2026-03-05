@@ -1368,6 +1368,7 @@ def get_exp_post(
     segs_loh: Optional[pd.DataFrame] = None,
     ncores: int = 1,
     verbose: bool = True,
+    use_pbar: bool = False,
     debug: bool = False,
     n_points: int = 200
     ) -> pd.DataFrame:
@@ -1425,6 +1426,10 @@ def get_exp_post(
         Number of parallel workers used when computing per-cell likelihoods.
     verbose : bool, default True
         If True, prints progress and summaries.
+    use_pbar : bool, default False
+        If True, show an asynchronous joblib/tqdm progress bar while processing
+        cells. If False, run in parallel without rendering a progress bar. This
+        is intended to be controlled by the pipeline-level progress-bar switch.
     debug : bool, default False
         Reserved for future use. Not used in the current implementation.
     n_points : int, default 200
@@ -1488,7 +1493,10 @@ def get_exp_post(
     #with _progressbar.tqdm_joblib(tqdm.tqdm(desc="Processing cells", total=len(cells))) as progress_bar:
         # Use the top-level function for parallel execution:
         #results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
-    with _progressbar.tqdm_joblib(total=len(cells), desc="Processing cells", disable=not verbose) as pbar:
+    if use_pbar:
+        with _progressbar.tqdm_joblib(total=len(cells), desc="Processing cells", disable=not verbose):
+            results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
+    else:
         results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
 
     # check for errors
@@ -2361,5 +2369,4 @@ def check_convergence_and_update(
     if converged:
         return True, segs_consensus_old
     return False, segs_consensus.copy()
-
 
