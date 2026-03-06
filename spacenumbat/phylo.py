@@ -731,10 +731,10 @@ def get_clone_post(
     Z_cnv_col: str = "Z_cnv",
     Z_n_col: str = "Z_n",
     ) -> pd.DataFrame:
-    """Map cells to clones using expression/allelic CNV posteriors.
+    """Map cells to phylogeny clones using CNV posteriors.
 
-    The implementation follows the reference R workflow while preserving pipeline
-    compatibility in edge cases where no informative CNV evidence is available.
+    This is a Python/0-based counterpart of the reference R implementation,
+    with minimal fallbacks to keep downstream pipeline stages operational.
     """
 
     def _empty_clone_post() -> pd.DataFrame:
@@ -753,25 +753,20 @@ def get_clone_post(
 
     def _all_cells() -> List[str]:
         cells = pd.Index(exp_post.get(cell_col, pd.Series(dtype=object))).union(
-            pd.Index(allele_post.get(cell_col, pd.Series(dtype=object))
-        ))
+            pd.Index(allele_post.get(cell_col, pd.Series(dtype=object)))
+        )
         return cells.dropna().astype(str).tolist()
 
-    def _normal_fallback(cells: List[str], clones_df: pd.DataFrame) -> pd.DataFrame:
+    def _normal_fallback(cells: List[str], clone_default: int = 0) -> pd.DataFrame:
         if len(cells) == 0:
             return _empty_clone_post()
-
-        clone_default = 0
-        if clones_df.shape[0] > 0 and clones_df["clone"].notna().any():
-            clone_default = int(clones_df.loc[clones_df["clone"].notna(), "clone"].min())
-
         out = pd.DataFrame({cell_col: cells})
-        out["clone_opt"] = clone_default
+        out["clone_opt"] = int(clone_default)
         out["GT_opt"] = ""
         out["p_opt"] = 1.0
-        out[f"p_{clone_default}"] = 1.0
-        out[f"p_x_{clone_default}"] = 1.0
-        out[f"p_y_{clone_default}"] = 1.0
+        out[f"p_{int(clone_default)}"] = 1.0
+        out[f"p_x_{int(clone_default)}"] = 1.0
+        out[f"p_y_{int(clone_default)}"] = 1.0
         out["p_cnv"] = 0.0
         out["p_cnv_x"] = 0.0
         out["p_cnv_y"] = 0.0
@@ -791,7 +786,7 @@ def get_clone_post(
     )
 
     if nodes_df.shape[0] == 0:
-        return _normal_fallback(_all_cells(), pd.DataFrame(columns=["clone"]))
+        return _normal_fallback(_all_cells(), clone_default=0)
 
     leaf_num = pd.to_numeric(nodes_df["leaf"], errors="coerce")
     nodes_df["leaf"] = np.where(leaf_num.notna(), (leaf_num != 0).astype(int), 0).astype(int)
@@ -803,29 +798,23 @@ def get_clone_post(
     clones["clone"] = pd.to_numeric(clones["clone"], errors="coerce")
     clones["GT"] = clones["GT"].fillna("").astype(str).str.strip()
 
-    # Faithful to R's intent (add normal if missing), but compatible with either
-    # 1-based or 0-based clone labels used in historical Python outputs.
-    if clones["clone"].notna().any():
-        cmin = int(clones["clone"].min())
-        if cmin > 1:
-            clones = pd.concat(
-                [pd.DataFrame([{"GT": "", "clone": 1, "compartment": "normal", "clone_size": 0}]), clones],
-                ignore_index=True,
-            )
-        elif cmin > 0:
-            clones = pd.concat(
-                [pd.DataFrame([{"GT": "", "clone": 0, "compartment": "normal", "clone_size": 0}]), clones],
-                ignore_index=True,
-            )
+    # R logic is: if min(clone) > 1, add normal clone=1.
+    # Python pipeline is 0-based, so the faithful analog is: if min(clone) > 0,
+    # add normal clone=0.
+    if clones["clone"].notna().any() and int(clones["clone"].min()) > 0:
+        clones = pd.concat(
+            [pd.DataFrame([{"GT": "", "clone": 0, "compartment": "normal", "clone_size": 0}]), clones],
+            ignore_index=True,
+        )
 
     n_unique_gt = int(clones["GT"].nunique(dropna=False))
     denom = max(n_unique_gt - 1, 1)
     clones["prior_clone"] = np.where(clones["GT"].eq(""), 0.5, 0.5 / denom)
 
-    # Equivalent of separate_rows + complete + filter(seg != '').
+    # Equivalent to R: separate_rows(seg=GT) + complete(...) + filter(seg!='').
     seg_universe = sorted({s for gt in clones["GT"].tolist() for s in _split_muts(gt) if s != ""})
     if len(seg_universe) == 0:
-        return _normal_fallback(_all_cells(), clones)
+        return _normal_fallback(_all_cells(), clone_default=0)
 
     base = clones[["GT", "clone", "compartment", "prior_clone", "clone_size"]].drop_duplicates().copy()
     base["_tmp"] = 1
@@ -838,6 +827,7 @@ def get_clone_post(
         1 if seg in gt_to_set.get(gt, set()) else 0
         for seg, gt in zip(clone_segs[seg_col].astype(str).tolist(), clone_segs["GT"].astype(str).tolist())
     ]
+    clone_segs["I"] = clone_segs["I"].astype(int)
 
     def _block(post: pd.DataFrame, suffix: str) -> pd.DataFrame:
         if not isinstance(post, pd.DataFrame) or post.shape[0] == 0:
@@ -858,7 +848,7 @@ def get_clone_post(
 
     merged = x.merge(y, on=[cell_col, "clone", "GT", "prior_clone"], how="outer")
     if merged.shape[0] == 0:
-        return _normal_fallback(_all_cells(), clones)
+        return _normal_fallback(_all_cells(), clone_default=0)
 
     merged["l_clone_x"] = merged["l_clone_x"].fillna(0.0)
     merged["l_clone_y"] = merged["l_clone_y"].fillna(0.0)
@@ -885,7 +875,7 @@ def get_clone_post(
         return pd.Series(
             {
                 "clone_opt": int(clone_val) if pd.notna(clone_val) else np.nan,
-                "GT_opt": df["GT"].to_numpy()[i],
+                "GT_opt": str(df["GT"].to_numpy()[i]),
                 "p_opt": float(df["p"].to_numpy()[i]),
             }
         )

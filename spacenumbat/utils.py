@@ -1656,6 +1656,8 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     bulks['snp_index'] = snp_id_cat.codes
     # Arrange by 'sample'
     bulks = bulks.sort_values(['sample','CHROM', 'POS'], key=natsort.natsort_keygen()).reset_index(drop=True)
+    if 'sample' in bulks.columns:
+        bulks['sample'] = bulks['sample'].astype('string')
     return bulks
 
 
@@ -1725,7 +1727,7 @@ def process_group(g: Dict[str, Any],
         # Add additional columns
         bulk['n_cells'] = g['size']
         bulk['members'] = ';'.join(map(str, g['members']))
-        bulk['sample'] = g['sample']
+        bulk['sample'] = str(g['sample'])
         return bulk
     except Exception as e:
         return {'error': e, 'group': g}
