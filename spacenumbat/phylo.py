@@ -880,7 +880,11 @@ def get_clone_post(
             }
         )
 
-    opt = merged.groupby(cell_col, sort=False).apply(_opt_block).reset_index()
+    opt = (
+        merged.groupby(cell_col, sort=False, observed=True)
+        .apply(_opt_block, include_groups=False)
+        .reset_index()
+    )
     merged2 = merged.merge(opt, on=cell_col, how="left")
 
     piv_p = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p", fill_value=0.0)

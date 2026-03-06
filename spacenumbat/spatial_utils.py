@@ -43,6 +43,9 @@ def get_spatial_info(
     AnnData
         The input object with euclidean_distances and weighted_adj stored in obsp.
     """
+    if counts_mat.is_view:
+        counts_mat = counts_mat.copy()
+
     # Ensure spatial_connectivities exists
     if connectivity_key not in counts_mat.obsp:
         sq.gr.spatial_neighbors(counts_mat)
@@ -53,10 +56,13 @@ def get_spatial_info(
             f"{counts_mat.obsp.keys()}"
         )
 
-    dist_test = pairwise_distances(
-        counts_mat[:, counts_mat.var_names[counts_mat.X.toarray().sum(0) > 0]].X,
-        n_jobs=ncores,
-    )
+    if sp.issparse(counts_mat.X):
+        gene_sums = np.asarray(counts_mat.X.sum(axis=0)).ravel()
+    else:
+        gene_sums = counts_mat.X.sum(axis=0)
+
+    keep_vars = counts_mat.var_names[gene_sums > 0]
+    dist_test = pairwise_distances(counts_mat[:, keep_vars].X, n_jobs=ncores)
     counts_mat.obsp[distance_key] = sp.csr_matrix(dist_test)
 
     W = build_distance_weights(

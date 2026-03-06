@@ -481,7 +481,12 @@ def get_segs_consensus(
         df_neu = df_neu.groupby('CHROM', group_keys=False, sort=False, observed=True)[df_neu.columns].apply(assign_seg).reset_index(drop=True)
         return df_neu
     # else
-    segs_consensus = pd.concat([segs_star, df_retest], axis=0, ignore_index=True)
+    concat_parts = [segs_star]
+    if not df_retest.empty:
+        df_retest_clean = df_retest.dropna(axis=1, how='all')
+        if not df_retest_clean.empty:
+            concat_parts.append(df_retest_clean)
+    segs_consensus = pd.concat(concat_parts, axis=0, ignore_index=True)
     segs_consensus = utils.fill_neu_segs(segs_consensus, df_neu)
     segs_consensus['cnv_state_post'] = np.where(
         segs_consensus['cnv_state']=='neu',
@@ -1504,9 +1509,9 @@ def get_exp_post(
         #results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
     if use_pbar:
         with _progressbar.tqdm_joblib(total=len(cells), desc="Processing cells", disable=not verbose):
-            results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
+            results = Parallel(n_jobs=ncores, prefer="threads")(delayed(process_cell)(cell) for cell in cells)
     else:
-        results = Parallel(n_jobs=ncores)(delayed(process_cell)(cell) for cell in cells)
+        results = Parallel(n_jobs=ncores, prefer="threads")(delayed(process_cell)(cell) for cell in cells)
 
     # check for errors
     bad = [isinstance(r, Exception) for r in results]
