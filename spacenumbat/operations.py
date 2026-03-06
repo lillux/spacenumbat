@@ -85,6 +85,15 @@ def run_group_hmms(
     ----------
         pd.DataFrame: Resulting data after running HMMs.
     """
+
+    if bulks is None or not isinstance(bulks, pd.DataFrame) or bulks.shape[0] == 0:
+        return pd.DataFrame()
+
+    required_cols = {"sample", "DP"}
+    if not required_cols.issubset(bulks.columns):
+        missing = sorted(required_cols.difference(bulks.columns))
+        log.warning("run_group_hmms: missing required columns %s; returning empty result.", missing)
+        return pd.DataFrame()
     
     # Drop samples with no allele data
     bulks = bulks.groupby('sample', observed=True, sort=False).filter(lambda x: x['DP'].notna().sum() > 0).copy()
@@ -2369,4 +2378,3 @@ def check_convergence_and_update(
     if converged:
         return True, segs_consensus_old
     return False, segs_consensus.copy()
-
