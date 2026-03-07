@@ -721,6 +721,171 @@ def get_gtree(
 
 
 
+# def get_clone_post(
+#     gtree: nx.DiGraph,
+#     exp_post: pd.DataFrame,
+#     allele_post: pd.DataFrame,
+#     seg_col: str = "seg",
+#     cell_col: str = "cell",
+#     cnv_state_col: str = "cnv_state",
+#     Z_cnv_col: str = "Z_cnv",
+#     Z_n_col: str = "Z_n",
+#     ) -> pd.DataFrame:
+#     """
+    
+#     """
+#     # clones table from gtree nodes
+#     nodes_df = pd.DataFrame([dict(GT=a.get("GT", "") if a.get("GT", "") is not None else "",
+#                                   clone=a.get("clone", np.nan),
+#                                   compartment=a.get("compartment", np.nan),
+#                                   leaf=bool(a.get("leaf", False)),)
+#                              for _, a in gtree.nodes(data=True)])
+
+#     clones = (nodes_df.groupby(["GT", "clone", "compartment"], dropna=False, as_index=False)
+#               .agg(clone_size=("leaf", "sum")))
+
+#     # ensure normal genotype exists (R: add normal if min(clone) > 1; Python 0-based => > 0)
+#     if clones["clone"].dropna().shape[0] == 0 or clones["clone"].dropna().min() > 0:
+#         clones = pd.concat([pd.DataFrame([dict(GT="", clone=0, compartment="normal", clone_size=0)]), clones],
+#                            ignore_index=True,)
+
+#     # prior_clone
+#     unique_gt = clones["GT"].astype(str).unique().tolist()
+#     tumor_gts = [g for g in unique_gt if g != ""]
+#     K = len(tumor_gts)
+
+#     def _prior(gt: str) -> float:
+#         return 0.5 if gt == "" else (0.5 / max(K-1, 1))
+
+#     clones["prior_clone"] = clones["GT"].astype(str).map(_prior)
+
+#     # clone_segs
+#     # Compute universe of seg values from GT strings
+#     seg_universe = sorted({s for gt in clones["GT"].astype(str).tolist() for s in _split_muts(gt) if s != ""})
+
+#     base = clones[["GT", "clone", "compartment", "prior_clone", "clone_size"]].drop_duplicates().copy()
+#     if len(seg_universe) > 0:
+#         base["_tmp"] = 1
+#         seg_df = pd.DataFrame({seg_col: seg_universe})
+#         seg_df["_tmp"] = 1
+
+#         clone_segs = seg_df.merge(base, on="_tmp").drop(columns=["_tmp"])
+
+#         gt_to_set = {gt: set(_split_muts(gt)) for gt in base["GT"].astype(str).unique().tolist()}
+#         clone_segs["I"] = [1 if seg in gt_to_set.get(gt, set()) else 0
+#                            for seg, gt in zip(clone_segs[seg_col].astype(str).tolist(),
+#                                               clone_segs["GT"].astype(str).tolist())]
+#         clone_segs["I"] = clone_segs["I"].astype(int)
+#     else:
+#         clone_segs = pd.DataFrame(columns=[seg_col, "GT", "clone", "compartment", "prior_clone", "clone_size", "I"])
+
+#     # likelihood aggregation blocks
+#     def _block(post: pd.DataFrame, suffix: str) -> pd.DataFrame:
+#         post = post.copy()
+#         post = post[post[cnv_state_col] != "neu"]
+#         post = post.merge(clone_segs, left_on=seg_col, right_on=seg_col, how="inner")
+#         post["l_clone"] = np.where(post["I"].to_numpy() == 1, post[Z_cnv_col].to_numpy(), post[Z_n_col].to_numpy())
+#         out = (post.groupby([cell_col, "clone", "GT", "prior_clone"], as_index=False)
+#                .agg(**{f"l_clone_{suffix}": ("l_clone", "sum")}))
+#         return out
+
+#     x = _block(exp_post, "x")
+#     y = _block(allele_post, "y")
+#     merged = x.merge(y, on=[cell_col, "clone", "GT", "prior_clone"], how="outer")
+
+#     if merged.shape[0] == 0:
+#         # R-faithful join logic yields empty when no overlapping seg evidence exists.
+#         # For pipeline compatibility, fall back to prior-only per-cell rows (no synthetic likelihood evidence).
+#         cells = pd.unique(pd.concat([
+#             exp_post[cell_col] if cell_col in exp_post.columns else pd.Series(dtype=object),
+#             allele_post[cell_col] if cell_col in allele_post.columns else pd.Series(dtype=object),
+#         ], ignore_index=True)).tolist()
+
+#         if len(cells) == 0:
+#             clone_post = pd.DataFrame(columns=[cell_col, "clone_opt", "GT_opt", "p_opt"])
+#             tumor_clones = clones.loc[clones["compartment"].astype(str) == "tumor", "clone"].dropna().astype(int).tolist()
+#             for c in tumor_clones:
+#                 clone_post[f"p_{c}"] = pd.Series(dtype=float)
+#                 clone_post[f"p_x_{c}"] = pd.Series(dtype=float)
+#                 clone_post[f"p_y_{c}"] = pd.Series(dtype=float)
+#             clone_post["p_cnv"] = pd.Series(dtype=float)
+#             clone_post["p_cnv_x"] = pd.Series(dtype=float)
+#             clone_post["p_cnv_y"] = pd.Series(dtype=float)
+#             clone_post["compartment_opt"] = pd.Series(dtype=object)
+#             clone_post["sample"] = pd.Series(dtype=object)
+#             return clone_post
+
+#         merged = base[["GT", "clone", "prior_clone"]].copy()
+#         merged["_tmp"] = 1
+#         cells_df = pd.DataFrame({cell_col: cells, "_tmp": 1})
+#         merged = cells_df.merge(merged, on="_tmp", how="inner").drop(columns=["_tmp"])
+#         merged["l_clone_x"] = 0.0
+#         merged["l_clone_y"] = 0.0
+
+#     merged["l_clone_x"] = merged["l_clone_x"].fillna(0.0)
+#     merged["l_clone_y"] = merged["l_clone_y"].fillna(0.0)
+
+#     # compute posteriors per cell
+#     merged["Z_clone"] = np.log(merged["prior_clone"].to_numpy()) + merged["l_clone_x"].to_numpy() + merged["l_clone_y"].to_numpy()
+#     merged["Z_clone_x"] = np.log(merged["prior_clone"].to_numpy()) + merged["l_clone_x"].to_numpy()
+#     merged["Z_clone_y"] = np.log(merged["prior_clone"].to_numpy()) + merged["l_clone_y"].to_numpy()
+
+#     merged["p"] = np.nan
+#     merged["p_x"] = np.nan
+#     merged["p_y"] = np.nan
+
+#     for cell, idx in merged.groupby(cell_col, sort=False).groups.items():
+#         z = merged.loc[idx, "Z_clone"].to_numpy()
+#         zx = merged.loc[idx, "Z_clone_x"].to_numpy()
+#         zy = merged.loc[idx, "Z_clone_y"].to_numpy()
+#         merged.loc[idx, "p"] = np.exp(z - _log_sum_exp(z))
+#         merged.loc[idx, "p_x"] = np.exp(zx - _log_sum_exp(zx))
+#         merged.loc[idx, "p_y"] = np.exp(zy - _log_sum_exp(zy))
+
+#     # clone_opt / GT_opt / p_opt
+#     def _opt_block(df: pd.DataFrame) -> pd.Series:
+#         # Use the max-posterior row directly. This is robust in Python and preserves
+#         # downstream GT-based joins used by subtree construction.
+#         i = int(df["p"].to_numpy().argmax())
+#         clone_val = df["clone"].to_numpy()[i]
+#         return pd.Series({"clone_opt": int(clone_val) if pd.notna(clone_val) else np.nan,
+#                           "GT_opt": df["GT"].to_numpy()[i],
+#                           "p_opt": float(df["p"].to_numpy()[i]),
+#                           })
+
+#     opt = merged.groupby(cell_col, as_index=False).apply(_opt_block).reset_index(drop=True)
+#     merged2 = merged.merge(opt, on=cell_col, how="left")
+
+#     # wide output for p, p_x, p_y
+#     piv_p = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p", fill_value=0.0)
+#     piv_px = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p_x", fill_value=0.0)
+#     piv_py = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p_y", fill_value=0.0)
+
+#     piv_p.columns = [f"p_{int(c)}" for c in piv_p.columns]
+#     piv_px.columns = [f"p_x_{int(c)}" for c in piv_px.columns]
+#     piv_py.columns = [f"p_y_{int(c)}" for c in piv_py.columns]
+
+#     clone_post = pd.concat([piv_p, piv_px, piv_py], axis=1).reset_index()
+
+#     # p_cnv = sum_{tumor clones} p_* and compartment_opt
+#     tumor_clones = clones.loc[clones["compartment"].astype(str) == "tumor", "clone"].dropna().astype(int).tolist()
+
+#     def _row_sum_cols(df: pd.DataFrame, cols: List[str]) -> np.ndarray:
+#         cols = [c for c in cols if c in df.columns]
+#         if not cols:
+#             return np.zeros(len(df), dtype=float)
+#         return df[cols].to_numpy(dtype=float).sum(axis=1)
+
+#     clone_post["p_cnv"] = _row_sum_cols(clone_post, [f"p_{c}" for c in tumor_clones])
+#     clone_post["p_cnv_x"] = _row_sum_cols(clone_post, [f"p_x_{c}" for c in tumor_clones])
+#     clone_post["p_cnv_y"] = _row_sum_cols(clone_post, [f"p_y_{c}" for c in tumor_clones])
+
+#     clone_post["compartment_opt"] = np.where(clone_post["p_cnv"].to_numpy() > 0.5, "tumor", "normal")
+#     clone_post["sample"] = clone_post["clone_opt"].astype(str)
+
+#     return clone_post
+
+
 def get_clone_post(
     gtree: nx.DiGraph,
     exp_post: pd.DataFrame,
@@ -731,102 +896,107 @@ def get_clone_post(
     Z_cnv_col: str = "Z_cnv",
     Z_n_col: str = "Z_n",
     ) -> pd.DataFrame:
-    """
     
-    """
     # clones table from gtree nodes
-    nodes_df = pd.DataFrame([dict(GT=a.get("GT", "") if a.get("GT", "") is not None else "",
-                                  clone=a.get("clone", np.nan),
-                                  compartment=a.get("compartment", np.nan),
-                                  leaf=bool(a.get("leaf", False)),)
-                             for _, a in gtree.nodes(data=True)])
+    nodes_df = pd.DataFrame([
+        dict(
+            GT=a.get("GT", "") if a.get("GT", "") is not None else "",
+            clone=a.get("clone", np.nan),
+            compartment=a.get("compartment", np.nan),
+            leaf=a.get("leaf", False),
+        )
+        for _, a in gtree.nodes(data=True)
+    ])
 
-    clones = (nodes_df.groupby(["GT", "clone", "compartment"], dropna=False, as_index=False)
-              .agg(clone_size=("leaf", "sum")))
+    clones = (
+        nodes_df.groupby(["GT", "clone", "compartment"], dropna=False, as_index=False)
+        .agg(clone_size=("leaf", "sum"))
+    )
 
-    # ensure normal genotype exists (R: add normal if min(clone) > 1; Python 0-based => > 0)
-    if clones["clone"].dropna().shape[0] == 0 or clones["clone"].dropna().min() > 0:
-        clones = pd.concat([pd.DataFrame([dict(GT="", clone=0, compartment="normal", clone_size=0)]), clones],
-                           ignore_index=True,)
+    # ensure normal genotype exists (0-based adaptation of R's clone=1 insertion)
+    clone_vals = clones["clone"].dropna()
+    if len(clone_vals) > 0 and clone_vals.min() > 0:
+        clones = pd.concat(
+            [pd.DataFrame([dict(GT="", clone=0, compartment="normal", clone_size=0)]), clones],
+            ignore_index=True,
+        )
 
-    # prior_clone
+    # prior_clone:
     unique_gt = clones["GT"].astype(str).unique().tolist()
-    tumor_gts = [g for g in unique_gt if g != ""]
-    K = len(tumor_gts)
+    n_tumor_gt = sum(g != "" for g in unique_gt)
 
     def _prior(gt: str) -> float:
-        return 0.5 if gt == "" else (0.5 / max(K-1, 1))
+        gt = "" if pd.isna(gt) else str(gt)
+        return 0.5 if gt == "" else 0.5 / n_tumor_gt
 
-    clones["prior_clone"] = clones["GT"].astype(str).map(_prior)
+    clones["prior_clone"] = clones["GT"].map(_prior)
 
     # clone_segs
-    # Compute universe of seg values from GT strings
-    seg_universe = sorted({s for gt in clones["GT"].astype(str).tolist() for s in _split_muts(gt) if s != ""})
+    seg_universe = sorted({
+        s
+        for gt in clones["GT"].astype(str).tolist()
+        for s in _split_muts(gt)
+        if s != ""
+    })
 
     base = clones[["GT", "clone", "compartment", "prior_clone", "clone_size"]].drop_duplicates().copy()
+
     if len(seg_universe) > 0:
         base["_tmp"] = 1
         seg_df = pd.DataFrame({seg_col: seg_universe})
         seg_df["_tmp"] = 1
 
-        clone_segs = seg_df.merge(base, on="_tmp").drop(columns=["_tmp"])
+        clone_segs = seg_df.merge(base, on="_tmp", how="inner").drop(columns="_tmp")
 
-        gt_to_set = {gt: set(_split_muts(gt)) for gt in base["GT"].astype(str).unique().tolist()}
-        clone_segs["I"] = [1 if seg in gt_to_set.get(gt, set()) else 0
-                           for seg, gt in zip(clone_segs[seg_col].astype(str).tolist(),
-                                              clone_segs["GT"].astype(str).tolist())]
+        gt_to_set = {
+            gt: set(_split_muts(gt))
+            for gt in base["GT"].astype(str).unique().tolist()
+        }
+
+        clone_segs["I"] = [
+            1 if seg in gt_to_set.get(gt, set()) else 0
+            for seg, gt in zip(
+                clone_segs[seg_col].astype(str).tolist(),
+                clone_segs["GT"].astype(str).tolist(),
+            )
+        ]
         clone_segs["I"] = clone_segs["I"].astype(int)
     else:
-        clone_segs = pd.DataFrame(columns=[seg_col, "GT", "clone", "compartment", "prior_clone", "clone_size", "I"])
+        clone_segs = pd.DataFrame(
+            columns=[seg_col, "GT", "clone", "compartment", "prior_clone", "clone_size", "I"]
+        )
 
-    # likelihood aggregation blocks
     def _block(post: pd.DataFrame, suffix: str) -> pd.DataFrame:
         post = post.copy()
-        post = post[post[cnv_state_col] != "neu"]
-        post = post.merge(clone_segs, left_on=seg_col, right_on=seg_col, how="inner")
-        post["l_clone"] = np.where(post["I"].to_numpy() == 1, post[Z_cnv_col].to_numpy(), post[Z_n_col].to_numpy())
-        out = (post.groupby([cell_col, "clone", "GT", "prior_clone"], as_index=False)
-               .agg(**{f"l_clone_{suffix}": ("l_clone", "sum")}))
+        post = post.loc[post[cnv_state_col] != "neu"]
+        post = post.merge(clone_segs, on=seg_col, how="inner")
+        post["l_clone"] = np.where(
+            post["I"].to_numpy() == 1,
+            post[Z_cnv_col].to_numpy(),
+            post[Z_n_col].to_numpy(),
+        )
+        out = (
+            post.groupby([cell_col, "clone", "GT", "prior_clone"], as_index=False)
+            .agg(**{f"l_clone_{suffix}": ("l_clone", "sum")})
+        )
         return out
 
     x = _block(exp_post, "x")
     y = _block(allele_post, "y")
+
     merged = x.merge(y, on=[cell_col, "clone", "GT", "prior_clone"], how="outer")
-
-    if merged.shape[0] == 0:
-        # R-faithful join logic yields empty when no overlapping seg evidence exists.
-        # For pipeline compatibility, fall back to prior-only per-cell rows (no synthetic likelihood evidence).
-        cells = pd.unique(pd.concat([
-            exp_post[cell_col] if cell_col in exp_post.columns else pd.Series(dtype=object),
-            allele_post[cell_col] if cell_col in allele_post.columns else pd.Series(dtype=object),
-        ], ignore_index=True)).tolist()
-
-        if len(cells) == 0:
-            clone_post = pd.DataFrame(columns=[cell_col, "clone_opt", "GT_opt", "p_opt"])
-            tumor_clones = clones.loc[clones["compartment"].astype(str) == "tumor", "clone"].dropna().astype(int).tolist()
-            for c in tumor_clones:
-                clone_post[f"p_{c}"] = pd.Series(dtype=float)
-                clone_post[f"p_x_{c}"] = pd.Series(dtype=float)
-                clone_post[f"p_y_{c}"] = pd.Series(dtype=float)
-            clone_post["p_cnv"] = pd.Series(dtype=float)
-            clone_post["p_cnv_x"] = pd.Series(dtype=float)
-            clone_post["p_cnv_y"] = pd.Series(dtype=float)
-            clone_post["compartment_opt"] = pd.Series(dtype=object)
-            clone_post["sample"] = pd.Series(dtype=object)
-            return clone_post
-
-        merged = base[["GT", "clone", "prior_clone"]].copy()
-        merged["_tmp"] = 1
-        cells_df = pd.DataFrame({cell_col: cells, "_tmp": 1})
-        merged = cells_df.merge(merged, on="_tmp", how="inner").drop(columns=["_tmp"])
-        merged["l_clone_x"] = 0.0
-        merged["l_clone_y"] = 0.0
-
     merged["l_clone_x"] = merged["l_clone_x"].fillna(0.0)
     merged["l_clone_y"] = merged["l_clone_y"].fillna(0.0)
 
-    # compute posteriors per cell
-    merged["Z_clone"] = np.log(merged["prior_clone"].to_numpy()) + merged["l_clone_x"].to_numpy() + merged["l_clone_y"].to_numpy()
+    if merged.shape[0] == 0:
+        clone_post = pd.DataFrame(columns=[cell_col, "clone_opt", "GT_opt", "p_opt", "p_cnv", "p_cnv_x", "p_cnv_y", "compartment_opt"])
+        return clone_post
+
+    merged["Z_clone"] = (
+        np.log(merged["prior_clone"].to_numpy())
+        + merged["l_clone_x"].to_numpy()
+        + merged["l_clone_y"].to_numpy()
+    )
     merged["Z_clone_x"] = np.log(merged["prior_clone"].to_numpy()) + merged["l_clone_x"].to_numpy()
     merged["Z_clone_y"] = np.log(merged["prior_clone"].to_numpy()) + merged["l_clone_y"].to_numpy()
 
@@ -834,32 +1004,30 @@ def get_clone_post(
     merged["p_x"] = np.nan
     merged["p_y"] = np.nan
 
-    for cell, idx in merged.groupby(cell_col, sort=False).groups.items():
+    for _, idx in merged.groupby(cell_col, sort=False).groups.items():
         z = merged.loc[idx, "Z_clone"].to_numpy()
         zx = merged.loc[idx, "Z_clone_x"].to_numpy()
         zy = merged.loc[idx, "Z_clone_y"].to_numpy()
+
         merged.loc[idx, "p"] = np.exp(z - _log_sum_exp(z))
         merged.loc[idx, "p_x"] = np.exp(zx - _log_sum_exp(zx))
         merged.loc[idx, "p_y"] = np.exp(zy - _log_sum_exp(zy))
 
-    # clone_opt / GT_opt / p_opt
     def _opt_block(df: pd.DataFrame) -> pd.Series:
-        # Use the max-posterior row directly. This is robust in Python and preserves
-        # downstream GT-based joins used by subtree construction.
         i = int(df["p"].to_numpy().argmax())
         clone_val = df["clone"].to_numpy()[i]
-        return pd.Series({"clone_opt": int(clone_val) if pd.notna(clone_val) else np.nan,
-                          "GT_opt": df["GT"].to_numpy()[i],
-                          "p_opt": float(df["p"].to_numpy()[i]),
-                          })
+        return pd.Series({
+            "clone_opt": int(clone_val) if pd.notna(clone_val) else np.nan,
+            "GT_opt": df["GT"].to_numpy()[i],
+            "p_opt": float(df["p"].to_numpy()[i]),
+        })
 
     opt = merged.groupby(cell_col, as_index=False).apply(_opt_block).reset_index(drop=True)
     merged2 = merged.merge(opt, on=cell_col, how="left")
 
-    # wide output for p, p_x, p_y
-    piv_p = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p", fill_value=0.0)
-    piv_px = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p_x", fill_value=0.0)
-    piv_py = merged2.pivot_table(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p_y", fill_value=0.0)
+    piv_p = merged2.pivot(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p")
+    piv_px = merged2.pivot(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p_x")
+    piv_py = merged2.pivot(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p_y")
 
     piv_p.columns = [f"p_{int(c)}" for c in piv_p.columns]
     piv_px.columns = [f"p_x_{int(c)}" for c in piv_px.columns]
@@ -867,10 +1035,14 @@ def get_clone_post(
 
     clone_post = pd.concat([piv_p, piv_px, piv_py], axis=1).reset_index()
 
-    # p_cnv = sum_{tumor clones} p_* and compartment_opt
-    tumor_clones = clones.loc[clones["compartment"].astype(str) == "tumor", "clone"].dropna().astype(int).tolist()
+    tumor_clones = (
+        clones.loc[clones["compartment"].astype(str) == "tumor", "clone"]
+        .dropna()
+        .astype(int)
+        .tolist()
+    )
 
-    def _row_sum_cols(df: pd.DataFrame, cols: List[str]) -> np.ndarray:
+    def _row_sum_cols(df: pd.DataFrame, cols: list[str]) -> np.ndarray:
         cols = [c for c in cols if c in df.columns]
         if not cols:
             return np.zeros(len(df), dtype=float)
@@ -881,6 +1053,5 @@ def get_clone_post(
     clone_post["p_cnv_y"] = _row_sum_cols(clone_post, [f"p_y_{c}" for c in tumor_clones])
 
     clone_post["compartment_opt"] = np.where(clone_post["p_cnv"].to_numpy() > 0.5, "tumor", "normal")
-    clone_post["sample"] = clone_post["clone_opt"].astype(str)
 
     return clone_post
