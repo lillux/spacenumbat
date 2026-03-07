@@ -86,11 +86,23 @@ def run_group_hmms(
         pd.DataFrame: Resulting data after running HMMs.
     """
     
+    if bulks is None:
+        return pd.DataFrame()
+
+    bulks = bulks.copy()
+    if bulks.shape[0] == 0:
+        if 'sample' not in bulks.columns:
+            bulks['sample'] = pd.Series(dtype=object)
+        return bulks
+
+    if 'sample' not in bulks.columns:
+        bulks['sample'] = '0'
+
     # Drop samples with no allele data
     bulks = bulks.groupby('sample', observed=True, sort=False).filter(lambda x: x['DP'].notna().sum() > 0).copy()
 
     if bulks.shape[0] == 0:
-        return pd.DataFrame()
+        return bulks
 
     n_groups = bulks['sample'].nunique()
 
