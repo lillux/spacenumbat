@@ -755,7 +755,7 @@ def get_clone_post(
     K = len(tumor_gts)
 
     def _prior(gt: str) -> float:
-        return 0.5 if gt == "" else (0.5 / max(K, 1))
+        return 0.5 if gt == "" else (0.5 / max(K-1, 1))
 
     clones["prior_clone"] = clones["GT"].astype(str).map(_prior)
 
