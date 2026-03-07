@@ -381,35 +381,131 @@ def transfer_links(Gm: nx.DiGraph) -> nx.DiGraph:
     return Gm
 
 
+# def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
+#     """
+    
+#     """
+#     # find root
+#     roots = [n for n, a in gtree.nodes(data=True) if a.get("root", False)]
+#     if len(roots) != 1:
+#         raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
+#     #root = roots[0]
+
+#     # map last_mut label -> mut-graph vertex id (stable insertion order)
+#     label_to_vid: Dict[str, int] = {"": 0}
+#     next_vid = 1
+
+#     def _vid(lbl: Optional[str]) -> int:
+#         nonlocal next_vid
+#         lbl = "" if lbl is None else str(lbl)
+#         if lbl not in label_to_vid:
+#             label_to_vid[lbl] = next_vid
+#             next_vid += 1
+#         return label_to_vid[lbl]
+
+#     Gm = nx.DiGraph()
+#     Gm.add_node(0, label="", GT="", clone=None, node=None)
+
+#     # add nodes and edges from gtree
+#     for u, v in gtree.edges:
+#         lu = "" if gtree.nodes[u].get("last_mut", None) is None else str(gtree.nodes[u]["last_mut"])
+#         lv = "" if gtree.nodes[v].get("last_mut", None) is None else str(gtree.nodes[v]["last_mut"])
+
+#         vu = _vid(lu)
+#         vv = _vid(lv)
+
+#         if vu not in Gm:
+#             Gm.add_node(vu, label=lu, GT="", clone=None, node=None)
+#         if vv not in Gm:
+#             Gm.add_node(vv, label=lv, GT="", clone=None, node=None)
+
+#         if vu != vv:
+#             Gm.add_edge(vu, vv)
+
+#     # deterministic relabel to 0..V-1 by DFS from root
+#     dfs_order = list(nx.dfs_preorder_nodes(Gm, source=0))
+#     old_to_new = {old: i for i, old in enumerate(dfs_order)}
+
+#     Gm2 = nx.DiGraph()
+#     for old in dfs_order:
+#         Gm2.add_node(old_to_new[old], **dict(Gm.nodes[old]))
+#     for a, b in Gm.edges:
+#         if a in old_to_new and b in old_to_new:
+#             Gm2.add_edge(old_to_new[a], old_to_new[b])
+
+#     # robust label(last_mut) -> phylo node name mapping
+#     lastmut_to_node: Dict[str, str] = {}
+#     for _, attrs in gtree.nodes(data=True):
+#         nm = attrs.get("name", None)
+#         lm = attrs.get("last_mut", None)
+#         if nm is None:
+#             continue
+#         lm = "" if lm is None else str(lm)
+#         if lm != "":
+#             # first wins, deterministic given gtree node iteration order
+#             lastmut_to_node.setdefault(lm, str(nm))
+
+#     for vid, attrs in Gm2.nodes(data=True):
+#         lbl = attrs.get("label", "")
+#         lbl = "" if lbl is None else str(lbl)
+#         Gm2.nodes[vid]["node"] = lastmut_to_node.get(lbl, None)
+
+#     # finalize edge labels + link attrs
+#     label_edges(Gm2)
+#     transfer_links(Gm2)
+
+#     return Gm2
+
+
 def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
     """
-    
+    Build a mutation graph from a phylogenetic tree annotated with `last_mut`.
+
+    Minimal faithful port of the R logic:
+      - contract the phylogeny by `last_mut`
+      - label each contracted vertex by that `last_mut`
+      - map each mutation-graph label back to one original phylogeny node name
+      - preserve deterministic node ids by DFS from the *actual* phylogeny root label
+
+    Important:
+      - unlike the previous version, this does NOT assume that the mutation-graph
+        root label is always ''.
+      - this is necessary for edge cases where the phylogeny root already carries
+        a mutation, e.g. last_mut == '17b'.
     """
-    # find root
+    # find phylogeny root
     roots = [n for n, a in gtree.nodes(data=True) if a.get("root", False)]
     if len(roots) != 1:
         raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
-    #root = roots[0]
+    root = roots[0]
 
-    # map last_mut label -> mut-graph vertex id (stable insertion order)
-    label_to_vid: Dict[str, int] = {"": 0}
-    next_vid = 1
+    def _norm_label(x: Optional[str]) -> str:
+        if x is None:
+            return ""
+        x = str(x)
+        return "" if x.lower() == "nan" else x
+
+    # actual root label of the phylogeny
+    root_label = _norm_label(gtree.nodes[root].get("last_mut", ""))
+
+    # map last_mut label -> mutation-graph vertex id
+    label_to_vid: Dict[str, int] = {}
+    next_vid = 0
 
     def _vid(lbl: Optional[str]) -> int:
         nonlocal next_vid
-        lbl = "" if lbl is None else str(lbl)
+        lbl = _norm_label(lbl)
         if lbl not in label_to_vid:
             label_to_vid[lbl] = next_vid
             next_vid += 1
         return label_to_vid[lbl]
 
     Gm = nx.DiGraph()
-    Gm.add_node(0, label="", GT="", clone=None, node=None)
 
-    # add nodes and edges from gtree
+    # build contracted graph from gtree edges using last_mut labels
     for u, v in gtree.edges:
-        lu = "" if gtree.nodes[u].get("last_mut", None) is None else str(gtree.nodes[u]["last_mut"])
-        lv = "" if gtree.nodes[v].get("last_mut", None) is None else str(gtree.nodes[v]["last_mut"])
+        lu = _norm_label(gtree.nodes[u].get("last_mut", None))
+        lv = _norm_label(gtree.nodes[v].get("last_mut", None))
 
         vu = _vid(lu)
         vv = _vid(lv)
@@ -419,11 +515,17 @@ def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
         if vv not in Gm:
             Gm.add_node(vv, label=lv, GT="", clone=None, node=None)
 
+        # contraction: only connect different labels
         if vu != vv:
             Gm.add_edge(vu, vv)
 
-    # deterministic relabel to 0..V-1 by DFS from root
-    dfs_order = list(nx.dfs_preorder_nodes(Gm, source=0))
+    # ensure the actual root-label vertex exists even in degenerate cases
+    root_vid = _vid(root_label)
+    if root_vid not in Gm:
+        Gm.add_node(root_vid, label=root_label, GT="", clone=None, node=None)
+
+    # deterministic relabel to 0..V-1 by DFS from the ACTUAL root label
+    dfs_order = list(nx.dfs_preorder_nodes(Gm, source=root_vid))
     old_to_new = {old: i for i, old in enumerate(dfs_order)}
 
     Gm2 = nx.DiGraph()
@@ -433,24 +535,28 @@ def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
         if a in old_to_new and b in old_to_new:
             Gm2.add_edge(old_to_new[a], old_to_new[b])
 
-    # robust label(last_mut) -> phylo node name mapping
-    lastmut_to_node: Dict[str, str] = {}
+    # robust mapping: last_mut label -> one phylogeny node name
+    # R uses:
+    #   mut_nodes = gtree nodes %>% filter(!is.na(site)) %>% distinct(name, site)
+    # and then joins label=site.
+    #
+    # Here we mimic the same intent by linking each mutation-graph label to
+    # one original node name carrying that mutation label.
+    label_to_node: Dict[str, str] = {}
     for _, attrs in gtree.nodes(data=True):
         nm = attrs.get("name", None)
-        lm = attrs.get("last_mut", None)
-        if nm is None:
+        st = attrs.get("site", None)
+        if nm is None or st is None:
             continue
-        lm = "" if lm is None else str(lm)
-        if lm != "":
-            # first wins, deterministic given gtree node iteration order
-            lastmut_to_node.setdefault(lm, str(nm))
+        st = _norm_label(st)
+        if st != "":
+            label_to_node.setdefault(st, str(nm))
 
     for vid, attrs in Gm2.nodes(data=True):
-        lbl = attrs.get("label", "")
-        lbl = "" if lbl is None else str(lbl)
-        Gm2.nodes[vid]["node"] = lastmut_to_node.get(lbl, None)
+        lbl = _norm_label(attrs.get("label", ""))
+        Gm2.nodes[vid]["node"] = label_to_node.get(lbl, None)
 
-    # finalize edge labels + link attrs
+    # finalize labels/links
     label_edges(Gm2)
     transfer_links(Gm2)
 
