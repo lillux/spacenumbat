@@ -1082,7 +1082,7 @@ def get_clone_post(
             post[Z_n_col].to_numpy(),
         )
         out = (
-            post.groupby([cell_col, "clone", "GT", "prior_clone"], as_index=False)
+            post.groupby([cell_col, "clone", "GT", "prior_clone"], as_index=False, dropna=False)  # TODO: just added dropna=False 07/03/2026
             .agg(**{f"l_clone_{suffix}": ("l_clone", "sum")})
         )
         return out
