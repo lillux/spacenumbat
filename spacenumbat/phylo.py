@@ -761,7 +761,7 @@ def get_clone_post(
     nodes_df = pd.DataFrame([
         dict(
             GT=a.get("GT", "") if a.get("GT", "") is not None else "",
-            clone=a.get("clone", np.nan),
+            clone=a.get("clone", 0),
             compartment=a.get("compartment", np.nan),
             leaf=a.get("leaf", False),
         )
@@ -882,7 +882,7 @@ def get_clone_post(
             "p_opt": float(df["p"].to_numpy()[i]),
         })
 
-    opt = merged.groupby(cell_col, as_index=False).apply(_opt_block).reset_index(drop=True)
+    opt = merged.groupby(cell_col, as_index=False).apply(_opt_block, include_groups=False).reset_index(drop=True)
     merged2 = merged.merge(opt, on=cell_col, how="left")
 
     piv_p = merged2.pivot(index=[cell_col, "clone_opt", "GT_opt", "p_opt"], columns="clone", values="p")
