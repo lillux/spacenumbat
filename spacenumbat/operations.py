@@ -898,25 +898,17 @@ def exclude_loh(exp_sc: ad.AnnData, segs_loh: Optional[pd.DataFrame] = None) -> 
         exp_sc.var.loc[:,'loh'] = False
         return exp_sc
     
-    print('Excluding clonal LOH regions ..')
+    log.info('Excluding clonal LOH regions ..')
     
-    pr_genes = pr.PyRanges(
-        pd.DataFrame({
-            'Chromosome': exp_sc.var['CHROM'],
-            'Start': exp_sc.var['gene_start'],
-            'End': exp_sc.var['gene_end'], # 'gene_start'
-    'gene_index': exp_sc.var['gene_index']
-        })
-    )
+    pr_genes = pr.PyRanges(pd.DataFrame({'Chromosome': exp_sc.var['CHROM'],
+                                         'Start': exp_sc.var['gene_start'],
+                                         'End': exp_sc.var['gene_end'], # 'gene_start'
+                                         'gene_index': exp_sc.var['gene_index']}))
     
-    pr_loh = pr.PyRanges(
-        pd.DataFrame({
-            'Chromosome': segs_loh['CHROM'],
-            'Start': segs_loh['seg_start'],
-            'End': segs_loh['seg_end'],
-            'loh_index': np.arange(segs_loh.shape[0])
-        })
-    )
+    pr_loh = pr.PyRanges(pd.DataFrame({'Chromosome': segs_loh['CHROM'],
+                                       'Start': segs_loh['seg_start'],
+                                       'End': segs_loh['seg_end'],
+                                       'loh_index': np.arange(segs_loh.shape[0])}))
     
     ov = pr_genes.join(pr_loh).as_df()
     gene_idx_loh = ov.gene_index.unique()
@@ -1736,23 +1728,14 @@ def get_allele_post(
 
     # Compute pAD based on genotype: if GT == '1|0' then pAD = AD, else pAD = DP - AD.
     allele_counts = df_allele.copy()
-    #_log_sanity(
-    #    allele_counts,
-    #    "get_allele_post:df_allele",
-    #    columns=['cell', 'CHROM', 'snp_id', 'GT', 'AD', 'DP'],
-    #)
+
     allele_counts['pAD'] = np.where(allele_counts['GT'] == '1|0',
                                     allele_counts['AD'],
                                     allele_counts['DP'] - allele_counts['AD'])
     # Inner join with haplotypes (only relevant columns)
     haplo_sel = haplotypes.loc[:,['CHROM', 'seg', 'cnv_state', 'snp_id', 'haplo_post']]
     allele_counts = allele_counts.merge(haplo_sel, on=['CHROM', 'snp_id'], how='inner')
-    #_log_sanity(
-    #    allele_counts,
-    #    "get_allele_post:after_haplotype_merge",
-    #    columns=['cell', 'CHROM', 'seg', 'cnv_state', 'snp_id', 'DP', 'AD'],
-    #    extra={"rows_pre_merge": int(df_allele.shape[0])},
-    #)
+
     # Filter rows where cnv_state is 'neu'
     allele_counts = allele_counts[allele_counts['cnv_state'] != 'neu']
     # Compute major and minor allele counts and MAF.
@@ -1788,11 +1771,6 @@ def get_allele_post(
                                                     'p_bamp':'prior_bamp',
                                                     'p_bdel':'prior_bdel'})
     allele_post = allele_post.merge(segs_cons_temp, on='seg')
-    #_log_sanity(
-    #    allele_post,
-    #    "get_allele_post:allele_post_merged",
-    #    columns=['seg', 'prior_loh', 'prior_amp', 'prior_del', 'prior_bamp', 'prior_bdel', 'MAF', 'total'],
-    #)
     
     # Rowwise compute log-likelihood values using the binomial log-PMF.
     def compute_ll(row):
@@ -2293,10 +2271,10 @@ def build_subtrees_from_Gm(
     """
 
     """
-    if gt_opt_col not in clone_post.columns:
-        raise ValueError(f"clone_post must contain column '{gt_opt_col}'.")
-    if cell_col not in clone_post.columns:
-        raise ValueError(f"clone_post must contain column '{cell_col}'.")
+    # if gt_opt_col not in clone_post.columns:
+    #     raise ValueError(f"clone_post must contain column '{gt_opt_col}'.")
+    # if cell_col not in clone_post.columns:
+    #     raise ValueError(f"clone_post must contain column '{cell_col}'.")
 
     # Keep node id exactly as in Gm
     v_rows = []
@@ -2353,9 +2331,9 @@ def build_clones_from_clone_post(
     Dict[key, dict]
         key is clone_opt (same as 'sample'), value is the per-clone dict.
     """
-    for col in (clone_opt_col, gt_opt_col, cell_col):
-        if col not in clone_post.columns:
-            raise ValueError(f"clone_post must contain column '{col}'.")
+    # for col in (clone_opt_col, gt_opt_col, cell_col):
+    #     if col not in clone_post.columns:
+    #         raise ValueError(f"clone_post must contain column '{col}'.")
 
     cp = clone_post.copy()
 

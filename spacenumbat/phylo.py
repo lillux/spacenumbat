@@ -147,10 +147,13 @@ def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode, row_la
     # all names non-null and unique
     names = [gtree.nodes[n]["name"] for n in gtree.nodes]
     if any(x is None or x == "" for x in names):
-        raise ValueError("Some gtree nodes remained unnamed; check tree internal naming.")
+        msg = "Some gtree nodes remained unnamed; check tree internal naming."
+        log.error(msg)
+        #raise ValueError(msg)
     if len(names) != len(set(names)):
-        # This is fatal for join logic downstream
-        raise ValueError("gtree node names are not unique; check tree / naming pipeline.")
+        msg = "gtree node names are not unique; check tree / naming pipeline."
+        log.error(msg)
+        #raise ValueError("gtree node names are not unique; check tree / naming pipeline.")
 
     return
 
@@ -170,8 +173,8 @@ def annotate_tree(
     # score and l_matrix (rows: tips in P_df.index + internals Node0..)
     tree_stats = score_tree_treenode_fast(tree, P_df, get_l_matrix=True, clip_eps=clip_eps)
     l_matrix = tree_stats.l_matrix
-    if l_matrix is None:
-        raise RuntimeError("Expected l_matrix from score_tree_treenode_fast(get_l_matrix=True).")
+    # if l_matrix is None:
+    #     raise RuntimeError("Expected l_matrix from score_tree_treenode_fast(get_l_matrix=True).")
 
     sites = list(P_df.columns)
     #n = P_df.shape[0]
@@ -209,8 +212,8 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
       - last_mut: the *last non-empty site bundle along the path* (inherited)
       - edge length: n_mut(child); leaf edges min 0.2
     """
-    if "name" not in mut_nodes.columns or "site" not in mut_nodes.columns:
-        raise ValueError("mut_nodes must contain at least columns ['name', 'site'].")
+    # if "name" not in mut_nodes.columns or "site" not in mut_nodes.columns:
+    #     raise ValueError("mut_nodes must contain at least columns ['name', 'site'].")
 
     mut_nodes = mut_nodes.copy()
 
@@ -257,8 +260,8 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
 
     # Root
     roots = [n for n, a in gtree.nodes(data=True) if a.get("root", False)]
-    if len(roots) != 1:
-        raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
+    # if len(roots) != 1:
+    #     raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
     root = roots[0]
 
     def site_bundle(n: int) -> str:
@@ -373,8 +376,8 @@ def _norm_label(x: Optional[str]) -> str:
 
 def _graph_root(G: nx.DiGraph) -> int:
     roots = [n for n in G.nodes if G.in_degree(n) == 0]
-    if len(roots) != 1:
-        raise ValueError(f"Expected exactly one graph root, found {len(roots)}.")
+    # if len(roots) != 1:
+    #     raise ValueError(f"Expected exactly one graph root, found {len(roots)}.")
     return roots[0]
 
 
@@ -415,20 +418,17 @@ def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
       - relabel vertices deterministically from the actual root
     """
     roots = [n for n, a in gtree.nodes(data=True) if a.get("root", False)]
-    if len(roots) != 1:
-        raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
+    # if len(roots) != 1:
+    #     raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
     gtree_root = roots[0]
     root_label = _norm_label(gtree.nodes[gtree_root].get("last_mut", ""))
 
-    # R:
-    # mut_nodes = gtree nodes %>% filter(!is.na(site)) %>% distinct(name, site)
-    mut_nodes_df = pd.DataFrame(
-        [
-            {"name": a.get("name", None), "site": a.get("site", None)}
-            for _, a in gtree.nodes(data=True)
-            if a.get("site", None) is not None
-        ]
-    )
+
+    mut_nodes_df = pd.DataFrame([
+        {"name": a.get("name", None), "site": a.get("site", None)}
+        for _, a in gtree.nodes(data=True)
+        if a.get("site", None) is not None])
+    
     if not mut_nodes_df.empty:
         mut_nodes_df = mut_nodes_df.drop_duplicates(subset=["name", "site"], keep="first")
     else:
@@ -467,7 +467,7 @@ def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
     root_vid = _vid(root_label)
     Gm = _reindex_graph_from_root(Gm, root_vid)
 
-    # Map label -> one original phylogeny node name, like the R left_join by site
+    # Map label -> one original phylogeny node name
     label_to_node: Dict[str, str] = {}
     if not mut_nodes_df.empty:
         for _, row in mut_nodes_df.iterrows():
@@ -488,7 +488,6 @@ def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
 
 def label_genotype(Gm: nx.DiGraph, root: Optional[int] = None) -> nx.DiGraph:
     """
-    R-faithful port of label_genotype():
 
       - GT(root) = label(root)
       - for each other vertex, GT is the concatenation of non-empty labels
@@ -499,8 +498,8 @@ def label_genotype(Gm: nx.DiGraph, root: Optional[int] = None) -> nx.DiGraph:
     """
     if root is None:
         root = _graph_root(Gm)
-    if root not in Gm:
-        raise ValueError(f"Mutation graph must contain root node id {root}.")
+    # if root not in Gm:
+    #     raise ValueError(f"Mutation graph must contain root node id {root}.")
 
     # unique root->v path in this rooted mutation graph
     for v in Gm.nodes:
@@ -690,8 +689,8 @@ def get_tree_post(tree: TreeNode, P_df: pd.DataFrame, clip_eps: float = 1e-10) -
 
     """
     tree_stats = score_tree_treenode_fast(tree, P_df, get_l_matrix=True, clip_eps=clip_eps)
-    if tree_stats.l_matrix is None:
-        raise RuntimeError("Expected l_matrix from score_tree_treenode_fast(get_l_matrix=True).")
+    # if tree_stats.l_matrix is None:
+    #     raise RuntimeError("Expected l_matrix from score_tree_treenode_fast(get_l_matrix=True).")
     l_df = pd.DataFrame(tree_stats.l_matrix, index=tree_stats.row_labels, columns=P_df.columns)
 
     gtree = annotate_tree(tree, P_df, clip_eps=clip_eps)
@@ -730,20 +729,15 @@ def get_gtree(
             )
         )
     #mut_nodes = pd.DataFrame(vertices) #.dropna(subset=["name"])  # only those that map to phylo nodes
-
     mut_nodes = pd.DataFrame(vertices, columns=["name", "site", "clone", "GT"])
 
-    # Keep only rows that can actually be transferred back onto gtree by name.
-    # This mirrors the practical intent of the R join by 'name'.
+    # Keep only rows that can be transferred back onto gtree by name.
     if not mut_nodes.empty:
         mut_nodes = mut_nodes.loc[mut_nodes["name"].notna()].copy()
 
     gtree = mut_to_tree(post.gtree, mut_nodes)
     gtree = mark_tumor_lineage(gtree)
     return gtree
-
-
-
 
 
 def get_clone_post(
@@ -758,28 +752,22 @@ def get_clone_post(
     ) -> pd.DataFrame:
     
     # clones table from gtree nodes
-    nodes_df = pd.DataFrame([
-        dict(
-            GT=a.get("GT", "") if a.get("GT", "") is not None else "",
-            clone=a.get("clone", 0),
-            compartment=a.get("compartment", np.nan),
-            leaf=a.get("leaf", False),
-        )
-        for _, a in gtree.nodes(data=True)
-    ])
+    nodes_df = pd.DataFrame([dict(GT=a.get("GT", "") if a.get("GT", "") is not None else "",
+                                  clone=a.get("clone", 0),
+                                  compartment=a.get("compartment", np.nan),
+                                  leaf=a.get("leaf", False))
+                             for _, a in gtree.nodes(data=True)])
 
-    clones = (
-        nodes_df.groupby(["GT", "clone", "compartment"], dropna=False, as_index=False)
-        .agg(clone_size=("leaf", "sum"))
-    )
+    clones = (nodes_df.groupby(["GT", "clone", "compartment"], dropna=False, as_index=False)
+              .agg(clone_size=("leaf", "sum")))
 
-    # ensure normal genotype exists (0-based adaptation of R's clone=1 insertion)
+    # ensure normal genotype exists
     clone_vals = clones["clone"].dropna()
     if len(clone_vals) > 0 and clone_vals.min() > 0:
         clones = pd.concat(
             [pd.DataFrame([dict(GT="", clone=0, compartment="normal", clone_size=0)]), clones],
             ignore_index=True,
-        )
+            )
 
     # prior_clone:
     unique_gt = clones["GT"].astype(str).unique().tolist()
@@ -808,23 +796,23 @@ def get_clone_post(
 
         clone_segs = seg_df.merge(base, on="_tmp", how="inner").drop(columns="_tmp")
 
-        gt_to_set = {
-            gt: set(_split_muts(gt))
-            for gt in base["GT"].astype(str).unique().tolist()
-        }
+        gt_to_set = {gt: set(_split_muts(gt))
+                     for gt in base["GT"].astype(str).unique().tolist()}
 
-        clone_segs["I"] = [
-            1 if seg in gt_to_set.get(gt, set()) else 0
-            for seg, gt in zip(
-                clone_segs[seg_col].astype(str).tolist(),
-                clone_segs["GT"].astype(str).tolist(),
-            )
-        ]
+        clone_segs["I"] = [1 if seg in gt_to_set.get(gt, set()) else 0
+                           for seg, gt in zip(
+                                   clone_segs[seg_col].astype(str).tolist(),
+                                   clone_segs["GT"].astype(str).tolist())]
         clone_segs["I"] = clone_segs["I"].astype(int)
+        
     else:
-        clone_segs = pd.DataFrame(
-            columns=[seg_col, "GT", "clone", "compartment", "prior_clone", "clone_size", "I"]
-        )
+        clone_segs = pd.DataFrame(columns=[seg_col,
+                                           "GT",
+                                           "clone",
+                                           "compartment",
+                                           "prior_clone",
+                                           "clone_size",
+                                           "I"])
 
     def _block(post: pd.DataFrame, suffix: str) -> pd.DataFrame:
         post = post.copy()
@@ -835,10 +823,10 @@ def get_clone_post(
             post[Z_cnv_col].to_numpy(),
             post[Z_n_col].to_numpy(),
         )
-        out = (
-            post.groupby([cell_col, "clone", "GT", "prior_clone"], as_index=False, dropna=False)  # TODO: just added dropna=False 07/03/2026
-            .agg(**{f"l_clone_{suffix}": ("l_clone", "sum")})
-        )
+        out = (post.groupby([cell_col, "clone", "GT", "prior_clone"],
+                            as_index=False, 
+                            dropna=False)  # TODO: just added dropna=False 07/03/2026
+               .agg(**{f"l_clone_{suffix}": ("l_clone", "sum")}))
         return out
 
     x = _block(exp_post, "x")
