@@ -556,8 +556,7 @@ def main():
         )
 
         out_tsv_gz = os.path.join(args.outdir, f"{sample}_allele_counts.tsv.gz")
-        df_allele.to_csv(out_tsv_gz, sep="\t", index=False, compression="gzip")
-
+        df_allele.to_csv(out_tsv_gz, sep="\t", index=False, compression="gzip", na_rep="nan")
     print("All done!")
 
 
