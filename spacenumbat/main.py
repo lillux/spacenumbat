@@ -39,7 +39,7 @@ def run_numbat(
     min_cells=50,
     tau=0.3,
     nu=1,
-    max_cost=0,
+    max_cost=None,
     n_cut=0,
     min_depth=0,
     common_diploid=True,
@@ -104,8 +104,8 @@ def run_numbat(
     min_genes : int, optional
         Minimum number of genes to call a segment. Default is 10.
     max_cost : float, optional
-        Likelihood threshold to collapse internal branches. Default is set to the number of cells
-        in count_mat multiplied by tau.
+        Likelihood threshold to collapse internal branches. 
+        Default is set to None, and calculated as the cells in count_mat multiplied by tau.
     n_cut : int, optional
         Number of cuts on the phylogeny to define subclones. Default is 0.
     tau : float, optional
@@ -220,6 +220,10 @@ def run_numbat(
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
+    if max_cost == None:
+        max_cost = count_mat.shape[0]*tau
+        
+        
     count_mat = utils.check_anndata(count_mat, count_to_int=False)
     df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
     df_allele = utils.check_allele_df(df_allele)
