@@ -303,17 +303,16 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
             if (gtree.nodes[v]["GT"] == "") and (gtree.nodes[v].get("site", None) is not None):
                 gtree.nodes[v]["GT"] = str(gtree.nodes[v]["site"])
 
-    if "GT" in mut_nodes.columns and "clone" in mut_nodes.columns:
-        gt_to_clone = (
-            mut_nodes.dropna(subset=["GT"])
-            .astype({"GT": str})
-            .set_index("GT")["clone"]
-            .to_dict()
-        )
-        for nid, attrs in gtree.nodes(data=True):
-            gt = attrs.get("GT", "") or ""
-            if gt in gt_to_clone:
-                gtree.nodes[nid]["clone"] = int(gt_to_clone[gt])
+    # canonicalize clone ids on the full gtree to keep GT<->clone one-to-one.
+    gtree_nodes = pd.DataFrame(
+        [{"GT": attrs.get("GT", "") if attrs.get("GT", "") is not None else "",
+          "clone": attrs.get("clone", np.nan)}
+         for _, attrs in gtree.nodes(data=True)]
+    )
+    gt_to_clone = _build_canonical_gt_clone_map(gtree_nodes["GT"], gtree_nodes["clone"])
+    for nid, attrs in gtree.nodes(data=True):
+        gt = _normalize_gt(attrs.get("GT", ""))
+        gtree.nodes[nid]["clone"] = int(gt_to_clone.get(gt, 0))
 
     return gtree
 
@@ -513,6 +512,46 @@ def label_genotype(Gm: nx.DiGraph, root: Optional[int] = None) -> nx.DiGraph:
         Gm.nodes[v]["clone"] = i
 
     return Gm
+
+
+def _normalize_gt(gt: Any) -> str:
+    if gt is None or (isinstance(gt, float) and np.isnan(gt)):
+        return ""
+    s = str(gt).strip()
+    return "" if s.lower() == "nan" else s
+
+
+def _build_canonical_gt_clone_map(gt_series: pd.Series, clone_series: pd.Series) -> Dict[str, int]:
+    """
+    Build a 1:1 GT->clone map with the invariant:
+      - empty genotype ("") is clone 0
+      - non-empty genotypes are assigned unique positive clone ids
+    Existing non-zero clone ids are reused when unambiguous.
+    """
+    tmp = pd.DataFrame({"GT": gt_series.map(_normalize_gt), "clone": clone_series})
+    tmp = tmp.drop_duplicates()
+
+    out: Dict[str, int] = {"": 0}
+    used: set[int] = {0}
+
+    for gt in sorted([x for x in tmp["GT"].unique().tolist() if x != ""]):
+        cand = (
+            tmp.loc[(tmp["GT"] == gt) & tmp["clone"].notna(), "clone"]
+            .astype(int)
+            .tolist()
+        )
+        cand = [c for c in cand if c > 0]
+        chosen = min(cand) if cand else None
+        if chosen in used:
+            chosen = None
+        if chosen is None:
+            chosen = 1
+            while chosen in used:
+                chosen += 1
+        out[gt] = int(chosen)
+        used.add(int(chosen))
+
+    return out
 
 
 def _merge_two_vertices(
@@ -751,19 +790,21 @@ def get_clone_post(
     Z_n_col: str = "Z_n",
     ) -> pd.DataFrame:
     
-    # clones table from gtree nodes
-    nodes_df = pd.DataFrame([dict(GT=a.get("GT", "") if a.get("GT", "") is not None else "",
-                                  clone=a.get("clone", 0),
+    # clones table from gtree nodes; canonicalize GT<->clone mapping first.
+    nodes_df = pd.DataFrame([dict(GT=_normalize_gt(a.get("GT", "")),
+                                  clone=a.get("clone", np.nan),
                                   compartment=a.get("compartment", np.nan),
                                   leaf=a.get("leaf", False))
                              for _, a in gtree.nodes(data=True)])
 
+    gt_to_clone = _build_canonical_gt_clone_map(nodes_df["GT"], nodes_df["clone"])
+    nodes_df["clone"] = nodes_df["GT"].map(gt_to_clone).astype(int)
+
     clones = (nodes_df.groupby(["GT", "clone", "compartment"], dropna=False, as_index=False)
               .agg(clone_size=("leaf", "sum")))
 
-    # ensure normal genotype exists
-    clone_vals = clones["clone"].dropna()
-    if len(clone_vals) > 0 and clone_vals.min() > 0:
+    # ensure normal genotype exists exactly once
+    if "" not in clones["GT"].tolist():
         clones = pd.concat(
             [pd.DataFrame([dict(GT="", clone=0, compartment="normal", clone_size=0)]), clones],
             ignore_index=True,
