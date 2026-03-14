@@ -18,7 +18,9 @@ import skbio
 from skbio import DistanceMatrix
 from skbio.tree import TreeNode
 
-
+from spacenumbat._log import get_logger
+log = get_logger(__name__)
+#log.info("This is an info message.")
 
 def _subtree_key(node: TreeNode) -> Tuple[int, str]:
     tips = list(node.tips()) if not node.is_tip() else [node]
@@ -172,12 +174,13 @@ def _propagate_logQ_numba(logQ: np.ndarray, child1: np.ndarray, child2: np.ndarr
         c1 = child1[i]
         c2 = child2[i]
         logQ[uid, :] = logQ[c1, :] + logQ[c2, :]
+        
+    return
 
 
 def compute_logQ_for_tree(
     plan: ScorePlan,
     P_df: pd.DataFrame,
-    *,
     clip_eps: float = 1e-10,
     ) -> Tuple[np.ndarray, float]:
     """
@@ -428,7 +431,7 @@ def perform_nni_ml_greedy_local(
         edges = internal_edges_for_rooted_nni(cur)
         if not edges:
             if verbose:
-                print(f"[NNI-local] no internal edges at iter={it}, score={cur_score:.6g}")
+                log.info(f"[NNI-local] no internal edges at iter={it}, score={cur_score:.6g}")
             break
 
         p2_rows, e1_rows, e2_rows, e3_rows = build_nni_edge_arrays(cur, node_to_row)
@@ -446,7 +449,7 @@ def perform_nni_ml_greedy_local(
         # Convergence check
         if (best_score - cur_score) <= eps:
             if verbose:
-                print(f"[NNI-local] converge at iter={it}, score={cur_score:.6g}")
+                log.info(f"[NNI-local] converge at iter={it}, score={cur_score:.6g}")
             break
 
         # Apply the best move IN PLACE (no copies)
@@ -468,7 +471,7 @@ def perform_nni_ml_greedy_local(
         history.append(cur.copy())
 
         if verbose:
-            print(f"[NNI-local] iter={it}, score={best_score:.6g}, move=edge#{best_edge}, cand={best_cand}")
+            log.info(f"[NNI-local] iter={it}, score={best_score:.6g}, move=edge#{best_edge}, cand={best_cand}")
 
     return history
 
