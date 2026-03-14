@@ -199,12 +199,12 @@ def preprocess_allele(
     DP: sp.spmatrix,
     barcodes: List[str],
     gtf: pd.DataFrame,
-    gmap: pd.DataFrame,
+    gmap: str,
     ) -> pd.DataFrame:
     """
     Preprocess allele counts and annotations for one sample.
 
-    This function combines per-cell allele depths from pileup (DP, AD) 
+    This function combines per-cell allele depths from pileup (DP, AD)
     with SNP-level information from the pileup VCF
     and phased genotypes from Eagle2, then annotates SNPs with gene and genetic
     map positions and keeps only heterozygous SNPs.
@@ -232,9 +232,9 @@ def preprocess_allele(
     gtf : pandas.DataFrame
         Gene annotation with at least columns:
         ['CHROM', 'gene_start', 'gene_end', 'gene'].
-    gmap : pandas.DataFrame
-        Genetic map with at least columns:
-        ['CHROM', 'start', 'end', 'cM'].
+    gmap : str
+        Path to genetic map file with columns:
+        CHROM, POS, rate, cM.
 
     Returns
     -------
@@ -258,31 +258,31 @@ def preprocess_allele(
         ad_dp_oth.columns = ["AD", "DP", "OTH"]
         vcf_pu[["AD", "DP", "OTH"]] = ad_dp_oth.astype("Int64")
 
-    vcf_pu["snp_id"] = (vcf_pu["CHROM"].astype(str) + "_"
-                        + vcf_pu["POS"].astype(str) + "_"
-                        + vcf_pu["REF"].astype(str) + "_"
-                        + vcf_pu["ALT"].astype(str))
+    vcf_pu["snp_id"] = (
+        vcf_pu["CHROM"].astype(str) + "_"
+        + vcf_pu["POS"].astype(str) + "_"
+        + vcf_pu["REF"].astype(str) + "_"
+        + vcf_pu["ALT"].astype(str)
+    )
 
     # Convert DP and AD sparse matrices into long format
-    # DP
     dp_coo = DP.tocoo()
-    dp_df = pd.DataFrame({"i": dp_coo.row,
-                          "j": dp_coo.col,
-                          "DP": dp_coo.data,
-                          })
-    
+    dp_df = pd.DataFrame({
+        "i": dp_coo.row,
+        "j": dp_coo.col,
+        "DP": dp_coo.data,
+    })
     dp_df["cell"] = [barcodes[j] for j in dp_df["j"]]
     snp_ids = vcf_pu["snp_id"].to_numpy()
     dp_df["snp_id"] = snp_ids[dp_df["i"].values]
     dp_df = dp_df.drop(columns=["i", "j"])[["cell", "snp_id", "DP"]]
 
-    # AD
     ad_coo = AD.tocoo()
-    ad_df = pd.DataFrame({"i": ad_coo.row,
-                          "j": ad_coo.col,
-                          "AD": ad_coo.data,
-                          })
-    
+    ad_df = pd.DataFrame({
+        "i": ad_coo.row,
+        "j": ad_coo.col,
+        "AD": ad_coo.data,
+    })
     ad_df["cell"] = [barcodes[j] for j in ad_df["j"]]
     ad_df["snp_id"] = snp_ids[ad_df["i"].values]
     ad_df = ad_df.drop(columns=["i", "j"])[["cell", "snp_id", "AD"]]
@@ -308,92 +308,106 @@ def preprocess_allele(
 
     # Process phased VCF and attach sample genotypes
     vcf_phased = vcf_phased.copy()
-    vcf_phased["snp_id"] = (vcf_phased["CHROM"].astype(str) + "_"
-                            + vcf_phased["POS"].astype(str) + "_"
-                            + vcf_phased["REF"].astype(str) + "_"
-                            + vcf_phased["ALT"].astype(str))
+    vcf_phased["snp_id"] = (
+        vcf_phased["CHROM"].astype(str) + "_"
+        + vcf_phased["POS"].astype(str) + "_"
+        + vcf_phased["REF"].astype(str) + "_"
+        + vcf_phased["ALT"].astype(str)
+    )
     vcf_phased["GT"] = vcf_phased[sample]
 
     # Annotate SNPs with gene information via overlaps
-    # PyRanges for SNPs
     vcf_phased = vcf_phased.reset_index(drop=True)
     vcf_phased["snp_index_tmp"] = np.arange(len(vcf_phased))
 
-    pr_snps = pr.PyRanges(pd.DataFrame({"Chromosome": vcf_phased["CHROM"].astype(str),
-                                        "Start": vcf_phased["POS"].astype(int),
-                                        "End": vcf_phased["POS"].astype(int),
-                                        "snp_index_tmp": vcf_phased["snp_index_tmp"],
-                                        }))
+    pr_snps = pr.PyRanges(pd.DataFrame({
+        "Chromosome": vcf_phased["CHROM"].astype(str),
+        "Start": vcf_phased["POS"].astype(int),
+        "End": vcf_phased["POS"].astype(int),
+        "snp_index_tmp": vcf_phased["snp_index_tmp"],
+    }))
 
-    # PyRanges for genes
     gtf_tmp = gtf.reset_index(drop=True).copy()
     gtf_tmp["gene_index_tmp"] = np.arange(len(gtf_tmp))
 
-    pr_genes = pr.PyRanges(pd.DataFrame({"Chromosome": gtf_tmp["CHROM"].astype(str),
-                                         "Start": gtf_tmp["gene_start"].astype(int),
-                                         "End": gtf_tmp["gene_end"].astype(int),
-                                         "gene_index_tmp": gtf_tmp["gene_index_tmp"],
-                                         }))
+    pr_genes = pr.PyRanges(pd.DataFrame({
+        "Chromosome": gtf_tmp["CHROM"].astype(str),
+        "Start": gtf_tmp["gene_start"].astype(int),
+        "End": gtf_tmp["gene_end"].astype(int),
+        "gene_index_tmp": gtf_tmp["gene_index_tmp"],
+    }))
 
     ov = pr_snps.join(pr_genes).as_df()
     if not ov.empty:
         ov = ov[["snp_index_tmp", "gene_index_tmp"]]
-        ov = ov.merge(vcf_phased[["snp_index_tmp", "snp_id"]],
-                      on="snp_index_tmp",
-                      how="left",
-                      )
-        ov = ov.merge(gtf_tmp[["gene_index_tmp", "gene", "gene_start", "gene_end"]],
-                      on="gene_index_tmp",
-                      how="left",
-                      )
-        # sort by snp_index_tmp and gene name, keep first gene per SNP
-        ov = (ov.sort_values(["snp_index_tmp", "gene"]).drop_duplicates(subset="snp_index_tmp", keep="first"))
-        vcf_phased = vcf_phased.merge(ov[["snp_id", "gene", "gene_start", "gene_end"]],
-                                      on="snp_id",
-                                      how="left",
-                                      )
+        ov = ov.merge(
+            vcf_phased[["snp_index_tmp", "snp_id"]],
+            on="snp_index_tmp",
+            how="left",
+        )
+        ov = ov.merge(
+            gtf_tmp[["gene_index_tmp", "gene", "gene_start", "gene_end"]],
+            on="gene_index_tmp",
+            how="left",
+        )
+        ov = ov.sort_values(["snp_index_tmp", "gene"]).drop_duplicates(
+            subset="snp_index_tmp",
+            keep="first",
+        )
+        vcf_phased = vcf_phased.merge(
+            ov[["snp_id", "gene", "gene_start", "gene_end"]],
+            on="snp_id",
+            how="left",
+        )
     else:
         vcf_phased["gene"] = np.nan
         vcf_phased["gene_start"] = np.nan
         vcf_phased["gene_end"] = np.nan
 
-    # Annotate SNPs with genetic map cM
-    gmap_tmp = pd.read_csv(gmap, sep=" ")
+    # Annotate SNPs with genetic map cM using interpolation
+    gmap_tmp = pd.read_csv(gmap, sep=r"\s+", header=None, engine="python")
     gmap_tmp.columns = ["CHROM", "POS", "rate", "cM"]
-    gmap_tmp = gmap_tmp.reset_index(drop=True).copy()
-    gmap_tmp["map_index_tmp"] = np.arange(len(gmap_tmp))
-    gmap_tmp["start"] = gmap_tmp["POS"]
-    gmap_tmp["end"] = (gmap_tmp.groupby("CHROM", sort=False)["POS"].transform(lambda s: s.shift(-1).fillna(s.iloc[-1])))
 
-    pr_snps2 = pr.PyRanges(
-        pd.DataFrame({"Chromosome": vcf_phased["CHROM"].astype(str),
-                      "Start": vcf_phased["POS"].astype(int),
-                      "End": vcf_phased["POS"].astype(int),
-                      "marker_index_tmp": vcf_phased["snp_index_tmp"],
-                      }))
+    gmap_tmp["CHROM"] = (
+        gmap_tmp["CHROM"]
+        .astype(str)
+        .str.replace("^chr", "", regex=True)
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    gmap_tmp["POS"] = pd.to_numeric(gmap_tmp["POS"], errors="coerce")
+    gmap_tmp["cM"] = pd.to_numeric(gmap_tmp["cM"], errors="coerce")
+    gmap_tmp = gmap_tmp.dropna(subset=["CHROM", "POS", "cM"]).copy()
+    gmap_tmp = gmap_tmp.sort_values(["CHROM", "POS"]).drop_duplicates(["CHROM", "POS"])
 
-    pr_map = pr.PyRanges(pd.DataFrame({"Chromosome": gmap_tmp["CHROM"].astype(str),
-                                       "Start": gmap_tmp["start"].astype(int),
-                                       "End": gmap_tmp["end"].astype(int),
-                                       "map_index_tmp": gmap_tmp["map_index_tmp"],
-                                       "cM": gmap_tmp["cM"].astype(float),
-                                       }))
+    vcf_phased["cM"] = np.nan
 
-    ov_map = pr_snps2.join(pr_map).as_df()
-    if not ov_map.empty:
-        # PyRanges join gives Start/End for SNP (un-suffixed) and map (Start_b/End_b)
-        ov_map = ov_map[["marker_index_tmp", "Start_b", "cM"]]
-        ov_map = (ov_map.sort_values(["marker_index_tmp", "Start_b"], ascending=[True, False]).drop_duplicates(subset="marker_index_tmp", keep="first"))
-        marker_map = ov_map.rename(columns={"marker_index_tmp": "snp_index_tmp"})[["snp_index_tmp", "cM"]]
-        vcf_phased = vcf_phased.merge(marker_map, on="snp_index_tmp", how="left")
-    else:
-        vcf_phased["cM"] = np.nan
+    for chrom, idx in vcf_phased.groupby("CHROM").groups.items():
+        gm = gmap_tmp[gmap_tmp["CHROM"] == str(chrom)]
+        if gm.empty:
+            continue
+
+        snp_idx = list(idx)
+        snp_pos = vcf_phased.loc[snp_idx, "POS"].astype(float).to_numpy()
+        map_pos = gm["POS"].astype(float).to_numpy()
+        map_cm = gm["cM"].astype(float).to_numpy()
+
+        if len(map_pos) == 1:
+            vcf_phased.loc[snp_idx, "cM"] = map_cm[0]
+        else:
+            vcf_phased.loc[snp_idx, "cM"] = np.interp(
+                snp_pos,
+                map_pos,
+                map_cm,
+                left=map_cm[0],
+                right=map_cm[-1],
+            )
 
     # Merge phased annotations into cell-wise counts and filter hets
-    df = df.merge(vcf_phased[["snp_id", "gene", "GT", "cM"]],
-                  on="snp_id",
-                  how="left",
-                  )
+    df = df.merge(
+        vcf_phased[["snp_id", "gene", "GT", "cM"]],
+        on="snp_id",
+        how="left",
+    )
 
     df_out = df[["cell", "snp_id", "CHROM", "POS", "cM", "REF", "ALT", "AD", "DP", "GT", "gene"]]
     df_out = df_out[df_out["GT"].isin(["1|0", "0|1"])].reset_index(drop=True)
