@@ -1418,15 +1418,16 @@ def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
     segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)
     segs_neu['seg_end'] = neu.max('POS').dropna().loc[:,'POS']
 
-    # Use PyRanges to reduce intervals
+    # Use PyRanges to reduce intervals (PyRanges uses 0-based, end-exclusive coordinates).
     gr = pr.PyRanges(chromosomes=segs_neu['CHROM'].astype("string"),
                      starts=segs_neu['seg_start'],
-                     ends=segs_neu['seg_end'])
+                     ends=segs_neu['seg_end'] + 1)
     gr_reduced = gr.merge()  # equivalent to reduce in GenomicRanges
     segs_neu_reduced = gr_reduced.as_df()
 
     segs_neu_reduced = segs_neu_reduced.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
-    segs_neu_reduced['seg_length'] = segs_neu_reduced['seg_end'] - segs_neu_reduced['seg_start']
+    segs_neu_reduced['seg_end'] = segs_neu_reduced['seg_end'] - 1
+    segs_neu_reduced['seg_length'] = segs_neu_reduced['seg_end'] - segs_neu_reduced['seg_start'] + 1
 
     return segs_neu_reduced
 
@@ -1899,12 +1900,13 @@ def find_common_diploid(
         gr = pr.PyRanges(pd.DataFrame({
             'Chromosome': imbal['CHROM'],
             'Start': imbal['seg_start'],
-            'End': imbal['seg_end']
+            'End': imbal['seg_end'] + 1
         }))
         
-        reduced = gr.merge(slack=1)  # Union of imbalanced segments
+        reduced = gr.merge()  # Union of imbalanced segments
         segs_imbal = reduced.df.rename(columns={'Chromosome': 'CHROM', 'Start': 'seg_start', 'End': 'seg_end'})
-        segs_imbal['seg_length'] = segs_imbal['seg_end'] - segs_imbal['seg_start']
+        segs_imbal['seg_end'] = segs_imbal['seg_end'] - 1
+        segs_imbal['seg_length'] = segs_imbal['seg_end'] - segs_imbal['seg_start'] + 1
         segs_imbal.CHROM = segs_imbal['CHROM'].astype("string")
         # Assign segment names and cnv_state
         segs_imbal = segs_imbal.sort_values(['CHROM', 'seg_start'], key=natsort.natsort_keygen())
@@ -3539,7 +3541,6 @@ def annot_theta_mle(bulk: pd.DataFrame) -> pd.DataFrame:
     # left-join back to bulk
     out = bulk.merge(theta_est, on=["CHROM", "seg"], how="left")
     return out
-
 
 
 
