@@ -414,7 +414,7 @@ def get_segs_consensus(
             pr_cnv = pr.PyRanges(
                 pd.DataFrame({'Chromosome': segs_cnv['CHROM'],
                               'Start': segs_cnv['seg_start'],
-                              'End': segs_cnv['seg_end']
+                              'End': segs_cnv['seg_end'] + 1
                               })
                 ).merge()
             
@@ -426,7 +426,7 @@ def get_segs_consensus(
                 pr_star = pr.PyRanges(
                     pd.DataFrame({'Chromosome': segs_star['CHROM'],
                                   'Start': segs_star['seg_start'],
-                                  'End': segs_star['seg_end']
+                                  'End': segs_star['seg_end'] + 1
                                   })
                     ).merge()
             
@@ -438,6 +438,7 @@ def get_segs_consensus(
                     df_retest = pd.DataFrame(columns=["CHROM", "seg_start", "seg_end", "cnv_state", "cnv_state_post"])
             else:
                 df_retest = df_retest[(df_retest['End'] - df_retest['Start']) > 0]
+                df_retest['End'] = df_retest['End'] - 1
                 # add cnv_state 'retest'
                 df_retest['cnv_state'] = 'retest'
                 df_retest['cnv_state_post'] = 'retest'
@@ -457,13 +458,14 @@ def get_segs_consensus(
         pr_neu = pr.PyRanges(
             pd.DataFrame({'Chromosome': segs_neu_input['CHROM'],
                           'Start': segs_neu_input['seg_start'],
-                          'End': segs_neu_input['seg_end']
+                          'End': segs_neu_input['seg_end'] + 1
                           })
             ).merge()
         
         df_neu = pr_neu.as_df()
+        df_neu['End'] = df_neu['End'] - 1
         df_neu = df_neu.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
-        df_neu['seg_length'] = df_neu['seg_end']-df_neu['seg_start']
+        df_neu['seg_length'] = df_neu['seg_end'] - df_neu['seg_start'] + 1
         df_neu.CHROM = df_neu.CHROM.astype("string") # TODO: just added 19/02/2026
     
     # if all segs_all['cnv_state'] == 'neu'
