@@ -803,7 +803,9 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     
     # Alternative pyranges usage
     # bulk_ranges
-    bulk.loc[:,'End'] = bulk.POS
+    #bulk.loc[:,'End'] = bulk.POS
+    bulk.loc[:,'End'] = bulk.POS + 1 # new 03/18/26
+
     bulk = bulk.rename(columns={'CHROM':'Chromosome', 'POS':'Start'})
     #bulk["Start"] = bulk["Start"]
     
@@ -811,12 +813,13 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     
     # segs_consensus_ranges
     segs_consensus = segs_consensus.rename(columns={'CHROM':'Chromosome', 'seg_start':'Start', 'seg_end':'End'})
+    segs_consensus.loc[:, 'End'] = segs_consensus['End'] + 1  # new 03/18/26
     segs_consensus_ranges = pr.PyRanges(df=segs_consensus) 
     
     # Find overlaps between bulk and segs_consensus
-    overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1) # original implementation from me
-    #overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=0) # TODO: just added
-    #overlaps = bulk_ranges.join(segs_consensus_ranges, how='left', slack=1) # TODO: just added # last
+    #overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=1) # original implementation from me
+    overlaps = segs_consensus_ranges.join(bulk_ranges, how='left', slack=0) # new 03/18/26
+
     overlaps_df = overlaps.df
     
     # # renaming
@@ -828,6 +831,9 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     if ('Start_b' in overlaps_df.columns) and ('End_b' in overlaps_df.columns):
         overlaps_df = overlaps_df.drop(columns=['Start_b', 'End_b'])
     overlaps_df = overlaps_df.rename(columns={'Chromosome':'CHROM','Start':'seg_start', 'End':'seg_end'})
+    if 'seg_end' in overlaps_df.columns:
+        overlaps_df['seg_end'] = overlaps_df['seg_end'] - 1
+
     # # Remove duplicates of snp_id, keeping the first occurrence
     overlaps_df = overlaps_df.drop_duplicates(subset='snp_id')
     overlaps_df["CHROM"] = overlaps_df["CHROM"].astype("string")
