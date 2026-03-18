@@ -1411,20 +1411,22 @@ def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
     - Reduction is performed via ``PyRanges.merge()``.
     - Coordinates are taken directly from 'POS' min/max per neutral segment.
     """
+    
     neu = bulks[bulks['cnv_state'] == 'neu'].copy()
-
+    
     neu = neu.groupby(['sample','seg','CHROM'], sort=False, as_index=False, observed=True)
-    segs_neu = neu.min('POS').dropna().loc[:, ['sample', 'seg', 'CHROM', 'POS']]
-    segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)
-    segs_neu['seg_end'] = neu.max('POS').dropna().loc[:,'POS']
-
-    # Use PyRanges to reduce intervals (PyRanges uses 0-based, end-exclusive coordinates).
+    segs_neu = neu.min('POS').loc[:, ['sample', 'seg', 'CHROM', 'POS']]
+    segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)    
+    segs_neu['seg_end'] = neu.max('POS').loc[:,'POS']
+    segs_neu = segs_neu.dropna()
+    
+    ## Use PyRanges to reduce intervals (PyRanges uses 0-based, end-exclusive coordinates).
     gr = pr.PyRanges(chromosomes=segs_neu['CHROM'].astype("string"),
                      starts=segs_neu['seg_start'],
                      ends=segs_neu['seg_end'] + 1)
-    gr_reduced = gr.merge()  # equivalent to reduce in GenomicRanges
+    gr_reduced = gr.merge()
     segs_neu_reduced = gr_reduced.as_df()
-
+    
     segs_neu_reduced = segs_neu_reduced.rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
     segs_neu_reduced['seg_end'] = segs_neu_reduced['seg_end'] - 1
     segs_neu_reduced['seg_length'] = segs_neu_reduced['seg_end'] - segs_neu_reduced['seg_start'] + 1
