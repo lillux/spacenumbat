@@ -2,7 +2,7 @@
 
 `spacenumbat` is a haplotype-aware copy-number alterations (CNA) inference library for single-cell and spatial transcriptomics data. 
 
-`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab). Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm, that can be used for the analysis of spatial transcriptomics data. 
+`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab). Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm, that can be used for the analysis of spatial transcriptomics data. 
 `spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem.
 
 As the original R implementation, `spacenumbat` combines:
