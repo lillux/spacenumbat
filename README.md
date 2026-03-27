@@ -7,11 +7,11 @@
 
 As the original R implementation, `spacenumbat` combines:
 
-- **Expression-derived CNV signal** (gene-level count shifts),
+- **Expression-derived CNA signal** (gene-level count shifts),
 - **Allele-specific signal** (allelic imbalance), and
-- **Phylogenetic structure** (clone relationships inferred from per-cell CNV posteriors),
+- **Phylogenetic structure** (clone relationships inferred from per-cell CNA posteriors),
 
-to recover tumor subclones and their CNV genotypes.
+to recover tumor subclones and their CNA genotypes.
 
 
 ## Spatial algorithm
@@ -75,7 +75,7 @@ Once in your env, the library can be istalled using `pip` in two ways:
 
 ### Editable mode
 
-Clode the library from GitHub with:
+Clone the library from GitHub with:
 ```bash
 git clone https://github.com/lillux/spacenumbat.git
 ```
@@ -89,13 +89,16 @@ pip install -e .
 ```
 
 ### From github
+
+Install `spacenumbat` directly from GitHub:
+
 ```bash
 pip install git+https://github.com/lillux/spacenumbat.git#egg=spacenumbat
 ``` 
 
 ### Required libraries
 
-Some libraries are required to run `spacenumbat` that require to be installed through `pip`, specifically:
+Some dependencies are required to run `spacenumbat` that can be installed through `pip`, specifically:
 
 ``` bash
 pip install spatialdata spatialdata_io spatialdata_plot squidpy
@@ -136,7 +139,7 @@ spacenumbat.run_numbat(
     df_allele,
     gtf=None,
     genome='hg38',
-    out_dir=None,
+    out_dir="path/to/dir",
     ...
 )
 ```
