@@ -16,7 +16,7 @@ to recover tumor subclones and their CNA genotypes.
 
 ## Spatial algorithm
 
-To denoise segment-level CNA signals across spatial transcriptomics spots, we performed graph-based diffusion on a spatially constrained affinity graph. Spots were connected using the tissue neighborhood graph, and edge weights were modulated by a kernel of pairwise distance calculated between the transcriptional profiles of connected spots.
+To denoise segment-level CNA signals across spatial transcriptomics spots, we performed graph-based diffusion on a spatially constrained affinity graph. Spots were connected using the tissue neighborhood graph, and edge weights were modulated by a kernel of pairwise distance calculated between the CNA soft assignment profiles of connected spots.
 
 
 Let
