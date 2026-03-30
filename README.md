@@ -183,7 +183,7 @@ Set `spatial=True` to incorporate neighborhood structure in posterior smoothing.
 
 During execution, `run_numbat` writes intermediate and final files such as:
 
-- `sc_refs.tsv`
+- `sc_refs.tsv`: mapping of cell type reference used for each cell or spot
 - `bulk_subtrees_*.tsv`, `bulk_subtrees_retest_*.tsv`
 - `bulk_clones_*.tsv`, `bulk_clones_final.tsv`
 - `segs_consensus_*.tsv`
