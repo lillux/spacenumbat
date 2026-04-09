@@ -108,32 +108,32 @@ pip install spatialdata spatialdata_io spatialdata_plot squidpy
 
 The main entry point is:
 
-- `spacenumbat.run_numbat(...)` (implemented in `spacenumbat/main.py`).
+- `spacenumbat.run_spacenumbat(...)` (implemented in `spacenumbat/main.py`).
 
 ---
 
-## What the library does for CNV prediction
+## What the library does for CNA prediction
 
-At a high level, `spacenumbat` predicts CNVs by iteratively:
+At a high level, `spacenumbat` predicts CNAs by iteratively:
 
 1. **Validating and harmonizing inputs** across expression, allele counts, and genome annotation.
 2. **Building initial cell groupings** from smoothed expression profiles.
-3. **Calling group-level CNVs** with HMM-based segmentation.
+3. **Calling group-level CNAs** with HMM-based segmentation.
 4. **Deriving consensus segments** and retesting them.
 5. **Computing per-cell posterior probabilities** from expression and allele evidence.
-6. **Combining evidence** into joint CNV posteriors (optionally spatially smoothed).
+6. **Combining evidence** into joint CNA posteriors (optionally spatially smoothed).
 7. **Inferring clone phylogeny**, reassigning cells, and refining clone/subtree definitions.
 8. Repeating for `max_iter` iterations, then writing final clone-level profiles and outputs.
 
 
 ---
 
-## `run_numbat()` in detail
+## `run_spacenumbat()` in detail
 
 ## Function signature
 
 ```python
-spacenumbat.run_numbat(
+spacenumbat.run_spacenumbat(
     count_mat,
     lambdas_ref,
     df_allele,
@@ -157,23 +157,27 @@ spacenumbat.run_numbat(
 
 ---
 
-## Parameters most relevant to CNV prediction quality
+## Parameters most relevant to CNA prediction quality
 
-- **`min_LLR`**: confidence threshold for CNV retention (higher = stricter).
+- **`min_LLR`**: confidence threshold for CNA retention (higher = stricter).
 - **`min_overlap`**: agreement requirement when deriving consensus segments.
-- **`max_entropy`**: filters uncertain single-cell CNV calls before phylogeny. Default to 0.5. It is recommended to increase it (eg. to 0.8) when analyzing spatial trascriptomics samples with low resolution (big spot with signal from multiple cells).
+- **`max_entropy`**: filters uncertain single-cell CNA calls before phylogeny. Default to 0.5. It is recommended to increase it (eg. to 0.8) when analyzing spatial trascriptomics samples with low resolution (big spot with signal from multiple cells, eg. 10X Visium).
 - **`min_genes`**: minimum genes per segment for stable calls.
 - **`gamma`, `t`, `nu`**: model parameters controlling allele dispersion, transition rate, and phase switching behavior.
-- **`multi_allelic`, `p_multi`**: enables and thresholds multi-allelic CNV detection.
-- **`min_cells`**: drops very small groups to avoid unstable HMM/phylogeny steps.
+- **`multi_allelic`, `p_multi`**: enables and thresholds multi-allelic CNA detection.
+- **`min_cells`**: drops very small groups to avoid unstable HMM and phylogeny reconstruction steps.
 
 ---
 
-## Spatial CNV mode (optional)
+## Spatial CNA mode (optional)
 
 Set `spatial=True` to incorporate neighborhood structure in posterior smoothing. Key options:
 
-- `spatial_method`: `"degree"`, `"weighted"`, `"diffuse"`, or `"cpr"`.
+- `spatial_method`: 
+    - `"degree"`, 
+    - `"weighted"`,
+    - `"diffuse"`, 
+    - `"cpr"`.
 - `spatial_decay`: distance-to-weight kernel (`"gaussian"`, `"exp"`, `"invdist"`, `"cauchy"`).
 - `connectivity_key` / `distance_key`: where adjacency info is read from `AnnData`.
 
@@ -181,7 +185,7 @@ Set `spatial=True` to incorporate neighborhood structure in posterior smoothing.
 
 ## Typical output written to `out_dir`
 
-During execution, `run_numbat` writes intermediate and final files such as:
+During execution, `run_spacenumbat` writes intermediate and final files such as:
 
 - `sc_refs.tsv`: mapping of cell type reference used for each cell or spot
 - `bulk_subtrees_*.tsv`, `bulk_subtrees_retest_*.tsv`
@@ -199,7 +203,7 @@ During execution, `run_numbat` writes intermediate and final files such as:
 ```python
 import spacenumbat
 
-results = spacenumbat.run_numbat(
+results = spacenumbat.run_spacenumbat(
     count_mat=count_adata,
     lambdas_ref=reference_profile,
     df_allele=allele_df,
