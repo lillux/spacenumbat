@@ -215,7 +215,8 @@ Chooses the method used to perform spatial smoothing of the CNA probability grap
 
 **`"degree"`**
 
-$Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$\
+$$Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$$
+
 One-step neighborhood average using the connectivity matrix. Includes self-loops and only immediate neighbors. Does not explicitly use expression distance, only spatial constraint.\
 **Cons:** limited to one-hop smoothing.\
 **Use when:** a mild local average is sufficient.
@@ -223,15 +224,18 @@ One-step neighborhood average using the connectivity matrix. Includes self-loops
 
 **`"diffuse"`**
 
-$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$, where $P=D^{-1}A$\
-Iterative random-walk diffusion with restart. Performs multi-step smoothing over the graph. `alpha` controls smoothing strength and `steps` controls diffusion depth. The restart term preserves fidelity to the original signal.\
+$$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$$ where $$P=D^{-1}A$$
+
+It is an iterative random-walk diffusion with restart. Performs multi-step smoothing over the graph. `alpha` controls smoothing strength and `steps` controls diffusion depth. The restart term preserves fidelity to the original signal.\
 **Cons:** can oversmooth or leak across boundaries if `alpha` or `steps` are too large.\
 **Use when:** signals are spatially coherent and moderate denoising is needed.
 
 
 **`"cpr"`**
 
-$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$ with a density-corrected transition operator.\
+$$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$$
+
+with a density-corrected transition operator.\
 Performs personalized PageRank-style diffusion with Coifman density correction. Reduces bias toward densely connected regions. `coifman_alpha` controls density correction, and `lazy` adds self-retention to reduce leakage and improve stability.\
 **Cons:** more parameters to tune and slightly less direct to interpret.\
 **Use when:** graph density is uneven or a more geometry-aware diffusion is desired.
