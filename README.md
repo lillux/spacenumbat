@@ -148,7 +148,8 @@ spacenumbat.run_spacenumbat(
 ## Core required inputs
 
 - **`count_mat`** (`anndata.AnnData`): expression count matrix (cells × genes in `AnnData` convention).
-- **`lambdas_ref`** (`DataFrame`/array/mapping): reference normalized expression profile(s). A reference profile is integrated in the library, and can be found at `spacenumbat.data.ref_hca`. It is recommendend to use a reference profiles of euploid samples obtained with the same sequencing technology of the samples to be analyzed.
+- **`lambdas_ref`** (`DataFrame`/array/mapping): reference normalized expression profile(s). A reference profile is integrated in the library, and can be found at `spacenumbat.data.ref_hca`.\
+It is recommendend to use a reference profiles of euploid samples obtained with the same sequencing technology of the samples to be analyzed.
 - **`df_allele`** (`DataFrame`): per-cell allele counts from the allele preprocessing workflow.
 
 ## Optional genomic annotation
@@ -162,7 +163,8 @@ spacenumbat.run_spacenumbat(
 
 - **`min_LLR`**: confidence threshold for CNA retention (higher = stricter).
 - **`min_overlap`**: agreement requirement when deriving consensus segments.
-- **`max_entropy`**: filters uncertain single-cell CNA calls before phylogeny. Default to 0.5. It is recommended to increase it (eg. to 0.8) when analyzing spatial trascriptomics samples with low resolution (big spot with signal from multiple cells, eg. 10X Visium).
+- **`max_entropy`**: filters uncertain single-cell CNA calls before phylogeny. Default to 0.5.\
+It is recommended to increase it (eg. to 0.8) when analyzing spatial trascriptomics samples with low resolution (big spot with signal from multiple cells, eg. 10X Visium).
 - **`min_genes`**: minimum genes per segment for stable calls.
 - **`gamma`, `t`, `nu`**: model parameters controlling allele dispersion, transition rate, and phase switching behavior.
 - **`multi_allelic`, `p_multi`**: enables and thresholds multi-allelic CNA detection.
@@ -264,7 +266,7 @@ During execution, `run_spacenumbat` writes intermediate and final files such as:
 
 ---
 
-## Minimal usage sketch
+## Minimal usage example
 
 ```python
 import spacenumbat
@@ -282,4 +284,10 @@ results = spacenumbat.run_spacenumbat(
     max_entropy=0.8,
 )
 ```
+
+---
+
+# Disclaimer
+
+This project is an independent Python implementation of the ideas described in the [`Numbat`](https://github.com/kharchenkolab/numbat) publications and software ecosystem, originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
 
