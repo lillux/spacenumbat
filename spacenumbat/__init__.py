@@ -13,10 +13,10 @@ from . import operations
 from . import tree
 from . import phylo
 
-from .main import run_numbat
+from .main import run_spacenumbat
 
 __all__ = [
-    "run_numbat"
+    "run_spacenumbat"
     ]
 
 __version__ = "0.0.1"

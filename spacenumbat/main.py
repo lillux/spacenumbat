@@ -20,7 +20,7 @@ from spacenumbat import (utils, diagnostics, clustering,
 
 from spacenumbat._log import configure, get_logger
 
-def run_numbat(
+def run_spacenumbat(
     count_mat,
     lambdas_ref,
     df_allele,
