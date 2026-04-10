@@ -4,13 +4,15 @@
 
 `spacenumbat` is a haplotype-aware copy-number alterations (CNA) inference library for single-cell and spatial transcriptomics data. 
 
-`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab). Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm that can be used for the analysis of spatial transcriptomics data. 
-`spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem.
+`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
+
+Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm that can be used for the analysis of spatial transcriptomics data.
+`spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem, and is developed by the [$\lambda$ Lab](https://research.hsr.it/en/centers/omics-sciences/lambda-lab.html).
 
 As the original R implementation, `spacenumbat` combines:
 
 - **Expression-derived CNA signal** (gene-level count shifts),
-- **Allele-specific signal** (allelic imbalance), and
+- **Allele-specific signal** (allelic imbalance),
 - **Phylogenetic structure** (clone relationships inferred from per-cell CNA posteriors),
 
 to recover tumor subclones and their CNA genotypes.
@@ -52,7 +54,7 @@ $$
 Z^{(0)} = X
 $$
 
-This procedure is a random walk with restart and yields a density-corrected, locality-preserving smoother that borrows information across neighboring spots while retaining fidelity to the original measurements. In the context of tumor tissues, this regularization is aimed to enhances spatially coherent clonal CNA patterns and suppresses high-frequency technical noise without enforcing global homogenization.
+This procedure is a random walk with restart and yields a density-corrected, locality-preserving smoother that borrows information across neighboring spots while retaining fidelity to the original measurements. This regularization is aimed to enhances spatially coherent clonal CNA patterns and reduce technical noise without enforcing global homogenization.
 
 # Installation
 
@@ -289,7 +291,7 @@ results = spacenumbat.run_spacenumbat(
 
 ---
 
-# Disclaimer
+# Aknowledgments
 
 This project is an independent Python implementation of the ideas described in the [`Numbat`](https://github.com/kharchenkolab/numbat) publications and software ecosystem, originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
 
