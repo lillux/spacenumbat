@@ -280,6 +280,7 @@ Reduces bias toward densely connected regions. `coifman_alpha` controls density 
 **Cons:** more parameters to tune and slightly less direct to interpret.  
 **Use when:** graph density is uneven or a more geometry-aware diffusion is desired.
 
+---
 
 ## Typical output written to `out_dir`
 
