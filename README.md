@@ -1,3 +1,5 @@
+<img src="https://github.com/lillux/spacenumbat/blob/alpha/pics/space_geom_trasp.png" width="200" title="spacenumbat logo" alt="spacenumbat logo"/>
+
 # spacenumbat
 
 `spacenumbat` is a haplotype-aware copy-number alterations (CNA) inference library for single-cell and spatial transcriptomics data. 
