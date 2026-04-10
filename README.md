@@ -7,7 +7,7 @@
 `spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
 
 Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm that can be used for the analysis of spatial transcriptomics data.
-`spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem, and is developed by the [$\lambda$ Lab](https://research.hsr.it/en/centers/omics-sciences/lambda-lab.html).
+`spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem, and is developed by the [λ Lab](https://research.hsr.it/en/centers/omics-sciences/lambda-lab.html).
 
 As the original R implementation, `spacenumbat` combines:
 
