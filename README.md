@@ -2,7 +2,7 @@
 
 `spacenumbat` is a haplotype-aware copy-number alterations (CNA) inference library for single-cell and spatial transcriptomics data. 
 
-`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab). Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm, that can be used for the analysis of spatial transcriptomics data. 
+`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab). Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm that can be used for the analysis of spatial transcriptomics data. 
 `spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem.
 
 As the original R implementation, `spacenumbat` combines:
@@ -16,8 +16,8 @@ to recover tumor subclones and their CNA genotypes.
 
 ## Spatial algorithm
 
-To denoise segment-level CNA signals across spatial transcriptomics spots, we implemented methods to perform graph-based diffusion on a spatially constrained affinity graph, including a Personalized PageRank-style diffusion with Coifman density correction, defined by the argument `"spatial_method" = "cpr"` in the main pipeline: `"spacenumbat.run_spacenumbat()"`.\
-Spots were connected using the tissue graph adjacency map, and edge weights were modulated by a kernel of pairwise distance calculated between the CNA soft assignment profiles of connected spots.
+To denoise segment-level CNA signals across spatial transcriptomics spots, we implemented a method to perform graph-based diffusion on a spatially constrained affinity graph, defined by the argument `"spatial_method" = "cpr"` in the main pipeline: `spacenumbat.run_spacenumbat()`.\
+Spots were connected using the tissue graph adjacency map, and edge weights were modulated by a kernel of pairwise distance calculated between the CNAs probability vector of connected spots.
 
 
 Let
@@ -148,7 +148,7 @@ spacenumbat.run_spacenumbat(
 ## Core required inputs
 
 - **`count_mat`** (`anndata.AnnData`): expression count matrix (cells × genes in `AnnData` convention).
-- **`lambdas_ref`** (`DataFrame`/array/mapping): reference normalized expression profile(s). A reference profile is integrated in the library, and can be found at `spacenumbat.data.ref_hca`.\
+- **`lambdas_ref`** (`DataFrame`): reference normalized expression profile(s). A reference profile is integrated in the library, and can be found at `spacenumbat.data.ref_hca`.\
 It is recommendend to use a reference profiles of euploid samples obtained with the same sequencing technology of the samples to be analyzed.
 - **`df_allele`** (`DataFrame`): per-cell allele counts from the allele preprocessing workflow.
 
@@ -174,7 +174,7 @@ It is recommended to increase it (eg. to 0.8) when analyzing spatial trascriptom
 
 ## Spatial CNA mode (optional)
 
-Set `spatial=True` to incorporate neighborhood structure in posterior smoothing. Key options:
+Set `spatial=True` to integrate the spatial graph connectivity structure in the posterior smoothing. Key options:
 
 ---
 
@@ -192,13 +192,13 @@ Fast decay and strongly local. Preserves boundaries well.\
 **`"exp"`**
 
 $w(d)=\exp\left(-d/\ell\right)$\
-Allows moderate borrowing across somewhat more distant neighbors. Less aggressive than Gaussian.\
+Allows moderate borrowing across more distant neighbors. Less aggressive than Gaussian.\
 **Use when:** a smoother, slightly broader local kernel is desired.
 
 **`"invdist"`**
 
 $w(d)=1/(d+\varepsilon)^p$\
-Strongly emphasizes very small distances. Scale-free, but can become unstable or overly dominated by near-zero distances.\
+Emphasizes very small distances. Scale-free, but can become unstable or overly dominated by near-zero distances.\
 **Use when:** nearest-neighbor dominance is explicitly desired and distance values are well behaved.
 
 
