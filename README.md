@@ -179,43 +179,33 @@ Set `spatial=True` to incorporate neighborhood structure in posterior smoothing.
  Implementations of distance-to-weight kernel, that transform a *dissimilarity* matrix (eg. distance matrix) in an ***affinity*** matrix.
 
 > `"gaussian"`
-> $$
-> w(d)=\exp\left(-d^2/\sigma^2\right)
-> $$
-> * Fast decay, strongly local.
-> * Preserves boundaries well.
-> * Good default when smoothing should remain conservative.
-> * Can under-smooth if `sigma` is too small.
+>
+> $w(d)=\exp\left(-d^2/\sigma^2\right)$
+> 
+> Fast decay, strongly local. Preserves boundaries well.
 > 
 > **Use when:** sharp local structure matters and leakage across boundaries should be minimized.
 
 > `"exp"`
-> $$
-> w(d)=\exp\left(-d/\ell\right)
-> $$
-> * Slower decay than Gaussian.
-> * Allows moderate borrowing across somewhat more distant neighbors.
-> * Simpler and less aggressive than Gaussian.
+>
+> $w(d)=\exp\left(-d/\ell\right)$
+> Allows moderate borrowing across somewhat more distant neighbors. It is less aggressive than Gaussian.
 > 
 > **Use when:** a smoother, slightly broader local kernel is desired.
 
 > `"invdist"`
-> $$
-> w(d)=1/(d+\varepsilon)^p
-> $$
-> * Strong emphasis on very small distances.
-> * Heavy-tailed and scale-free.
-> * Can become unstable or overly dominated by near-zero distances.
+>
+> $w(d)=1/(d+\varepsilon)^p$
+>
+> Put strong emphasis on very small distances. Scale-free, can become unstable or overly dominated by near-zero distances.
 > 
 >**Use when:** nearest-neighbor dominance is explicitly desired and distance values are well behaved.
 
 > `"cauchy"`
-> $$
-> w(d)=1/(1+(d/\sigma)^2)
-> $$
-> * Heavy-tailed but bounded.
-> * More tolerant of moderate distances than Gaussian.
-> * More stable than inverse-distance near zero.
+>
+> $w(d)=1/(1+(d/\sigma)^2)$
+>
+> Bounded values. More tolerant of moderate distances than Gaussian, more stable than inverse-distance near zero.
 >
 > **Use when:** distances are noisy or heterogeneous and a robust compromise is needed.
 
@@ -227,13 +217,10 @@ Chose which method to use to perform spatial smoothoing of the spatial CNAs prob
 > `"degree"`
 >
 > One-step neighborhood average using the connectivity matrix:
-> $$
-> Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}
-> $$
-> * Includes self-loops.
-> * Simple and interpretable.
-> * Uses only immediate neighbors.
-> * Does not explicitly use expression distance.
+>
+> $Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$
+>
+> Includes self-loops. Uses only immediate neighbors. Does not explicitly use expression distance, only spatial constrain.
 >
 > **Cons:** limited to one-hop smoothing.\
 > **Use when:** a mild local average is sufficient.
@@ -241,14 +228,12 @@ Chose which method to use to perform spatial smoothoing of the spatial CNAs prob
 > `"diffuse"`
 >
 > Iterative random-walk diffusion with restart:
-> $$
-> Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X
-> $$
+>
+> $Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$
+>
 > where $(P=D^{-1}A)$ is a row-normalized graph operator.
-> * Multi-step smoothing over the graph.
-> * `alpha` controls smoothing strength.
-> * `steps` controls diffusion depth.
-> * Restart term preserves fidelity to the original signal.
+>
+> Performs multi-step smoothing over the graph. `alpha` controls smoothing strength. `steps` controls diffusion depth. Restart term preserves fidelity to the original signal.
 >
 > **Cons:** can oversmooth or leak across boundaries if `alpha` or `steps` are too large.\
 > **Use when:** signals are spatially coherent and moderate denoising is needed.
@@ -256,15 +241,12 @@ Chose which method to use to perform spatial smoothoing of the spatial CNAs prob
 > `"cpr"`
 >
 > Personalized PageRank-style diffusion with Coifman density correction:
-> $$
-> Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X
-> $$
+>
+> $Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$
+>
 > but using a density-corrected transition operator.
 >
-> * Reduces bias toward densely connected regions.
-> * `coifman_alpha` controls density correction.
-> * `lazy` adds self-retention to reduce leakage and improve stability.
-> * Usually the most principled diffusion option on irregular graphs.
+> Reduces bias toward densely connected regions. `coifman_alpha` controls density correction. `lazy` adds self-retention to reduce leakage and improve stability. Usually the most principled diffusion option on irregular graphs.
 >
 >**Cons:** more parameters to tune and slightly less direct to interpret.\
 >**Use when:** graph density is uneven or a more geometry-aware diffusion is desired.
