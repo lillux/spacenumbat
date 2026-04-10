@@ -370,11 +370,6 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
         segments (i.e., no segment with more than ``min_genes`` genes in that
         chromosome). The error message lists the affected chromosomes.
 
-    Notes
-    -----
-    - The operation is non-destructive: a copy of `bulk` is returned.
-    - Groupby operations use ``observed=True`` and ``sort=False`` to preserve
-      the original ordering behavior and avoid adding unused categories.
     """
     # Copy the DataFrame to avoid modifying the original
     bulk = bulk.copy()
@@ -469,13 +464,6 @@ def viterbi_joint(hmm: Mapping[str, Any]) -> NDArray[np.integer]:
     - If any expression key (e.g., "y") is absent or "None", only the
       allele component contributes to the emission log-probability.
 
-    Examples
-    --------
-    >>> z = viterbi_joint({
-    ...     "x": x, "d": d, "alpha": alpha, "beta": beta,
-    ...     "delta": delta, "logPi": logPi,
-    ...     "y": y, "l": L, "lambda": lam, "mu": mu, "sig": sig, "phi": phi
-    ... })
     """
     # N = number of observations
     x = hmm["x"]              # shape (N,)
@@ -982,7 +970,7 @@ def log_sum_exp(vals: NDArray[np.floating]) -> float:
     """
     Compute log(sum(exp(vals))) in a numerically stable way.
 
-    This function uses the standard trick of subtracting the maximum entry
+    This function uses the trick of subtracting the maximum entry
     before exponentiation to avoid overflow/underflow:
 
       log sum_i exp(v_i) = v_max + log sum_i exp(v_i - v_max)

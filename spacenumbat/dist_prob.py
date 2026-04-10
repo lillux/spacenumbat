@@ -6,7 +6,7 @@ Created on Mon Dec  2 16:08:02 2024
 @author: lillux
 """
 import numpy as np
-from scipy.special import comb, betaln, gammaln
+from scipy.special import betaln, gammaln
 from scipy.optimize import minimize
 from scipy.stats import nbinom
 from numba import njit, prange

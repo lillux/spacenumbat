@@ -11,16 +11,12 @@ import scipy
 from scipy.sparse import csr_matrix
 
 import anndata as ad
-import natsort
 
-from scipy.cluster.hierarchy import ClusterNode, linkage, fcluster, to_tree
+from scipy.cluster.hierarchy import ClusterNode, fcluster, to_tree
 from sklearn.metrics import pairwise_distances
 
-from joblib import Parallel, delayed, cpu_count
+from spacenumbat.utils import filter_genes, check_anndata
 
-from spacenumbat.utils import filter_genes, get_bulk, check_anndata
-
-from functools import partial
 from typing import Any, Dict, Union, Optional, List
 
 from spacenumbat._log import get_logger

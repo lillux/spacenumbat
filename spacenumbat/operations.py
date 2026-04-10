@@ -23,7 +23,6 @@ import natsort
 
 import anndata as ad
 
-import tqdm
 from . import utils, dist_prob, clustering, _progressbar, spatial_utils
 import warnings
 
@@ -31,29 +30,6 @@ from spacenumbat._log import get_logger
 log = get_logger(__name__)
 #log.info("Test operations")
 
-def _log_sanity(
-    df: Optional[pd.DataFrame],
-    name: str,
-    columns: Optional[List[str]] = None,
-    extra: Optional[Dict[str, Any]] = None,
-    ) -> None:
-    if df is None:
-        log.info(f"[sanity] {name}: df is None")
-        return
-
-    col_list = [c for c in (columns or []) if c in df.columns]
-    na_counts = {c: int(df[c].isna().sum()) for c in col_list}
-    dtypes = {c: str(df[c].dtype) for c in col_list}
-    extras = extra or {}
-    log.info(
-        "[sanity] %s: rows=%s cols=%s na=%s dtypes=%s extras=%s",
-        name,
-        df.shape[0],
-        df.shape[1],
-        na_counts,
-        dtypes,
-        extras,
-    )
 
 def run_group_hmms(
     bulks, t=1e-4, gamma=20, alpha=1e-4, min_genes=10, nu=1,
@@ -686,7 +662,6 @@ def test_multi_allelic(
     log.info('Testing for multi-allelic CNVs ..')
 
     cols_needed = ['sample','CHROM','seg_cons','LLR','p_amp','p_del','p_bdel','p_loh','p_bamp','cnv_state_post']
-    #_log_sanity(bulks, "test_multi_allelic:bulks", columns=cols_needed)
     bulks_dist = bulks[cols_needed].drop_duplicates().copy()
     bulks_dist['p_max'] = bulks_dist[['p_amp','p_del','p_bdel','p_loh','p_bamp']].max(axis=1)
     bulks_dist = bulks_dist[(bulks_dist['LLR']>min_LLR) & (bulks_dist['p_max']>p_min)]

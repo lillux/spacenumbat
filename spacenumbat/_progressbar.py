@@ -8,7 +8,7 @@ Created on Sat Sep 13 13:45:52 2025
 
 import contextlib
 import joblib
-from tqdm.auto import tqdm as tqdm_auto  # <- use auto, not autonotebook
+from tqdm.auto import tqdm as tqdm_auto
 
 
 @contextlib.contextmanager

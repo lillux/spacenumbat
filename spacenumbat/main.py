@@ -669,7 +669,7 @@ def run_spacenumbat(
        #if plot_results:
             #TODO: make plot
             
-        clone_to_node = operations.clone_to_node_from_Gm(G_m)
+        # clone_to_node = operations.clone_to_node_from_Gm(G_m)
         subtrees = operations.build_subtrees_from_Gm(G_m, clone_post)
         clones = operations.build_clones_from_clone_post(clone_post)
         
