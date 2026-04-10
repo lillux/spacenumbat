@@ -181,50 +181,29 @@ Set `spatial=True` to incorporate neighborhood structure in posterior smoothing.
 Implementations of distance-to-weight kernels that transform a *dissimilarity* matrix
 (for example, a distance matrix) into an ***affinity*** matrix.
 
-#### `"gaussian"`
+**`"gaussian"`**
 
-$$
-w(d)=\exp\left(-d^2/\sigma^2\right)
-$$
-
-Fast decay and strongly local behavior. Preserves boundaries well.
-
+$w(d)=\exp\left(-d^2/\sigma^2\right)$\
+Fast decay and strongly local. Preserves boundaries well.\
 **Use when:** sharp local structure matters and leakage across boundaries should be minimized.
 
----
+**`"exp"`**
 
-#### `"exp"`
-
-$$
-w(d)=\exp\left(-d/\ell\right)
-$$
-
-Allows moderate borrowing across somewhat more distant neighbors. Less aggressive than the Gaussian kernel.
-
+$w(d)=\exp\left(-d/\ell\right)$\
+Allows moderate borrowing across somewhat more distant neighbors. Less aggressive than Gaussian.\
 **Use when:** a smoother, slightly broader local kernel is desired.
 
----
+**`"invdist"`**
 
-#### `"invdist"`
-
-$$
-w(d)=1/(d+\varepsilon)^p
-$$
-
-Places strong emphasis on very small distances. Scale-free, but can become unstable or overly dominated by near-zero distances.
-
+$w(d)=1/(d+\varepsilon)^p$\
+Strongly emphasizes very small distances. Scale-free, but can become unstable or overly dominated by near-zero distances.\
 **Use when:** nearest-neighbor dominance is explicitly desired and distance values are well behaved.
 
----
 
-#### `"cauchy"`
+**`"cauchy"`**
 
-$$
-w(d)=1/(1+(d/\sigma)^2)
-$$
-
-Bounded and robust. More tolerant of moderate distances than Gaussian, and more stable than inverse-distance near zero.
-
+$w(d)=1/(1+(d/\sigma)^2)$\
+Bounded and robust. More tolerant of moderate distances than Gaussian, and more stable than inverse-distance near zero.\
 **Use when:** distances are noisy or heterogeneous and a robust compromise is needed.
 
 ---
@@ -233,51 +212,28 @@ Bounded and robust. More tolerant of moderate distances than Gaussian, and more 
 
 Chooses the method used to perform spatial smoothing of the CNA probability graph.
 
-#### `"degree"`
 
-One-step neighborhood average using the connectivity matrix:
+**`"degree"`**
 
-$$
-Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}
-$$
-
-Includes self-loops. Uses only immediate neighbors. Does not explicitly use expression distance, only the spatial constraint.
-
-**Cons:** limited to one-hop smoothing.  
+$Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$\
+One-step neighborhood average using the connectivity matrix. Includes self-loops and only immediate neighbors. Does not explicitly use expression distance, only spatial constraint.\
+**Cons:** limited to one-hop smoothing.\
 **Use when:** a mild local average is sufficient.
 
----
 
-#### `"diffuse"`
+**`"diffuse"`**
 
-Iterative random-walk diffusion with restart:
-
-$$
-Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X
-$$
-
-where $P=D^{-1}A$ is a row-normalized graph operator.
-
-Performs multi-step smoothing over the graph. `alpha` controls smoothing strength, and `steps` controls diffusion depth. The restart term preserves fidelity to the original signal.
-
-**Cons:** can oversmooth or leak across boundaries if `alpha` or `steps` are too large.  
+$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$, where $P=D^{-1}A$\
+Iterative random-walk diffusion with restart. Performs multi-step smoothing over the graph. `alpha` controls smoothing strength and `steps` controls diffusion depth. The restart term preserves fidelity to the original signal.\
+**Cons:** can oversmooth or leak across boundaries if `alpha` or `steps` are too large.\
 **Use when:** signals are spatially coherent and moderate denoising is needed.
 
----
 
-#### `"cpr"`
+**`"cpr"`**
 
-Personalized PageRank-style diffusion with Coifman density correction:
-
-$$
-Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X
-$$
-
-but using a density-corrected transition operator.
-
-Reduces bias toward densely connected regions. `coifman_alpha` controls density correction, and `lazy` adds self-retention to reduce leakage and improve stability. Usually the most principled diffusion option on irregular graphs.
-
-**Cons:** more parameters to tune and slightly less direct to interpret.  
+$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$ with a density-corrected transition operator.\
+Performs personalized PageRank-style diffusion with Coifman density correction. Reduces bias toward densely connected regions. `coifman_alpha` controls density correction, and `lazy` adds self-retention to reduce leakage and improve stability.\
+**Cons:** more parameters to tune and slightly less direct to interpret.\
 **Use when:** graph density is uneven or a more geometry-aware diffusion is desired.
 
 ---
