@@ -1,28 +1,25 @@
-<img src="https://github.com/lillux/spacenumbat/blob/alpha/pics/space_geom_trasp.png" width="200" title="spacenumbat logo" alt="spacenumbat logo"/>
+<h1>spacenumbat <img src="pics/space_geom_trasp.png" width="200" alt="spacenumbat logo" align="right"></h1>
 
-# spacenumbat
+[![DOI](https://zenodo.org/badge/890859694.svg)](https://doi.org/10.5281/zenodo.19503719)
 
-`spacenumbat` is a haplotype-aware copy-number alterations (CNA) inference library for single-cell and spatial transcriptomics data. 
+`spacenumbat` is a haplotype-aware copy-number alterations (CNA) inference library for single-cell and spatial transcriptomics data.
 
-`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat), originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
+`spacenumbat` is a Python porting of the R implementation of [`Numbat`](https://github.com/kharchenkolab/numbat) originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
 
-Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm that can be used for the analysis of spatial transcriptomics data.
+Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm for the analysis of spatial transcriptomics data.
 `spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem, and is developed by the [λ Lab](https://research.hsr.it/en/centers/omics-sciences/lambda-lab.html).
 
-As the original R implementation, to recover tumor subclones and their CNA genotypes `spacenumbat` combines:
+As the original R implementation, to infer tumor subclones and their CNA genotypes `spacenumbat` combines:
 
 - **Expression-derived CNA signal** (gene-level count shifts),
 - **Allele-specific signal** (allelic imbalance),
 - **Phylogenetic structure** (clone relationships inferred from per-cell CNA posteriors),
 
 
-
-
 ## Spatial algorithm
 
 To denoise segment-level CNA signals across spatial transcriptomics spots, we implemented a method to perform graph-based diffusion on a spatially constrained affinity graph, defined by the argument `"spatial_method" = "cpr"` in the main pipeline: `spacenumbat.run_spacenumbat()`.\
 Spots were connected using the tissue graph adjacency map, and edge weights were modulated by a kernel of pairwise distance calculated between the CNAs probability vector of connected spots.
-
 
 Let
 
@@ -282,8 +279,6 @@ Implementations of distance-to-weight kernels that transform a *dissimilarity* m
 | `"invdist"`  | $w(d)=1/(d+\varepsilon)^p$ | Strong nearest-neighbor emphasis | Nearest neighbors should dominate            |
 | `"cauchy"`   | $w(d)=1/(1+(d/\sigma)^2)$  | Robust, moderate tail            | Noisy or heterogeneous distances             |
 
----
----
 
 #### `spatial_method`
 
@@ -295,7 +290,6 @@ Chooses the method used to perform spatial smoothing of the CNA probability grap
 | `"degree"`  | $Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$  | One-hop local average                       | Mild local smoothing is enough            |
 | `"diffuse"` | $Z^{(t+1)}=\alpha PZ^{(t)}+(1-\alpha)X$                         | Multi-step diffusion with restart           | Spatially coherent signal needs denoising |
 | `"cpr"`     | $Z^{(t+1)}=\alpha PZ^{(t)}+(1-\alpha)X$ with density correction | Geometry-aware diffusion, less density bias | Graph density is uneven                   |
-
 
 
 ## Typical output written to `out_dir`
