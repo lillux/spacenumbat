@@ -194,11 +194,11 @@ import pandas as pd
 import spacenumbat
 import spatialdata_io
 
-10x_spaceranger_outs_path = "sample1/outs"
+spaceranger_10x_outs_path = "sample1/outs"
 sample_id = "sample1"
 df_allele_path = "sample1_allele_counts.tsv"
 
-counts_mat_space = spatialdata_io.visium(10x_cellranger_outs_path,
+counts_mat_space = spatialdata_io.visium(spaceranger_10x_outs_path,
                                          dataset_id = sample_id,
                                          var_names_make_unique = False)
 
