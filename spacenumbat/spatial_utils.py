@@ -340,7 +340,7 @@ def neighbors_average(
     adata: ad.AnnData,
     columns: Optional[List[str]] = None,
     by: Optional[List[str]] = None,
-    method: Literal["degree", "weighted", "diffuse", "cpr"] = "cpr",
+    method: Literal["degree", "diffuse", "cpr"] = "cpr",
     connectivity_key: str = "spatial_connectivities",
     distance_key: str = "weighted_adjacency",
     method_kwargs: Optional[Dict[str, Any]] = None,
@@ -353,7 +353,6 @@ def neighbors_average(
     each column listed in `columns` independently:
 
       - "degree": unweighted neighbor mean using the connectivity matrix (adds self-loops).
-      - "weighted": inverse-distance weighted mean using the distance matrix (adds self-loops).
       - "diffuse": iterative random-walk diffusion (uses _random_walk_diffuse).
       - "cpr": personalized PageRank–style diffusion (uses _pagerank_diffuse).
 
@@ -373,12 +372,12 @@ def neighbors_average(
         Names of numeric columns in `df` to smooth. Required (must not be None or empty).
     by : list of str, optional
         Grouping keys. If None, all rows are smoothed as a single group.
-    method : {"degree", "weighted", "diffuse", "cpr"}, default "cpr"
+    method : {"degree", "diffuse", "cpr"}, default "cpr"
         Smoothing strategy (see above).
     connectivity_key : str, default "spatial_connectivities"
         Key in adata.obsp containing the sparse connectivity matrix.
     distance_key : str, default "spatial_distances"
-        Key in adata.obsp containing the sparse distance matrix. Required when method="weighted".
+        Key in adata.obsp containing the sparse distance matrix.
     method_kwargs : dict, optional
         Extra method-specific parameters. Examples:
           • diffuse: {"alpha": float, 
@@ -398,11 +397,11 @@ def neighbors_average(
     Raises
     ------
     ValueError
-        If `method` is unknown, or `method=="weighted"` and the distance matrix is unavailable.
+        If `method` is unknown.
 
     Notes
     -----
-    - Self-loops are added for "degree" and "weighted" to include each cell's own value.
+    - Self-loops are added for "degree" to include each cell's own value.
     - Denominators of zero are set to 1.0 to avoid division by zero.
 
     Examples
@@ -433,22 +432,7 @@ def neighbors_average(
 
         # compute smoothing
         m = method.lower()
-        if m == "weighted":
-            # Inverse-distance average with self loops
-            A_sl = (A + sp.eye(A.shape[0], format='csr'))
-            if D is None:
-                raise ValueError("distance_key is required for 'weighted'.")
-            D1 = D.copy()
-            D1.setdiag(1.0)  # avoid division by 0
-            Dinv = D1.copy()
-            Dinv.data = 1.0 / np.maximum(D1.data, 1e-12)
-            W = A_sl.multiply(Dinv).tocsr()
-            num = W @ X
-            den = np.asarray(W.sum(axis=1)).ravel()[:, None]
-            den[den == 0] = 1.0
-            Z = num / den
-
-        elif m == "degree":
+        if m == "degree":
             A_sl = (A + sp.eye(A.shape[0], format='csr'))
             num = A_sl @ X
             den = np.asarray(A_sl.sum(axis=1)).ravel()[:, None]
@@ -463,7 +447,7 @@ def neighbors_average(
 
         else:
             msg = (f'Unknown method: {method}. Accepted methods are:\n'
-                   f'"degree", "weighted", "diffuse", "cpr"')
+                   f'"degree", "diffuse", "cpr"')
             raise ValueError(msg)
 
         collector.append(pd.DataFrame(Z, columns=columns, index=group.index))
