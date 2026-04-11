@@ -26,6 +26,19 @@ log = get_logger(__name__)
 
 
 def _split_muts(s: Optional[str]) -> List[str]:
+    """
+    Split a comma-separated mutation string into a list of mutation labels.
+
+    Parameters
+    ----------
+    s : str or None
+        Comma-separated mutation string.
+
+    Returns
+    -------
+    list of str
+        Non-empty mutation labels with surrounding whitespace removed.
+    """
     if s is None:
         return []
     s = str(s)
@@ -35,11 +48,37 @@ def _split_muts(s: Optional[str]) -> List[str]:
 
 
 def _join_muts(muts: Iterable[str]) -> str:
+    """
+    Join mutation labels into a comma-separated string.
+
+    Parameters
+    ----------
+    muts : iterable of str
+        Mutation labels to join.
+
+    Returns
+    -------
+    str
+        Comma-separated mutation string with empty entries removed.
+    """
     muts = [m for m in muts if m != ""]
     return ",".join(muts)
 
 
 def _tree_root(tree: TreeNode) -> TreeNode:
+    """
+    Return the root node of a tree.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Any node in the tree.
+
+    Returns
+    -------
+    TreeNode
+        Root node of the tree.
+    """
     # skbio TreeNode root has parent None
     r = tree
     while r.parent is not None:
@@ -49,13 +88,24 @@ def _tree_root(tree: TreeNode) -> TreeNode:
 
 def tree_to_gtree_nx(tree: TreeNode) -> nx.DiGraph:
     """
-    Build a deterministic node-id assignment from the current TreeNode topology.
-    Names are taken from TreeNode.name for tips; internals are expected to have
-    been named consistently (or will be assigned later from l_matrix indexing).
+    Convert a scikit-bio tree into a directed NetworkX graph.
+
+    Nodes are assigned deterministic integer identifiers by breadth-first
+    traversal from the root, using the stored child order.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input tree.
+
+    Returns
+    -------
+    nx.DiGraph
+        Directed graph with node and edge attributes describing the tree.
     """
     root = _tree_root(tree)
 
-    # Deterministic traversal: BFS from root, children order as stored in tree
+    # BFS from root, children order as stored in tree
     order: List[TreeNode] = []
     q = [root]
     seen = set()
@@ -75,7 +125,7 @@ def tree_to_gtree_nx(tree: TreeNode) -> nx.DiGraph:
         leaf = u.is_tip()
         is_root = (u is root)
 
-        # Name: tips must have barcodes; internals may be None at this stage
+        # tips must have barcodes; internals may be None
         nm = u.name if (u.name is not None and u.name != "") else None
 
         G.add_node(
@@ -107,13 +157,25 @@ def tree_to_gtree_nx(tree: TreeNode) -> nx.DiGraph:
     return G
 
 
-def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode, row_labels: List[str]) -> None:
+def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode) -> None:
     """
-    Enforce consistent naming:
-      - tips: barcode names from tree tips
-      - internals: Node0..Node{k-1} in the same internal postorder convention
-        used by your build_score_plan() / row_labels
+    Assign node names in a graph tree to match l-matrix row conventions.
 
+    Tip nodes are named from tree tip names. Internal nodes are named in
+    postorder as ``Node0``, ``Node1``, and so on.
+
+    Parameters
+    ----------
+    gtree : nx.DiGraph
+        Directed graph representation of the tree.
+    tree : TreeNode
+        Input phylogenetic tree.
+    row_labels : sequence of str
+        L-matrix row labels.
+
+    Returns
+    -------
+    None
     """
     
     # This gives Node0..Node{k-1}.
@@ -149,11 +211,9 @@ def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode, row_la
     if any(x is None or x == "" for x in names):
         msg = "Some gtree nodes remained unnamed; check tree internal naming."
         log.error(msg)
-        #raise ValueError(msg)
     if len(names) != len(set(names)):
         msg = "gtree node names are not unique; check tree / naming pipeline."
         log.error(msg)
-        #raise ValueError("gtree node names are not unique; check tree / naming pipeline.")
 
     return
 
@@ -164,21 +224,26 @@ def annotate_tree(
     clip_eps: float = 1e-10,
     ) -> nx.DiGraph:
     """
-      - computes l_matrix
-      - assigns each mutation (segment) to max-likelihood node
-      - builds a gtree (nx.DiGraph) with node/edge annotations
-      - calls mut_to_tree() to compute edge lengths and GT/last_mut fields
+    Annotate a phylogenetic tree with mutation assignments and genotype labels.
 
+    Parameters
+    ----------
+    tree : TreeNode
+        Input phylogenetic tree.
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and mutation sites as columns.
+    clip_eps : float, default=1e-10
+        Lower bound used during tree scoring for numerical stability.
+
+    Returns
+    -------
+    nx.DiGraph
+        Annotated directed graph representation of the tree.
     """
     # score and l_matrix (rows: tips in P_df.index + internals Node0..)
     tree_stats = score_tree_treenode_fast(tree, P_df, get_l_matrix=True, clip_eps=clip_eps)
     l_matrix = tree_stats.l_matrix
-    # if l_matrix is None:
-    #     raise RuntimeError("Expected l_matrix from score_tree_treenode_fast(get_l_matrix=True).")
-
     sites = list(P_df.columns)
-    #n = P_df.shape[0]
-
     l_df = pd.DataFrame(l_matrix, index=tree_stats.row_labels, columns=sites)
 
     # mutation assignment on nodes (per column argmax)
@@ -198,7 +263,6 @@ def annotate_tree(
     # build gtree structure
     gtree = tree_to_gtree_nx(tree)
     _set_gtree_names_from_lmatrix_rows(gtree, tree, tree_stats.row_labels)
-
     # annotate sites onto nodes and derive GT and edge lengths
     gtree = mut_to_tree(gtree, mut_nodes)
 
@@ -207,14 +271,22 @@ def annotate_tree(
 
 def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
     """
-      - site: may be comma-separated bundle (e.g. "17b,8b")
-      - GT: paste of all non-empty site bundles along root->node path
-      - last_mut: the *last non-empty site bundle along the path* (inherited)
-      - edge length: n_mut(child); leaf edges min 0.2
-    """
-    # if "name" not in mut_nodes.columns or "site" not in mut_nodes.columns:
-    #     raise ValueError("mut_nodes must contain at least columns ['name', 'site'].")
+    Annotate a tree graph with mutation bundles, genotypes, and edge lengths.
 
+    Parameters
+    ----------
+    gtree : nx.DiGraph
+        Directed tree graph with node names and a single root.
+    mut_nodes : pd.DataFrame
+        Mutation assignments by node name. Must contain a ``name`` column and a
+        ``site`` column. An ``n_mut`` column is optional.
+
+    Returns
+    -------
+    nx.DiGraph
+        Input graph with updated node and edge attributes.
+    """
+    
     mut_nodes = mut_nodes.copy()
 
     if "n_mut" not in mut_nodes.columns:
@@ -320,7 +392,17 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
 
 def mark_tumor_lineage(gtree: nx.DiGraph) -> nx.DiGraph:
     """
-    
+    Label tumor and normal compartments on a mutation-annotated tree.
+
+    Parameters
+    ----------
+    gtree : nx.DiGraph
+        Directed tree graph with node mutation and topology annotations.
+
+    Returns
+    -------
+    nx.DiGraph
+        Input graph with updated node and edge compartment labels.
     """
     candidates = [n for n, a in gtree.nodes(data=True) if a.get("site", None) not in (None, "", "nan")]
 
@@ -410,7 +492,6 @@ def transfer_links(Gm: nx.DiGraph) -> nx.DiGraph:
 
 def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
     """
-    R-faithful intent:
       - contract gtree by last_mut
       - label contracted vertices by last_mut
       - attach one original node name to each mutation label via site
@@ -492,8 +573,6 @@ def label_genotype(Gm: nx.DiGraph, root: Optional[int] = None) -> nx.DiGraph:
       - for each other vertex, GT is the concatenation of non-empty labels
         along the root->vertex path
       - clone is DFS preorder rank from the root
-
-    Keeps 0-based clone numbering for your Python pipeline.
     """
     if root is None:
         root = _graph_root(Gm)
@@ -561,8 +640,6 @@ def _merge_two_vertices(
     node_tar: Optional[str] = None,
     ) -> nx.DiGraph:
     """
-    More R-faithful contraction:
-
       - merged label is paste0(sort(c(label_keep, label_drop)), collapse=',')
         i.e. sort whole vertex labels, DO NOT split/deduplicate mutations
       - node attribute is overwritten by node_tar if provided
