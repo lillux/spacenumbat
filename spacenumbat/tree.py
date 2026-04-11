@@ -23,6 +23,19 @@ log = get_logger(__name__)
 #log.info("This is an info message.")
 
 def _subtree_key(node: TreeNode) -> Tuple[int, str]:
+    """
+    Compute a sortable key for a subtree.
+
+    Parameters
+    ----------
+    node : TreeNode
+        Input tree node.
+
+    Returns
+    -------
+    tuple[int, str]
+        Tuple containing subtree tip count and smallest tip name.
+    """
     tips = list(node.tips()) if not node.is_tip() else [node]
     n = len(tips)
     min_tip = min((t.name or "" for t in tips), default="")
@@ -30,6 +43,21 @@ def _subtree_key(node: TreeNode) -> Tuple[int, str]:
 
 
 def canonicalize_tree_inplace(tree: TreeNode, right: bool = True) -> TreeNode:
+    """
+    Canonicalize child ordering in a tree in place.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input tree.
+    right : bool, default=True
+        Whether to reverse the sorted child order at each internal node.
+
+    Returns
+    -------
+    TreeNode
+        Input tree with reordered children.
+    """
     for n in tree.postorder():
         if n.is_tip():
             continue
@@ -44,7 +72,23 @@ def build_distance_matrix_from_P(
     metric: str = "euclidean",
     n_jobs: int = 1,
     ) -> DistanceMatrix:
-    
+    """
+    Build a symmetric distance matrix from a probability matrix.
+
+    Parameters
+    ----------
+    P_with_outgroup : pd.DataFrame
+        Matrix with samples as rows and features as columns.
+    metric : str, default="euclidean"
+        Distance metric passed to pairwise distance computation.
+    n_jobs : int, default=1
+        Number of parallel jobs used for distance computation.
+
+    Returns
+    -------
+    DistanceMatrix
+        Pairwise distance matrix with row labels from the input index.
+    """
     labels = list(P_with_outgroup.index)
     D = pairwise_distances(P_with_outgroup.values, metric=metric, n_jobs=n_jobs)
     D = (D + D.T) * 0.5
@@ -53,12 +97,38 @@ def build_distance_matrix_from_P(
 
 
 def build_upgma_tree(dm) -> TreeNode:
+    """
+    Build a canonicalized UPGMA tree from a distance matrix.
+
+    Parameters
+    ----------
+    dm : DistanceMatrix
+        Input distance matrix.
+
+    Returns
+    -------
+    TreeNode
+        UPGMA tree with canonicalized child ordering.
+    """
     t = skbio.tree.upgma(dm)
     canonicalize_tree_inplace(t, right=True)  # to mimic ladderize/reorder
     return t
 
 
 def build_nj_tree(dm: DistanceMatrix) -> TreeNode:
+    """
+    Build a canonicalized neighbor-joining tree from a distance matrix.
+
+    Parameters
+    ----------
+    dm : DistanceMatrix
+        Input distance matrix.
+
+    Returns
+    -------
+    TreeNode
+        Neighbor-joining tree with canonicalized child ordering.
+    """
     t = skbio.tree.nj(dm)
     canonicalize_tree_inplace(t, right=True)
     return t
@@ -66,9 +136,19 @@ def build_nj_tree(dm: DistanceMatrix) -> TreeNode:
 
 def root_and_prune_outgroup(tree: TreeNode, outgroup: str) -> TreeNode:
     """
-    - Reroot on the edge leading to outgroup
-    - Remove the outgroup tip
-    - Prune unary nodes
+    Root a tree on an outgroup and remove the outgroup tip.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input unrooted or rooted tree.
+    outgroup : str
+        Tip name used as the outgroup.
+
+    Returns
+    -------
+    TreeNode
+        Rooted ingroup tree after outgroup removal and pruning.
     """
     # Re-root "above" the outgroup, inserting
     # a new root between outgroup and ingroup.
@@ -85,6 +165,18 @@ def root_and_prune_outgroup(tree: TreeNode, outgroup: str) -> TreeNode:
 
 
 def assert_P_invariants(P_df: pd.DataFrame) -> None:
+    """
+    Validate structural invariants of a probability matrix.
+
+    Parameters
+    ----------
+    P_df : pd.DataFrame
+        Probability matrix with cells as rows and segments as columns.
+
+    Returns
+    -------
+    None
+    """
     if not isinstance(P_df, pd.DataFrame):
         raise TypeError("P_df must be a pandas DataFrame.")
     if P_df.shape[0] == 0 or P_df.shape[1] == 0:
@@ -100,6 +192,20 @@ def assert_P_invariants(P_df: pd.DataFrame) -> None:
 
 
 def assert_tree_matches_P(tree: TreeNode, P_df: pd.DataFrame) -> None:
+    """
+    Validate that tree tip names match the probability matrix index.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input tree.
+    P_df : pd.DataFrame
+        Probability matrix with tip identifiers in the index.
+
+    Returns
+    -------
+    None
+    """
     tips = [t.name for t in tree.tips()]
     if any(x is None or x == "" for x in tips):
         raise ValueError("Tree contains unnamed tips; barcode names were lost.")
@@ -126,9 +232,19 @@ class ScorePlan:
 
 def build_score_plan(tree: TreeNode, P_index: List[str]) -> Tuple[ScorePlan, Dict[TreeNode, int]]:
     """
-    Returns:
-      - ScorePlan for scoring (postorder internals)
-      - node_to_row mapping for TreeNode -> global row id
+    Build the tree scoring plan and node-to-row mapping.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input bifurcating tree.
+    P_index : list[str]
+        Tip labels in the order used by the probability matrix.
+
+    Returns
+    -------
+    tuple[ScorePlan, dict[TreeNode, int]]
+        Scoring plan and mapping from tree nodes to row indices.
     """
     tip_to_id = {name: i for i, name in enumerate(P_index)}
 
@@ -165,8 +281,22 @@ def build_score_plan(tree: TreeNode, P_index: List[str]) -> Tuple[ScorePlan, Dic
 @njit(cache=True)
 def _propagate_logQ_numba(logQ: np.ndarray, child1: np.ndarray, child2: np.ndarray, n_tips: int) -> None:
     """
-    logQ[0:n_tips] already filled for tips.
-    Fill internal rows in postorder: row = n_tips+i, children = child1[i], child2[i].
+    Propagate tip log-scores to internal nodes in postorder.
+
+    Parameters
+    ----------
+    logQ : np.ndarray
+        Score matrix with tip rows already initialized.
+    child1 : np.ndarray
+        First child row index for each internal node.
+    child2 : np.ndarray
+        Second child row index for each internal node.
+    n_tips : int
+        Number of tip rows.
+
+    Returns
+    -------
+    None
     """
     n_int = child1.shape[0]
     for i in range(n_int):
@@ -184,9 +314,21 @@ def compute_logQ_for_tree(
     clip_eps: float = 1e-10,
     ) -> Tuple[np.ndarray, float]:
     """
-    Returns:
-      logQ (n_tips+n_int, m)
-      L0 = sum(log(1-P))
+    Compute the tree log-score matrix and baseline log-likelihood term.
+
+    Parameters
+    ----------
+    plan : ScorePlan
+        Tree scoring plan.
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and sites as columns.
+    clip_eps : float, default=1e-10
+        Lower bound used for numerical stability.
+
+    Returns
+    -------
+    tuple[np.ndarray, float]
+        Log-score matrix and baseline log-likelihood term.
     """
     P = np.clip(P_df.values.astype(np.float64, copy=False), clip_eps, 1.0 - clip_eps)
     logP0 = np.log1p(-P)
@@ -217,8 +359,46 @@ def score_tree_treenode_fast(
     clip_eps: float = 1e-10,
     ) -> ScoreTreeResult:
     """
-    Fast scorer using the ScorePlan + numba propagation.
-    Returns l_tree.
+    Score a tree against a probability matrix by evaluating node-wise mutation likelihoods.
+
+    This function validates that the tree tips match the rows of "P_df", builds a
+    postorder scoring plan for the tree, and computes a node-by-site log-score
+    matrix "logQ". Tip rows are initialized from the log-likelihood ratio
+    "log(P) - log(1 - P)", and internal rows are obtained by summing child rows
+    in postorder. The resulting matrix represents, for each node and site, the
+    relative support for assigning that site to that node.
+
+    The total tree score is then computed independently for each site by taking
+    the maximum supported node assignment and summing across sites. When
+    "get_l_matrix" is False, the score is obtained as:
+
+    - max over rows of "logQ" for each site
+    - plus the baseline term sum(log(1 - P)) across all cells and sites
+
+    When "get_l_matrix" is True, the baseline term is added back to each column
+    of "logQ" to produce "l_matrix", a node-by-site log-likelihood matrix on the
+    original scale, and the tree score is computed by summing the per-site column
+    maxima of "l_matrix".
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input bifurcating tree whose tip names must match "P_df.index".
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and sites as columns.
+    get_l_matrix : bool, default=False
+        Whether to return the node-by-site log-likelihood matrix.
+    clip_eps : float, default=1e-10
+        Lower bound used to clip probabilities away from 0 and 1 for numerical
+        stability.
+
+    Returns
+    -------
+    ScoreTreeResult
+        Tree scoring result containing the total tree score, the node-by-site
+        relative log-score matrix "logQ", the optional node-by-site
+        log-likelihood matrix "l_matrix", and row labels for tips and internal
+        nodes.
     """
     assert_P_invariants(P_df)
     assert_tree_matches_P(tree, P_df)
@@ -246,10 +426,17 @@ def score_tree_treenode_fast(
 @njit(cache=True, parallel=True)
 def _col_max1_max2_argmax(logQ: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    For each column j:
-      max1[j] = max over rows
-      argmax[j] = row index achieving max1
-      max2[j] = 2nd max over rows
+    Compute the top two row maxima and argmax for each column of a score matrix.
+
+    Parameters
+    ----------
+    logQ : np.ndarray
+        Input score matrix with rows as candidate nodes and columns as sites.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        First maximum, argmax row index, and second maximum for each column.
     """
     nrows, m = logQ.shape
     max1 = np.empty(m, dtype=np.float64)
@@ -279,8 +466,17 @@ def _col_max1_max2_argmax(logQ: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.
 
 def internal_edges_for_rooted_nni(tree: TreeNode) -> List[Tuple[TreeNode, TreeNode]]:
     """
-    Rooted internal edges: parent and child are both internal.
-    Equivalent to your _internal_edges_for_nni but on TreeNode objects.
+    Collect internal parent-child edges eligible for rooted NNI.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input rooted tree.
+
+    Returns
+    -------
+    list[tuple[TreeNode, TreeNode]]
+        Internal edges with both parent and child restricted to non-tip nodes.
     """
     edges: List[Tuple[TreeNode, TreeNode]] = []
     for child in tree.postorder():
@@ -298,12 +494,24 @@ def build_nni_edge_arrays(
     node_to_row: Dict[TreeNode, int],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    For each internal edge (p1->p2):
-      e1 = sibling of p2 under p1
-      e2,e3 = children of p2
+    Build row-index arrays used to score rooted NNI moves.
 
-    Returns arrays (length E):
-      p2_rows, e1_rows, e2_rows, e3_rows
+    For each internal edge, this function identifies the child internal node,
+    its sibling under the parent, and the two children of the internal node,
+    then maps them to score-matrix row indices.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input rooted bifurcating tree.
+    node_to_row : dict[TreeNode, int]
+        Mapping from tree nodes to score-matrix row indices.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        Arrays of row indices for the internal child, its sibling, and its two
+        children for each internal edge.
     """
     edges = internal_edges_for_rooted_nni(tree)
 
@@ -341,13 +549,38 @@ def _nni_scores_from_logQ(
     e3_rows: np.ndarray,
     ) -> np.ndarray:
     """
-    NNI scoring:
-      Only row p2 changes:
-        cand0: logQ[p2] = logQ[e1] + logQ[e3]
-        cand1: logQ[p2] = logQ[e1] + logQ[e2]
-      Score per candidate = L0 + sum_j max( max_except_p2[j], new_row[j] )
+    Score all rooted NNI candidates from a precomputed log-score matrix.
 
-    Returns scores of shape (E, 2) for E internal edges.
+    For each internal edge, this function evaluates the two possible rooted NNI
+    rearrangements by updating only the affected internal-node row and
+    recomputing the tree score column-wise from the best available row score.
+
+    Parameters
+    ----------
+    logQ : np.ndarray
+        Node-by-site relative log-score matrix.
+    L0 : float
+        Baseline log-likelihood term.
+    max1 : np.ndarray
+        Per-column maximum over rows in "logQ".
+    argmax : np.ndarray
+        Per-column row index achieving "max1".
+    max2 : np.ndarray
+        Per-column second-largest row value in "logQ".
+    p2_rows : np.ndarray
+        Row indices of the internal child on each scored edge.
+    e1_rows : np.ndarray
+        Row indices of the sibling of the internal child.
+    e2_rows : np.ndarray
+        Row indices of the first child of the internal child.
+    e3_rows : np.ndarray
+        Row indices of the second child of the internal child.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape "(n_edges, 2)" containing the two NNI scores for each
+        internal edge.
     """
     E = p2_rows.shape[0]
     m = logQ.shape[1]
@@ -379,11 +612,22 @@ def _nni_scores_from_logQ(
 
 def _swap_subtrees_inplace(P: TreeNode, C: TreeNode, S: TreeNode, X: TreeNode) -> None:
     """
-    Rooted NNI swap:
-      P has children {C, S}; C has children {X, other}
-      swap S and X:
-        P children -> {C, X}
-        C children -> {S, other}
+    Apply a rooted NNI subtree swap in place.
+
+    Parameters
+    ----------
+    P : TreeNode
+        Parent node.
+    C : TreeNode
+        Internal child of "P".
+    S : TreeNode
+        Sibling of "C" under "P".
+    X : TreeNode
+        Child of "C" to swap with "S".
+
+    Returns
+    -------
+    None
     """
     if C.parent is not P or S.parent is not P or X.parent is not C:
         raise RuntimeError("Invalid rooted NNI swap configuration.")
@@ -403,12 +647,32 @@ def perform_nni_ml_greedy_local(
     clip_eps: float = 1e-10,
     ) -> List[TreeNode]:
     """
-    Greedy ML search using rooted NNI neighbors, but scoring all candidates
-    without copying trees:
-      - build logQ once for current tree
-      - compute per-column max1/argmax/max2
-      - for each internal edge, score 2 NNI alternatives by updating only row p2
-      - pick best move; apply swap once; repeat
+    Perform greedy local maximum-likelihood tree search using rooted NNI moves.
+
+    Starting from an initial tree, this function repeatedly computes the
+    node-by-site score matrix, evaluates all rooted NNI neighbors with fast
+    row-update scoring, applies the best improving move, and stores each
+    accepted tree until convergence or the iteration limit is reached.
+
+    Parameters
+    ----------
+    tree_init : TreeNode
+        Initial rooted tree.
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and sites as columns.
+    eps : float, default=1e-5
+        Minimum score improvement required to accept a move.
+    max_iter : int, default=100
+        Maximum number of NNI iterations.
+    verbose : bool, default=True
+        Whether to log search progress.
+    clip_eps : float, default=1e-10
+        Lower bound used for numerical stability in score computation.
+
+    Returns
+    -------
+    list[TreeNode]
+        Sequence of accepted trees, including the initial tree and final tree.
     """
     # Make copy
     cur = tree_init.copy()
@@ -485,6 +749,37 @@ def P_to_candidate_tree(
     max_nni: int = 100,
     verbose: bool = True,
     ) -> pd.DataFrame:
+    """
+    Build a candidate maximum-likelihood tree from a probability matrix.
+
+    This function adds an outgroup to the probability matrix, builds guide
+    trees from pairwise distances, roots and prunes the outgroup, selects the
+    better initial topology when both UPGMA and neighbor joining are used, and
+    refines the selected tree by greedy rooted NNI search.
+
+    Parameters
+    ----------
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and sites as columns.
+    outgroup_name : str, default="outgroup"
+        Name assigned to the synthetic outgroup.
+    skip_nj : bool, default=False
+        Whether to skip neighbor-joining initialization and use only UPGMA.
+    n_jobs : int, default=1
+        Number of parallel jobs used for distance computation.
+    eps_nni : float, default=1e-5
+        Minimum score improvement required to accept an NNI move.
+    max_nni : int, default=100
+        Maximum number of NNI iterations.
+    verbose : bool, default=True
+        Whether to log search progress.
+
+    Returns
+    -------
+    TreeNode
+        Final candidate tree after guide-tree selection and local NNI
+        optimization.
+    """
     
     # Build guide trees (UPGMA/NJ, root+prune outgroup)
     P_with_out = P_df.copy()

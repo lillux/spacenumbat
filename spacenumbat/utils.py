@@ -22,7 +22,6 @@ import pandas as pd
 import anndata as ad
 
 import pyranges as pr
-from pyranges import PyRanges
 
 import scipy
 from scipy.stats import ttest_ind
@@ -117,7 +116,7 @@ def annotate_genes(
     out = df.drop(columns=[c for c in ["gene", "gene_start", "gene_end"] if c in df.columns])
     out = out.merge(snps_annot.loc[:, ["snp_id", "CHROM", "POS", "gene"]],
                     on=["snp_id", "CHROM", "POS"],
-                    how="left",)
+                    how="left",) # TODO: check snps_annot col names
     
     out.CHROM = out.CHROM.astype("string")
     out.cell = out.cell.astype("string")
@@ -505,7 +504,6 @@ def get_exp_bulk(
     bulk_obs['lambda_ref'] = lambdas_bar[bulk_obs['gene']].values.astype(np.float64)
 
     gtf = gtf.copy()
-    #gtf['gene_index'] = gtf.index
     bulk_obs.gene = bulk_obs.gene.astype("string")
     gtf.gene = gtf.gene.astype("string")
     bulk_obs = bulk_obs.merge(gtf, on='gene', how='left', sort=False)
@@ -576,7 +574,7 @@ def switch_prob(
         p = np.maximum(p, min_p)
 
     # p[np.isnan(p)] = 0 
-    p[np.isnan(distance)] = 0 # Faithful
+    p[np.isnan(distance)] = 0
     return p
 
 

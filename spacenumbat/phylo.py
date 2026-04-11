@@ -162,7 +162,7 @@ def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode) -> Non
     Assign node names in a graph tree to match l-matrix row conventions.
 
     Tip nodes are named from tree tip names. Internal nodes are named in
-    postorder as ``Node0``, ``Node1``, and so on.
+    postorder as "Node0", "Node1", and so on.
 
     Parameters
     ----------
@@ -181,7 +181,7 @@ def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode) -> Non
     # This gives Node0..Node{k-1}.
     root = _tree_root(tree)
 
-    # map TreeNode -> gtree node id: rebuild by BFS order used in tree_to_gtree_nx
+    # rebuild by BFS order used in tree_to_gtree_nx
     q = [root]
     order: List[TreeNode] = []
     seen = set()
@@ -279,7 +279,7 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
         Directed tree graph with node names and a single root.
     mut_nodes : pd.DataFrame
         Mutation assignments by node name. Must contain a ``name`` column and a
-        ``site`` column. An ``n_mut`` column is optional.
+        "site" column. An "n_mut" column is optional.
 
     Returns
     -------
@@ -332,8 +332,6 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
 
     # Root
     roots = [n for n, a in gtree.nodes(data=True) if a.get("root", False)]
-    # if len(roots) != 1:
-    #     raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
     root = roots[0]
 
     def site_bundle(n: int) -> str:
@@ -355,7 +353,7 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
     gtree.nodes[root]["GT"] = rsite
     gtree.nodes[root]["last_mut"] = rsite  # last non-empty along path so far
 
-    # BFS traversal: inherit last_mut, extend GT only when site present
+    # inherit last_mut, extend GT only when site present
     for u in nx.bfs_tree(gtree, root):
         parent_GT = gtree.nodes[u].get("GT", "") or ""
         parent_last = gtree.nodes[u].get("last_mut", "") or ""
@@ -387,7 +385,6 @@ def mut_to_tree(gtree: nx.DiGraph, mut_nodes: pd.DataFrame) -> nx.DiGraph:
         gtree.nodes[nid]["clone"] = int(gt_to_clone.get(gt, 0))
 
     return gtree
-
 
 
 def mark_tumor_lineage(gtree: nx.DiGraph) -> nx.DiGraph:
@@ -449,6 +446,19 @@ def mark_tumor_lineage(gtree: nx.DiGraph) -> nx.DiGraph:
 
 
 def _norm_label(x: Optional[str]) -> str:
+    """
+    Normalize a node label to a non-null string.
+
+    Parameters
+    ----------
+    x : str or None
+        Input label.
+
+    Returns
+    -------
+    str
+        Normalized label, with "None" and "nan" mapped to "".
+    """
     if x is None:
         return ""
     x = str(x)
@@ -456,16 +466,39 @@ def _norm_label(x: Optional[str]) -> str:
 
 
 def _graph_root(G: nx.DiGraph) -> int:
+    """
+    Return the root node of a directed tree graph.
+
+    Parameters
+    ----------
+    G : nx.DiGraph
+        Directed graph with a single root.
+
+    Returns
+    -------
+    int
+        Root node identifier.
+    """
     roots = [n for n in G.nodes if G.in_degree(n) == 0]
-    # if len(roots) != 1:
-    #     raise ValueError(f"Expected exactly one graph root, found {len(roots)}.")
+
     return roots[0]
 
 
 def _reindex_graph_from_root(G: nx.DiGraph, root: int) -> nx.DiGraph:
     """
-    Reindex graph nodes to 0..n-1 by DFS preorder from the root.
-    Any unreachable nodes are appended afterward for safety.
+    Reindex graph nodes by depth-first preorder from a root.
+
+    Parameters
+    ----------
+    G : nx.DiGraph
+        Input directed graph.
+    root : int
+        Root node identifier.
+
+    Returns
+    -------
+    nx.DiGraph
+        Relabeled graph with nodes indexed from "0" to "n - 1".
     """
     dfs_order = list(nx.dfs_preorder_nodes(G, source=root))
     rest = [n for n in G.nodes if n not in dfs_order]
@@ -473,7 +506,21 @@ def _reindex_graph_from_root(G: nx.DiGraph, root: int) -> nx.DiGraph:
     mapping = {old: i for i, old in enumerate(order)}
     return nx.relabel_nodes(G, mapping, copy=True)
 
+
 def label_edges(Gm: nx.DiGraph) -> nx.DiGraph:
+    """
+    Annotate graph edges with source, target, and combined labels.
+
+    Parameters
+    ----------
+    Gm : nx.DiGraph
+        Directed graph with node label annotations.
+
+    Returns
+    -------
+    nx.DiGraph
+        Input graph with updated edge label attributes.
+    """
     for u, v in Gm.edges:
         from_label = Gm.nodes[u].get("label", "")
         to_label = Gm.nodes[v].get("label", "")
@@ -484,6 +531,19 @@ def label_edges(Gm: nx.DiGraph) -> nx.DiGraph:
 
 
 def transfer_links(Gm: nx.DiGraph) -> nx.DiGraph:
+    """
+    Transfer node linkage information onto graph edges.
+
+    Parameters
+    ----------
+    Gm : nx.DiGraph
+        Directed graph with node linkage annotations.
+
+    Returns
+    -------
+    nx.DiGraph
+        Input graph with updated edge linkage attributes.
+    """
     for u, v in Gm.edges:
         Gm.edges[u, v]["from_node"] = Gm.nodes[u].get("node", None)
         Gm.edges[u, v]["to_node"] = Gm.nodes[v].get("node", None)
@@ -492,14 +552,19 @@ def transfer_links(Gm: nx.DiGraph) -> nx.DiGraph:
 
 def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
     """
-      - contract gtree by last_mut
-      - label contracted vertices by last_mut
-      - attach one original node name to each mutation label via site
-      - relabel vertices deterministically from the actual root
+    Construct a contracted mutation graph from an annotated tree.
+
+    Parameters
+    ----------
+    gtree : nx.DiGraph
+        Directed tree graph with "last_mut", "site", and node name attributes.
+
+    Returns
+    -------
+    nx.DiGraph
+        Directed mutation graph indexed from the root in deterministic order.
     """
     roots = [n for n, a in gtree.nodes(data=True) if a.get("root", False)]
-    # if len(roots) != 1:
-    #     raise ValueError(f"Expected exactly 1 root in gtree, found {len(roots)}.")
     gtree_root = roots[0]
     root_label = _norm_label(gtree.nodes[gtree_root].get("last_mut", ""))
 
@@ -568,18 +633,24 @@ def get_mut_graph(gtree: nx.DiGraph) -> nx.DiGraph:
 
 def label_genotype(Gm: nx.DiGraph, root: Optional[int] = None) -> nx.DiGraph:
     """
+    Annotate a mutation graph with genotype strings and clone identifiers.
 
-      - GT(root) = label(root)
-      - for each other vertex, GT is the concatenation of non-empty labels
-        along the root->vertex path
-      - clone is DFS preorder rank from the root
+    Parameters
+    ----------
+    Gm : nx.DiGraph
+        Directed mutation graph with node label attributes.
+    root : int or None, default=None
+        Root node identifier. If None, the graph root is inferred.
+
+    Returns
+    -------
+    nx.DiGraph
+        Input graph with updated "GT" and "clone" node attributes.
     """
     if root is None:
         root = _graph_root(Gm)
-    # if root not in Gm:
-    #     raise ValueError(f"Mutation graph must contain root node id {root}.")
-
-    # unique root->v path in this rooted mutation graph
+    
+    # unique root->v path in rooted mutation graph
     for v in Gm.nodes:
         path = nx.shortest_path(Gm, source=root, target=v)
         labels = [_norm_label(Gm.nodes[u].get("label", "")) for u in path]
@@ -594,6 +665,19 @@ def label_genotype(Gm: nx.DiGraph, root: Optional[int] = None) -> nx.DiGraph:
 
 
 def _normalize_gt(gt: Any) -> str:
+    """
+    Normalize a genotype value to a non-null string.
+
+    Parameters
+    ----------
+    gt : Any
+        Input genotype value.
+
+    Returns
+    -------
+    str
+        Normalized genotype string, with null-like values mapped to "".
+    """
     if gt is None or (isinstance(gt, float) and np.isnan(gt)):
         return ""
     s = str(gt).strip()
@@ -602,10 +686,19 @@ def _normalize_gt(gt: Any) -> str:
 
 def _build_canonical_gt_clone_map(gt_series: pd.Series, clone_series: pd.Series) -> Dict[str, int]:
     """
-    Build a 1:1 GT->clone map with the invariant:
-      - empty genotype ("") is clone 0
-      - non-empty genotypes are assigned unique positive clone ids
-    Existing non-zero clone ids are reused when unambiguous.
+    Build a canonical one-to-one mapping from genotype strings to clone ids.
+
+    Parameters
+    ----------
+    gt_series : pd.Series
+        Genotype values.
+    clone_series : pd.Series
+        Clone identifiers.
+
+    Returns
+    -------
+    dict of str to int
+        Mapping from normalized genotype strings to clone ids.
     """
     tmp = pd.DataFrame({"GT": gt_series.map(_normalize_gt), "clone": clone_series})
     tmp = tmp.drop_duplicates()
@@ -640,10 +733,23 @@ def _merge_two_vertices(
     node_tar: Optional[str] = None,
     ) -> nx.DiGraph:
     """
-      - merged label is paste0(sort(c(label_keep, label_drop)), collapse=',')
-        i.e. sort whole vertex labels, DO NOT split/deduplicate mutations
-      - node attribute is overwritten by node_tar if provided
-      - reindex deterministically from the actual root
+    Merge two nodes in a mutation graph and reindex from the root.
+
+    Parameters
+    ----------
+    Gm : nx.DiGraph
+        Directed mutation graph.
+    keep : int
+        Node identifier to retain.
+    drop : int
+        Node identifier to remove.
+    node_tar : str or None, default=None
+        Replacement "node" attribute for the retained vertex.
+
+    Returns
+    -------
+    nx.DiGraph
+        Updated graph with merged nodes and refreshed edge annotations.
     """
     keep_label = "" if Gm.nodes[keep].get("label", None) is None else str(Gm.nodes[keep]["label"])
     drop_label = "" if Gm.nodes[drop].get("label", None) is None else str(Gm.nodes[drop]["label"])
@@ -678,13 +784,33 @@ def _merge_two_vertices(
 
 
 def get_move_cost(muts: str, node_ori: str, node_tar: str, l_df: pd.DataFrame) -> float:
+    """
+    Compute the score difference for moving mutations between two nodes.
+
+    Parameters
+    ----------
+    muts : str
+        Mutation label or comma-separated mutation labels.
+    node_ori : str
+        Source node label in "l_df".
+    node_tar : str
+        Target node label in "l_df".
+    l_df : pd.DataFrame
+        Score matrix with node labels as rows and mutation labels as columns.
+
+    Returns
+    -------
+    float
+        Sum of score differences between source and target nodes for the
+        selected mutations. Returns "inf" when the move is not defined.
+    """
     if muts is None:
         return float("inf")
     muts = str(muts)
     if muts == "":
         return float("inf")
 
-    # R splits only if comma exists
+    # splits only if comma exists
     ms = muts.split(",") if "," in muts else [muts]
 
     if node_ori is None or node_tar is None:
@@ -704,6 +830,21 @@ def get_move_cost(muts: str, node_ori: str, node_tar: str, l_df: pd.DataFrame) -
 
 
 def get_move_opt(Gm: nx.DiGraph, l_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Find the lowest-cost mutation move across graph edges.
+
+    Parameters
+    ----------
+    Gm : nx.DiGraph
+        Directed mutation graph with node label and linkage annotations.
+    l_df : pd.DataFrame
+        Score matrix with node labels as rows and mutation labels as columns.
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary describing the best move and its cost.
+    """
     best = {"cost": float("inf")}
 
     for u, v in Gm.edges:
@@ -750,12 +891,27 @@ def simplify_history(
     max_cost: float = 150.0,
     n_cut: int = 0,
     verbose: bool = True,
-) -> nx.DiGraph:
+    ) -> nx.DiGraph:
     """
-    R-faithful intent:
-      - if n_cut > 0, use max_cost = Inf
-      - iteratively apply the least-cost move
-      - merge edge endpoints and preserve node_tar according to move direction
+    Simplify a mutation history graph by iteratively merging low-cost edges.
+
+    Parameters
+    ----------
+    Gm : nx.DiGraph
+        Directed mutation graph.
+    l_df : pd.DataFrame
+        Score matrix used to evaluate mutation moves.
+    max_cost : float, default=150.0
+        Maximum allowed cost for a merge operation.
+    n_cut : int, default=0
+        Minimum number of edges to retain.
+    verbose : bool, default=True
+        Whether to log applied merge operations.
+
+    Returns
+    -------
+    nx.DiGraph
+        Simplified mutation graph.
     """
     if n_cut > 0:
         max_cost = float("inf")
@@ -802,11 +958,23 @@ class TreePost:
 
 def get_tree_post(tree: TreeNode, P_df: pd.DataFrame, clip_eps: float = 1e-10) -> TreePost:
     """
+    Compute tree posterior outputs from a phylogenetic tree and probability matrix.
 
+    Parameters
+    ----------
+    tree : TreeNode
+        Input phylogenetic tree.
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and sites as columns.
+    clip_eps : float, default=1e-10
+        Lower bound used for numerical stability during scoring.
+
+    Returns
+    -------
+    TreePost
+        Tree posterior object containing the annotated tree and score matrix.
     """
     tree_stats = score_tree_treenode_fast(tree, P_df, get_l_matrix=True, clip_eps=clip_eps)
-    # if tree_stats.l_matrix is None:
-    #     raise RuntimeError("Expected l_matrix from score_tree_treenode_fast(get_l_matrix=True).")
     l_df = pd.DataFrame(tree_stats.l_matrix, index=tree_stats.row_labels, columns=P_df.columns)
 
     gtree = annotate_tree(tree, P_df, clip_eps=clip_eps)
@@ -822,10 +990,27 @@ def get_gtree(
     verbose: bool = True,
     ) -> nx.DiGraph:
     """
-      - computes l_matrix + initial gtree
-      - builds mut graph, simplifies history, labels genotype
-      - transfers back onto gtree with clone ids
-      - marks tumor lineage
+    Build and annotate a genotype tree from a phylogenetic tree.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Input phylogenetic tree.
+    P_df : pd.DataFrame
+        Probability matrix with tips as rows and sites as columns.
+    n_cut : int, default=0
+        Minimum number of edges to retain during history simplification.
+    max_cost : float, default=0.0
+        Maximum allowed merge cost during history simplification.
+    clip_eps : float, default=1e-10
+        Lower bound used for numerical stability during scoring.
+    verbose : bool, default=True
+        Whether to log simplification operations.
+
+    Returns
+    -------
+    nx.DiGraph
+        Annotated genotype tree.
     """
     post = get_tree_post(tree, P_df, clip_eps=clip_eps)
 
@@ -844,7 +1029,6 @@ def get_gtree(
                 GT=a.get("GT", None),
             )
         )
-    #mut_nodes = pd.DataFrame(vertices) #.dropna(subset=["name"])  # only those that map to phylo nodes
     mut_nodes = pd.DataFrame(vertices, columns=["name", "site", "clone", "GT"])
 
     # Keep only rows that can be transferred back onto gtree by name.
@@ -866,6 +1050,35 @@ def get_clone_post(
     Z_cnv_col: str = "Z_cnv",
     Z_n_col: str = "Z_n",
     ) -> pd.DataFrame:
+    """
+    Compute per-cell posterior clone probabilities from expression and allele evidence.
+
+    Parameters
+    ----------
+    gtree : nx.DiGraph
+        Annotated genotype tree with node genotype, clone, and compartment attributes.
+    exp_post : pd.DataFrame
+        Expression-based segment posterior table.
+    allele_post : pd.DataFrame
+        Allele-based segment posterior table.
+    seg_col : str, default="seg"
+        Segment identifier column.
+    cell_col : str, default="cell"
+        Cell identifier column.
+    cnv_state_col : str, default="cnv_state"
+        CNV state column used to exclude neutral segments.
+    Z_cnv_col : str, default="Z_cnv"
+        Log-score column for the CNV model.
+    Z_n_col : str, default="Z_n"
+        Log-score column for the neutral model.
+
+    Returns
+    -------
+    pd.DataFrame
+        Per-cell clone posterior summary including the most likely clone and
+        genotype, clone posterior probabilities, tumor posterior mass, and
+        inferred compartment.
+    """
     
     # clones table from gtree nodes; canonicalize GT<->clone mapping first.
     nodes_df = pd.DataFrame([dict(GT=_normalize_gt(a.get("GT", "")),
