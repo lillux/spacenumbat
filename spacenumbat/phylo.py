@@ -157,7 +157,7 @@ def tree_to_gtree_nx(tree: TreeNode) -> nx.DiGraph:
     return G
 
 
-def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode) -> None:
+def _set_gtree_names_from_lmatrix_rows(gtree: nx.DiGraph, tree: TreeNode, row_labels: List[str]) -> None:
     """
     Assign node names in a graph tree to match l-matrix row conventions.
 
