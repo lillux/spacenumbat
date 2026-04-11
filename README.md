@@ -9,13 +9,13 @@
 Our implementation expands the original algorithm by including an optional spatial signal enhancement algorithm that can be used for the analysis of spatial transcriptomics data.
 `spacenumbat` is compatible with the [scverse](https://scverse.org/) ecosystem, and is developed by the [λ Lab](https://research.hsr.it/en/centers/omics-sciences/lambda-lab.html).
 
-As the original R implementation, `spacenumbat` combines:
+As the original R implementation, to recover tumor subclones and their CNA genotypes `spacenumbat` combines:
 
 - **Expression-derived CNA signal** (gene-level count shifts),
 - **Allele-specific signal** (allelic imbalance),
 - **Phylogenetic structure** (clone relationships inferred from per-cell CNA posteriors),
 
-to recover tumor subclones and their CNA genotypes.
+
 
 
 ## Spatial algorithm
@@ -62,7 +62,7 @@ This procedure is a random walk with restart and yields a density-corrected, loc
 
 Installation in a [miniforge](https://github.com/conda-forge/miniforge) environment is suggested.
 
-## Conda env creation
+### Conda env creation
 
 An *env* called *space* can be created with:
 ```bash
@@ -74,22 +74,23 @@ The env can be accessed with:
 conda activate space
 ```
 
-## `spacenumbat` installation
+### `spacenumbat` installation
 
 Once in your env, the library can be istalled using `pip` in two ways:
 
 ### Editable mode
 
 Clone the library from GitHub with:
+
 ```bash
 git clone https://github.com/lillux/spacenumbat.git
 ```
 
-```
+```bash
 cd spacenumbat
 ```
 
-```
+```bash
 pip install -e .
 ```
 
@@ -103,11 +104,82 @@ pip install git+https://github.com/lillux/spacenumbat.git#egg=spacenumbat
 
 ### Required libraries
 
-Some dependencies are required to run `spacenumbat` that can be installed through `pip`, specifically:
+To run the preprocessing step, consisting in SNPs pileup and allele phasing, the following tools are required:
+
+- [`samtools`](https://www.htslib.org/)
+- [`cellsnp-lite`](https://github.com/single-cell-genetics/cellsnp-lite)
+- [`eagle2`](https://alkesgroup.broadinstitute.org/Eagle/)
+
+`samtools` and `cellsnp-lite` can be installed with `conda` in your active env:
+
+```bash
+conda install samtools cellsnp-lite -c conda-forge
+```
+
+`Eagle2` can be found at the following link: [`Eagle2`](https://alkesgroup.broadinstitute.org/Eagle/downloads/), where the `Eagle_v2.4.1.tar.gz` file can be download.\
+It contains the executable file `eagle` and the tables required by `spacenumbat` preprocessing.
+
+
+At April 2026 some dependencies are outdated on conda, but can be installed through `pip`, specifically:
+
+- [`spatialdata`](https://spatialdata.scverse.org/en/stable/)
+- [`squidpy`](https://squidpy.readthedocs.io/en/stable/)
 
 ``` bash
 pip install spatialdata spatialdata_io spatialdata_plot squidpy
 ```
+
+### Required panels
+
+To perform SNPs pileup and allele phasing two reference panels are required:
+
+- [1000G SNP VCF](https://sourceforge.net/projects/cellsnp/files/SNPlist/)
+
+```bash
+# hg38
+wget https://sourceforge.net/projects/cellsnp/files/SNPlist/genome1K.phase3.SNP_AF5e2.chr1toX.hg38.vcf.gz
+```
+
+- [1000G Reference Panel](http://pklab.med.harvard.edu/teng/data/1000G_hg38.zip)
+
+```bash
+# hg38
+wget http://pklab.med.harvard.edu/teng/data/1000G_hg38.zip
+```
+
+# Data preprocessing
+ The script `spacenumbat/preprocessing/pileup_n_phase.py` is used to perform allele data preprocessing.
+
+`pileup_n_phase.py` has the following arguments:
+
+ - `--label`: label for the current run. One per run.
+ - `--samples`: sample name(s). Used to create per-sample pileup directories and to name final output files.
+ - `--bams`: Path(s) to input BAM file(s). This is always required. The interpretation depends on the selected mode: one BAM per sample in default and bulk modes, or a BAM list in `--smartseq` mode.
+ - `--barcodes` Path(s) to barcode file(s). Required in default single-cell mode and in spatial transcriptomics data. Passed differently in `--smartseq` mode. Ignored in `--bulk` mode.
+ - `--gmap`: Path to the genetic map file. Used both by `Eagle2` during phasing and later by Python to interpolate centiMorgan (cM) positions for SNPs. This is provided by the `Eagle2` downloaded with the instruction above, in `Eagle_v2.4.1/tables/genetic_map_hg38_withX.txt.gz`.
+ - `--eagle`: Path to the Eagle2 executable. The default assumes eagle is available in the shell PATH. If eagle is not available in shell PATH the correct path to eagle executable should be given.
+ - `--snpvcf`: Path to the candidate 1000G SNP VCF used by cellsnp-lite as the pileup target loci. 
+ - `--paneldir`: Directory containing Eagle2 reference panel files, expected as `chr1.genotypes.bcf` through `chr22.genotypes.bcf`. This is the path to the directory in which the 1000G Reference Panel downloaded above had been decompressed.
+ - `--outdir`: Output directory where the script writes pileup results, phasing files, logs, and final allele-count tables. 
+ - `--ncores`: Number of threads to use for both `cellsnp-lite` and `Eagle2`.
+
+Example code to run the script in single-cell mode (this works for spatial transcriptomics and scATAC):
+
+```bash
+python /spacenumbat/preprocessing/pileup_n_phase.py \
+    --label sample1 \
+    --samples sample1 \
+    --bams sample1/outs/possorted_genome_bam.bam \
+    --barcodes sample1/outs/filtered_feature_bc_matrix/barcodes.tsv \
+    --gmap Eagle_v2.4.1/tables/genetic_map_hg38_withX.txt.gz \
+    --eagle Eagle_v2.4.1/eagle \
+    --snpvcf genome1K.phase3.SNP_AF5e2.chr1toX.hg38.vcf.gz \
+    --paneldir 1000G_hg38 \
+    --outdir path/to/out \
+    --ncores 16
+```
+
+At the end of a succesfull run of preprocessing, in the directory specified in the `--outdir` argument there will be some directories and files, including a file called `{--sample}_allele_counts.tsv.gz` that is required for the `spacenumbat` pipeline. 
 
 # Run
 
@@ -115,55 +187,75 @@ The main entry point is:
 
 - `spacenumbat.run_spacenumbat(...)` (implemented in `spacenumbat/main.py`).
 
----
+We may use this code as an example of running the `spacenumbat` pipeline after preprocessing:
 
-## What the library does for CNA prediction
+```python
+import pandas as pd
+import spacenumbat
+import spatialdata_io
 
-At a high level, `spacenumbat` predicts CNAs by iteratively:
+10x_spaceranger_outs_path = "sample1/outs"
+sample_id = "sample1"
+df_allele_path = "sample1_allele_counts.tsv"
 
-1. **Validating and harmonizing inputs** across expression, allele counts, and genome annotation.
-2. **Building initial cell groupings** from smoothed expression profiles.
-3. **Calling group-level CNAs** with HMM-based segmentation.
-4. **Deriving consensus segments** and retesting them.
-5. **Computing per-cell posterior probabilities** from expression and allele evidence.
-6. **Combining evidence** into joint CNA posteriors (optionally spatially smoothed).
-7. **Inferring clone phylogeny**, reassigning cells, and refining clone/subtree definitions.
-8. Repeating for `max_iter` iterations, then writing final clone-level profiles and outputs.
+counts_mat_space = spatialdata_io.visium(10x_cellranger_outs_path,
+                                         dataset_id = sample_id,
+                                         var_names_make_unique = False)
 
+counts_mat = counts_mat_space.tables['table'].copy()
+lambdas_ref = spacenumbat.data.ref_hca.copy()
+df_allele = pd.read_table(df_allele_path, sep='\t')
 
----
+current_out_path = "path/to/sample1_out"
+ncores = 16
+
+sn_out = spacenumbat.run_spacenumbat(count_mat=counts_mat.copy(),
+                                     lambdas_ref=lambdas_ref.copy(),
+                                     df_allele=df_allele.copy(),
+                                     genome="hg38",
+                                     ncores=ncores,
+                                     call_clonal_loh=True,
+                                     filter_hla_hg38=True,
+                                     out_dir=current_out_path, 
+                                     max_entropy=0.8, 
+                                     ncores_nni=ncores, 
+                                     spatial=True,
+                                     )
+```
+
 
 ## `run_spacenumbat()` in detail
 
-## Function signature
+### Function signature
 
 ```python
-spacenumbat.run_spacenumbat(
-    count_mat,
-    lambdas_ref,
-    df_allele,
-    gtf=None,
-    genome='hg38',
-    out_dir="path/to/dir",
-    ...
-)
+spacenumbat.run_spacenumbat(count_mat=counts_mat.copy(),
+                            lambdas_ref=lambdas_ref.copy(),
+                            df_allele=df_allele.copy(),
+                            genome="hg38",
+                            ncores=ncores,
+                            call_clonal_loh=True,
+                            filter_hla_hg38=True,
+                            out_dir=current_out_path, 
+                            max_entropy=0.8, 
+                            ncores_nni=ncores, 
+                            spatial=True,
+                            )
 ```
 
-## Core required inputs
+### Core required inputs
 
 - **`count_mat`** (`anndata.AnnData`): expression count matrix (cells × genes in `AnnData` convention).
 - **`lambdas_ref`** (`DataFrame`): reference normalized expression profile(s). A reference profile is integrated in the library, and can be found at `spacenumbat.data.ref_hca`.\
 It is recommendend to use a reference profiles of euploid samples obtained with the same sequencing technology of the samples to be analyzed.
 - **`df_allele`** (`DataFrame`): per-cell allele counts from the allele preprocessing workflow.
 
-## Optional genomic annotation
+### Optional genomic annotation
 
 - `gtf=None` and `genome in {"hg38", "hg19", "mm10"}` uses packaged annotation tables.
 - If custom `gtf` is provided, it is validated and used directly.
 
----
-
-## Parameters most relevant to CNA prediction quality
+### Parameters most relevant to CNA prediction quality
 
 - **`min_LLR`**: confidence threshold for CNA retention (higher = stricter).
 - **`min_overlap`**: agreement requirement when deriving consensus segments.
@@ -174,79 +266,37 @@ It is recommended to increase it (eg. to 0.8) when analyzing spatial trascriptom
 - **`multi_allelic`, `p_multi`**: enables and thresholds multi-allelic CNA detection.
 - **`min_cells`**: drops very small groups to avoid unstable HMM and phylogeny reconstruction steps.
 
----
-
-## Spatial CNA mode (optional)
+### Spatial CNA mode (optional)
 
 Set `spatial=True` to integrate the spatial graph connectivity structure in the posterior smoothing. Key options:
 
----
-
-### `spatial_decay`
+#### `spatial_decay`
 
 Implementations of distance-to-weight kernels that transform a *dissimilarity* matrix
 (for example, a distance matrix) into an ***affinity*** matrix.
 
-**`"gaussian"`**
-
-$w(d)=\exp\left(-d^2/\sigma^2\right)$\
-Fast decay and strongly local. Preserves boundaries well.\
-**Use when:** sharp local structure matters and leakage across boundaries should be minimized.
-
-**`"exp"`**
-
-$w(d)=\exp\left(-d/\ell\right)$\
-Allows moderate borrowing across more distant neighbors. Less aggressive than Gaussian.\
-**Use when:** a smoother, slightly broader local kernel is desired.
-
-**`"invdist"`**
-
-$w(d)=1/(d+\varepsilon)^p$\
-Emphasizes very small distances. Scale-free, but can become unstable or overly dominated by near-zero distances.\
-**Use when:** nearest-neighbor dominance is explicitly desired and distance values are well behaved.
-
-
-**`"cauchy"`**
-
-$w(d)=1/(1+(d/\sigma)^2)$\
-Bounded and robust. More tolerant of moderate distances than Gaussian, and more stable than inverse-distance near zero.\
-**Use when:** distances are noisy or heterogeneous and a robust compromise is needed.
+| kind         | Weight function            | Behavior                         | Use when                                     |
+| ------------ | -------------------------- | -------------------------------- | -------------------------------------------- |
+| `"gaussian"` | $w(d)=\exp(-d^2/\sigma^2)$ | Very local, fast decay           | Sharp local structure, boundary preservation |
+| `"exp"`      | $w(d)=\exp(-d/\ell)$       | Broader than Gaussian            | Slightly smoother local borrowing            |
+| `"invdist"`  | $w(d)=1/(d+\varepsilon)^p$ | Strong nearest-neighbor emphasis | Nearest neighbors should dominate            |
+| `"cauchy"`   | $w(d)=1/(1+(d/\sigma)^2)$  | Robust, moderate tail            | Noisy or heterogeneous distances             |
 
 ---
+---
 
-### `spatial_method`
+#### `spatial_method`
 
 Chooses the method used to perform spatial smoothing of the CNA probability graph.
 
 
-**`"degree"`**
-
-$$Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$$
-
-One-step neighborhood average using the connectivity matrix. Includes self-loops and only immediate neighbors. Does not explicitly use expression distance, only spatial constraint.\
-**Cons:** limited to one-hop smoothing.\
-**Use when:** a mild local average is sufficient.
+| method      | Update / rule                                                   | Behavior                                    | Use when                                  |
+| ----------- | --------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------- |
+| `"degree"`  | $Z_i=\frac{\sum_j (A_{ij}+I_{ij})X_j}{\sum_j (A_{ij}+I_{ij})}$  | One-hop local average                       | Mild local smoothing is enough            |
+| `"diffuse"` | $Z^{(t+1)}=\alpha PZ^{(t)}+(1-\alpha)X$                         | Multi-step diffusion with restart           | Spatially coherent signal needs denoising |
+| `"cpr"`     | $Z^{(t+1)}=\alpha PZ^{(t)}+(1-\alpha)X$ with density correction | Geometry-aware diffusion, less density bias | Graph density is uneven                   |
 
 
-**`"diffuse"`**
-
-$$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$$ where $$P=D^{-1}A$$
-
-It is an iterative random-walk diffusion with restart. Performs multi-step smoothing over the graph. `alpha` controls smoothing strength and `steps` controls diffusion depth. The restart term preserves fidelity to the original signal.\
-**Cons:** can oversmooth or leak across boundaries if `alpha` or `steps` are too large.\
-**Use when:** signals are spatially coherent and moderate denoising is needed.
-
-
-**`"cpr"`**
-
-$$Z^{(t+1)}=\alpha P Z^{(t)}+(1-\alpha)X$$
-
-with a density-corrected transition operator.\
-Performs personalized PageRank-style diffusion with Coifman density correction. Reduces bias toward densely connected regions. `coifman_alpha` controls density correction, and `lazy` adds self-retention to reduce leakage and improve stability.\
-**Cons:** more parameters to tune and slightly less direct to interpret.\
-**Use when:** graph density is uneven or a more geometry-aware diffusion is desired.
-
----
 
 ## Typical output written to `out_dir`
 
@@ -268,30 +318,24 @@ During execution, `run_spacenumbat` writes intermediate and final files such as:
 - `geno_*.tsv`: per-spot CNAs probability matrix.
 - Optional plots (`*.jpg`, `*.png`) when `plot_results=True`.
 
----
 
-## Minimal usage example
+## What the library does for CNA prediction
 
-```python
-import spacenumbat
+At a high level, `spacenumbat` predicts CNAs by iteratively:
 
-results = spacenumbat.run_spacenumbat(
-    count_mat=count_adata,
-    lambdas_ref=reference_profile,
-    df_allele=allele_df,
-    genome="hg38",
-    out_dir="./numbat_out",
-    init_k=3,
-    max_iter=2,
-    min_LLR=5,
-    spatial=True,
-    max_entropy=0.8,
-)
-```
+1. **Validating and harmonizing inputs** across expression, allele counts, and genome annotation.
+2. **Building initial cell groupings** from smoothed expression profiles.
+3. **Calling group-level CNAs** with HMM-based segmentation.
+4. **Deriving consensus segments** and retesting them.
+5. **Computing per-cell posterior probabilities** from expression and allele evidence.
+6. **Combining evidence** into joint CNA posteriors (optionally spatially smoothed).
+7. **Inferring clone phylogeny**, reassigning cells, and refining clone/subtree definitions.
+8. Repeating for `max_iter` iterations, then writing final clone-level profiles and outputs.
 
----
 
 # Aknowledgments
 
-This project is an independent Python implementation of the ideas described in the [`Numbat`](https://github.com/kharchenkolab/numbat) publications and software ecosystem, originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
+`spacenumbat` is developed by the [λ Lab](https://research.hsr.it/en/centers/omics-sciences/lambda-lab.html).
+
+This project is an independent Python implementation of the ideas described in the [`Numbat`](https://github.com/kharchenkolab/numbat) publications and software ecosystem originally developed by [Teng Gao](https://github.com/teng-gao) and colleagues at the [Kharchenko Lab](https://github.com/kharchenkolab).
 
