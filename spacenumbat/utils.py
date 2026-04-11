@@ -259,7 +259,6 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
     if lambdas_ref.isna().any(axis=None):
         msg = ("The reference expression matrix 'lambdas_ref' "
                "should not contain any NA values.")
-        #log.error(msg)
         raise ValueError(msg)
 
     # Reject integer-only matrices (raw counts)
@@ -268,7 +267,6 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
         msg = ("The reference expression matrix 'lambdas_ref' appears to "
                "contain only integer values. Please normalise raw counts "
                "with aggregate_counts() before calling this routine.")
-        #log.error(msg)
         raise ValueError(msg)
 
     # check that Gene IDs (row index) are unique
@@ -951,10 +949,7 @@ def get_bulk(
         raise ValueError('Duplicated SNPs found, please check genotypes')
     
     # Filter out rows where lambda_ref is zero or gene is not NaN
-    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]
-
-    #bulk = sanityze_df(bulk) # TODO: remove it!!!!!!!!!!!!!!!!!!!!!!!!
-    
+    bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]    
     #bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     bulk = bulk.reset_index(drop=True)
