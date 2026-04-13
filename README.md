@@ -176,7 +176,7 @@ python /spacenumbat/preprocessing/pileup_n_phase.py \
     --ncores 16
 ```
 
-At the end of a succesfull run of preprocessing, in the directory specified in the `--outdir` argument there will be some directories and files, including a file called `{--sample}_allele_counts.tsv.gz` that is required for the `spacenumbat` pipeline. 
+At the end of a succesfull run of preprocessing, in the directory specified in the `--outdir` argument there will be some directories and files, including a file called `{--samples}_allele_counts.tsv.gz` that is required for the `spacenumbat` pipeline. 
 
 # Run
 
@@ -193,7 +193,7 @@ import spatialdata_io
 
 spaceranger_10x_outs_path = "sample1/outs"
 sample_id = "sample1"
-df_allele_path = "sample1_allele_counts.tsv"
+df_allele_path = "sample1_allele_counts.tsv". # path to the output file of the preprocessing step.
 
 counts_mat_space = spatialdata_io.visium(spaceranger_10x_outs_path,
                                          dataset_id = sample_id,
