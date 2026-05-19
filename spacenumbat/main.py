@@ -339,13 +339,15 @@ def run_spacenumbat(
                               nu=nu)
         segs_loh = utils.detect_clonal_loh(bulk, t=t, min_depth=min_depth, use_pbar=use_pbar)
         
-        #TODO remove this
-        log.info(f"segs_loh shape is: {segs_loh.shape}\nbulk shape is: {bulk.shape}")       
-        
-        if (segs_loh is not None) and (segs_loh.shape[0] > 0):
-            segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
+        if segs_loh is None:
+            log.info(f"No segments with clonal LoH detected. bulk shape is: {bulk.shape}")
         else:
-            log.info('No segments with clonal LoH detected.')
+            log.info(f"segs_loh shape is: {segs_loh.shape}\nbulk shape is: {bulk.shape}")
+            if segs_loh.shape[0] > 0:
+                segs_loh.to_csv(os.path.join(out_dir, "segs_loh.tsv"), sep="\t")
+            else:
+                log.info('No segments with clonal LoH detected.')
+
             
     # Calculate reference transcriptomic profile of cellwi th reference categories
     sc_refs = clustering.choose_ref_cor(count_mat, lambdas_ref, gtf)
