@@ -1017,7 +1017,10 @@ def fit_snp_rate(
 ## Annotate loh call
 def generate_postfix(n:List):
     '''
-    Generate alphabetical postfixes for a list of positive integers.
+    Generate alphabetical postfixes for a list of 1-based positive integers.
+
+    This mirrors numbat's R helper: 1 -> ``a``, 26 -> ``z``,
+    27 -> ``aa``.
 
     Parameters
     ----------
@@ -1027,7 +1030,7 @@ def generate_postfix(n:List):
     Raises
     ------
     ValueError
-        Raise ValueError if any of the integers are None.
+        Raise ValueError if any of the integers are None or less than 1.
 
     Returns
     -------
@@ -1040,16 +1043,15 @@ def generate_postfix(n:List):
         raise ValueError("Segment number cannot contain NA")
     
     alphabet = list(string.ascii_lowercase)
-    len_alphabet = len(alphabet)
     postfixes = []
     for number in n:
-        i = int(number)  # Ensure the number is an integer
+        i = int(number)
+        if i < 1:
+            raise ValueError("Segment number must be a positive integer")
         postfix = ''
-        while True:
-            i, remainder = divmod(i, len_alphabet)
+        while i > 0:
+            i, remainder = divmod(i - 1, len(alphabet))
             postfix = alphabet[remainder] + postfix
-            if i == 0:
-                break
         postfixes.append(postfix)
     return postfixes
 
@@ -1058,93 +1060,61 @@ def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
     """
     Annotate contiguous segments along each chromosome based on a state column.
 
-    This function scans rows within each chromosome in their existing order and
-    starts a new segment whenever the value in `var` changes from the previous row.
-    It then assigns a segment identifier per row and computes per-segment attributes.
+    This follows numbat's R implementation by sorting rows by ``CHROM`` and
+    ``snp_index`` before detecting state-change boundaries. Segment numbering is
+    restarted for each chromosome and uses alphabetical postfixes (``1a``,
+    ``1b``, ..., ``1z``, ``1aa``).
 
     Parameters
     ----------
     bulk : pandas.DataFrame
-        Long-form table containing at least the following columns:
-          - "CHROM" : chromosome identifier (will be cast to pandas "string" dtype)
-          - "POS" : genomic coordinate (integer-like)
-          - "snp_index" : monotone index along the chromosome (integer-like)
-          - "gene" : gene symbol (string-like or NA)
-          - "pAD" : allele depth for the “alternate” allele (numeric, may be NA)
-          - "{var}" : state used to split segments (e.g., "cnv_state")
-        Rows are assumed to be already ordered by genomic position within each
-        chromosome.
-
+        Long-form table containing at least the columns ``CHROM``, ``POS``,
+        ``snp_index``, ``gene``, ``pAD``, and ``var``.
     var : str, default 'cnv_state'
-        Name of the column in "bulk" that defines segment boundaries; a new
-        segment starts whenever this value changes across adjacent rows within
-        a chromosome.
+        Name of the column defining segment boundaries.
 
     Returns
     -------
     pandas.DataFrame
-        A copy of "bulk" with the following additional columns:
-          - "boundary" : 0/1 indicator; 1 where a new segment starts
-          - "seg" : segment identifier (string) per row
-          - "seg_start" / "seg_end" : min/max "POS" within the segment (int64)
-          - "seg_start_index" / "seg_end_index" : min/max "snp_index" in the segment
-          - "n_genes" : number of unique, non-null genes in the segment
-          - "n_snps" : number of rows in the segment with non-null "pAD"
-
-    Notes
-    -----
-    - The algorithm does NOT sort rows; it treats the current row order within each
-      chromosome as the traversal order for segmenting. An input sorted by "['CHROM', 'POS']" is expected.
-    - The return value is a new DataFrame (input is not modified in place).
-
-    Examples
-    --------
-    >>> df = df.sort_values(["CHROM", "POS"])
-    >>> out = annot_segs(df, var="cnv_state")
-    >>> out[["CHROM", "POS", "cnv_state", "seg"]].head()
+        A copy of ``bulk`` sorted by chromosome/index with segment identifiers
+        and per-segment metadata.
     """
 
-    # you need to reset index so you can pass portion of list (groups)
     bulk = bulk.copy().reset_index(drop=True)
-    bulk.CHROM = bulk.CHROM.astype('string')
-    boundary = []
-    postfix = []
-    cum_sum_test = 0
-    for chrom in bulk.CHROM.unique():
-        temp_sorted = bulk[bulk.loc[:, 'CHROM'] == chrom]
-        cum_sum_test += temp_sorted.shape[0]
-        boundary += [0]+[1 if temp_sorted.loc[:,var].iloc[i] != temp_sorted.loc[:,var].iloc[i - 1] else 0 for i in range(1,temp_sorted.shape[0])]
-        current_postfix = generate_postfix(np.cumsum(boundary[temp_sorted.index[0]:temp_sorted.index[-1]+1]))
-        postfix += [str(chrom)+i for i in current_postfix]
-    
-    # Natural sorting and cast to Categorical to avoid warnings
-    postfix = pd.Series(postfix)
-    bulk.loc[:,'boundary'] = boundary
-    bulk.loc[:,'seg'] = postfix
-    
-    seg_start = []
-    seg_end = []
-    seg_start_index = []
-    seg_end_index = []
-    n_genes = []
-    n_snps = []
-    
-    for seg in bulk.seg.unique():
-        current_seg = bulk[bulk.loc[:, 'seg'] == seg]
-        seg_len = current_seg.shape[0]
-        seg_start += list(np.repeat(current_seg.POS.min(), seg_len))
-        seg_end += list(np.repeat(current_seg.POS.max(), seg_len))
-        seg_start_index += list(np.repeat(current_seg.snp_index.min(), seg_len))
-        seg_end_index += list(np.repeat(current_seg.snp_index.max(), seg_len))
-        n_genes += list(np.repeat(current_seg.gene[~current_seg.gene.isnull()].unique().shape[0], seg_len))
-        n_snps += list(np.repeat(np.count_nonzero(~current_seg.pAD.isna()), seg_len))
-    
-    bulk.loc[:, 'seg_start'] = np.array(seg_start, dtype=np.int64)
-    bulk.loc[:, 'seg_end'] = np.array(seg_end, dtype=np.int64)
-    bulk.loc[:, 'seg_start_index'] = seg_start_index
-    bulk.loc[:, 'seg_end_index'] = seg_end_index
-    bulk.loc[:, 'n_genes'] = n_genes
-    bulk.loc[:, 'n_snps'] = n_snps
+    bulk['CHROM'] = bulk['CHROM'].astype('string')
+    bulk = bulk.sort_values(['CHROM', 'snp_index'], key=natsort.natsort_keygen()).reset_index(drop=True)
+
+    annotated = []
+    for chrom, group in bulk.groupby('CHROM', observed=True, sort=False):
+        group = group.copy()
+        boundary = group[var].ne(group[var].shift()).astype(int)
+        if len(boundary) > 0:
+            boundary.iloc[0] = 0
+        seg_numbers = boundary.cumsum() + 1
+        group['boundary'] = boundary.to_numpy()
+        group['seg'] = [f"{chrom}{postfix}" for postfix in generate_postfix(seg_numbers.tolist())]
+        annotated.append(group)
+
+    if not annotated:
+        return bulk.assign(
+            boundary=pd.Series(dtype=int),
+            seg=pd.Series(dtype=object),
+            seg_start=pd.Series(dtype=np.int64),
+            seg_end=pd.Series(dtype=np.int64),
+            seg_start_index=pd.Series(dtype=object),
+            seg_end_index=pd.Series(dtype=object),
+            n_genes=pd.Series(dtype=int),
+            n_snps=pd.Series(dtype=int),
+        )
+
+    bulk = pd.concat(annotated, ignore_index=True)
+    seg_groups = bulk.groupby('seg', observed=True, sort=False)
+    bulk['seg_start'] = seg_groups['POS'].transform('min').astype(np.int64)
+    bulk['seg_end'] = seg_groups['POS'].transform('max').astype(np.int64)
+    bulk['seg_start_index'] = seg_groups['snp_index'].transform('min')
+    bulk['seg_end_index'] = seg_groups['snp_index'].transform('max')
+    bulk['n_genes'] = seg_groups['gene'].transform(lambda x: x.dropna().nunique()).astype(int)
+    bulk['n_snps'] = seg_groups['pAD'].transform(lambda x: x.notna().sum()).astype(int)
 
     return bulk
 

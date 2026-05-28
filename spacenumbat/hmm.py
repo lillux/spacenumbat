@@ -382,8 +382,13 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     # Set 'cnv_state' to NaN for these segments
     bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = np.nan
     bulk.CHROM = bulk.CHROM.astype("string") # TODO check validity of conversion
-    # Fill NaN values in 'cnv_state' forward and backward within each chromosome
-    bulk['cnv_state'] = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].ffill().bfill()
+    # Fill NaN values in 'cnv_state' forward and backward within each chromosome.
+    # Keep both operations grouped: calling .bfill() on the result of a grouped
+    # .ffill() would back-fill across chromosome boundaries, unlike the original
+    # R zoo::na.locf(..., fromLast = TRUE) inside group_by(CHROM).
+    bulk['cnv_state'] = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].transform(
+        lambda x: x.ffill().bfill()
+    )
     # Check if any chromosome has all NaN in 'cnv_state'
     chrom_na = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].apply(lambda x: x.isna().all()).reset_index(name='all_na')
 

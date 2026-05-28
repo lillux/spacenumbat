@@ -703,6 +703,7 @@ def run_spacenumbat(
                                             nu=nu, 
                                             min_genes=min_genes, 
                                             common_diploid=False, 
+                                            diploid_chroms=diploid_chroms,
                                             ncores=ncores, 
                                             verbose=verbose, 
                                             retest=False)
