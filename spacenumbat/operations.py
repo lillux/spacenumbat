@@ -210,7 +210,7 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
         pd.DataFrame({
             'Chromosome': segs_all['CHROM'],
             'Start': segs_all['seg_start_index'],
-            'End': segs_all['seg_end_index'],
+            'End': segs_all['seg_end_index'] + 1,
             'Name': segs_all['vertex']
         }))
     
@@ -234,8 +234,8 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
         columns={'vertex':'to','seg_start_index':'start_y','seg_end_index':'end_y'})
     df_ov = df_ov.merge(segs_all_for_merge2, on='to', how='left')
     
-    df_ov['len_x'] = df_ov['end_x'] - df_ov['start_x']
-    df_ov['len_y'] = df_ov['end_y'] - df_ov['start_y']
+    df_ov['len_x'] = df_ov['end_x'] - df_ov['start_x'] + 1
+    df_ov['len_y'] = df_ov['end_y'] - df_ov['start_y'] + 1
     df_ov['frac_overlap_x'] = df_ov['len_overlap'] / df_ov['len_x']
     df_ov['frac_overlap_y'] = df_ov['len_overlap'] / df_ov['len_y']
     # keep edges above min_overlap
@@ -784,7 +784,7 @@ def get_exp_sc(
         pd.DataFrame({
             'Chromosome': gtf_temp['CHROM'],
             'Start': gtf_temp['gene_start'],
-            'End': gtf_temp['gene_end'],
+            'End': gtf_temp['gene_end'] + 1,
             'gene_index': gtf_temp['gene_index']
         })
     )
@@ -796,7 +796,7 @@ def get_exp_sc(
         pd.DataFrame({
             'Chromosome': segs_temp['CHROM'],
             'Start': segs_temp['seg_start'],
-            'End': segs_temp['seg_end'],
+            'End': segs_temp['seg_end'] + 1,
             'seg_index': segs_temp['seg_index']
         })
     )
@@ -804,6 +804,8 @@ def get_exp_sc(
     ov = pr_genes.join(pr_segs).as_df()
     
     df_ov = ov.rename(columns={'Chromosome':'CHROM','Start':'gene_start', 'End':'gene_end','Start_b':'seg_start','End_b':'seg_end'})
+    df_ov['gene_end'] = df_ov['gene_end'] - 1
+    df_ov['seg_end'] = df_ov['seg_end'] - 1
     df_ov = df_ov.merge(gtf_temp, on='gene_index', how='left')
     df_ov = df_ov.drop(['CHROM_y','gene_start_y','gene_end_y'], axis=1)
     df_ov = df_ov.rename(columns={'CHROM_x':'CHROM', 'gene_start_x':'gene_start', 'gene_end_x':'gene_end'})
@@ -868,12 +870,12 @@ def exclude_loh(exp_sc: ad.AnnData, segs_loh: Optional[pd.DataFrame] = None) -> 
     
     pr_genes = pr.PyRanges(pd.DataFrame({'Chromosome': exp_sc.var['CHROM'],
                                          'Start': exp_sc.var['gene_start'],
-                                         'End': exp_sc.var['gene_end'], # 'gene_start'
+                                         'End': exp_sc.var['gene_end'] + 1,
                                          'gene_index': exp_sc.var['gene_index']}))
     
     pr_loh = pr.PyRanges(pd.DataFrame({'Chromosome': segs_loh['CHROM'],
                                        'Start': segs_loh['seg_start'],
-                                       'End': segs_loh['seg_end'],
+                                       'End': segs_loh['seg_end'] + 1,
                                        'loh_index': np.arange(segs_loh.shape[0])}))
     
     ov = pr_genes.join(pr_loh).as_df()

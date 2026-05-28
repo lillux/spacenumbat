@@ -72,7 +72,7 @@ def annotate_genes(
     Notes
     -----
     - The function renames columns to conform to PyRanges expectations ('Chromosome', 'Start', 'End').
-    - SNP positions are treated as zero-length intervals for overlap detection.
+    - SNP positions are represented as half-open one-base intervals [POS, POS + 1).
     - Duplicate SNPs are removed during processing to avoid redundant annotations.
     """
     
@@ -81,7 +81,7 @@ def annotate_genes(
 
     snps_pr_df = pd.DataFrame({"Chromosome": snps["CHROM"].astype(str),
                                "Start": snps["POS"].astype(np.int64),
-                               "End": snps["POS"].astype(np.int64),
+                               "End": snps["POS"].astype(np.int64) + 1,
                                "snp_index": snps["snp_index"].astype(np.int64),
                                "snp_id": snps["snp_id"],
                               })
@@ -90,7 +90,7 @@ def annotate_genes(
     gtf2["gene_index"] = [i for i in range(gtf2.shape[0])]
     gtf_pr_df = pd.DataFrame({"Chromosome": gtf2["CHROM"].astype(str),
                               "Start": gtf2["gene_start"].astype(np.int64),
-                              "End": gtf2["gene_end"].astype(np.int64),
+                              "End": gtf2["gene_end"].astype(np.int64) + 1,
                               "gene": gtf2["gene"],
                               "gene_index": gtf2["gene_index"].astype(np.int64),
                              })
@@ -1017,20 +1017,20 @@ def fit_snp_rate(
 ## Annotate loh call
 def generate_postfix(n:List):
     '''
-    Generate alphabetical postfixes for a list of 1-based positive integers.
+    Generate alphabetical postfixes for a list of 0-based non-negative integers.
 
-    This mirrors numbat's R helper: 1 -> ``a``, 26 -> ``z``,
-    27 -> ``aa``.
+    This keeps Python indexing at call sites while preserving numbat-style labels:
+    0 -> ``a``, 25 -> ``z``, 26 -> ``aa``.
 
     Parameters
     ----------
     n : List
-        A list of positive integers.
+        A list of non-negative integers.
 
     Raises
     ------
     ValueError
-        Raise ValueError if any of the integers are None or less than 1.
+        Raise ValueError if any of the integers are None or negative.
 
     Returns
     -------
@@ -1046,8 +1046,9 @@ def generate_postfix(n:List):
     postfixes = []
     for number in n:
         i = int(number)
-        if i < 1:
-            raise ValueError("Segment number must be a positive integer")
+        if i < 0:
+            raise ValueError("Segment number must be a non-negative integer")
+        i += 1
         postfix = ''
         while i > 0:
             i, remainder = divmod(i - 1, len(alphabet))
@@ -1062,8 +1063,8 @@ def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
 
     This follows numbat's R implementation by sorting rows by ``CHROM`` and
     ``snp_index`` before detecting state-change boundaries. Segment numbering is
-    restarted for each chromosome and uses alphabetical postfixes (``1a``,
-    ``1b``, ..., ``1z``, ``1aa``).
+    restarted from zero for each chromosome and uses alphabetical postfixes
+    (``1a``, ``1b``, ..., ``1z``, ``1aa``).
 
     Parameters
     ----------
@@ -1090,7 +1091,7 @@ def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
         boundary = group[var].ne(group[var].shift()).astype(int)
         if len(boundary) > 0:
             boundary.iloc[0] = 0
-        seg_numbers = boundary.cumsum() + 1
+        seg_numbers = boundary.cumsum()
         group['boundary'] = boundary.to_numpy()
         group['seg'] = [f"{chrom}{postfix}" for postfix in generate_postfix(seg_numbers.tolist())]
         annotated.append(group)
@@ -1434,19 +1435,22 @@ def fill_neu_segs(segs_consensus: pd.DataFrame, segs_neu: pd.DataFrame) -> pd.Da
         - 'CHROM', 'seg_start', 'seg_end', 'seg_length', 'cnv_state', 'seg_cons'.
 
     """
-    # Convert segs_neu and segs_consensus to PyRanges    
+    # PyRanges uses half-open intervals [Start, End), while spacenumbat segment
+    # coordinates are stored as inclusive genomic coordinates. Convert every
+    # inclusive segment end to End + 1 before subtraction, then convert back.
     gr_neu = pr.PyRanges(chromosomes=segs_neu['CHROM'].astype('string'),
                          starts=segs_neu['seg_start'],
-                         ends=segs_neu['seg_end'])
+                         ends=segs_neu['seg_end'] + 1)
     gr_cons = pr.PyRanges(chromosomes=segs_consensus['CHROM'].astype('string'),
                           starts=segs_consensus['seg_start'],
-                          ends=segs_consensus['seg_end'])
+                          ends=segs_consensus['seg_end'] + 1)
     
     gr_gaps = gr_neu.subtract(gr_cons)
     gaps = gr_gaps.as_df().rename(columns={'Chromosome':'CHROM','Start':'seg_start','End':'seg_end'})
-    gaps['seg_length'] = gaps['seg_end'] - gaps['seg_start']
+    gaps['seg_end'] = gaps['seg_end'] - 1
+    gaps['seg_length'] = gaps['seg_end'] - gaps['seg_start'] + 1
     gaps = gaps[gaps['seg_length']>0]
-    segs_consensus['seg_length'] = segs_consensus['seg_end'] - segs_consensus['seg_start']
+    segs_consensus['seg_length'] = segs_consensus['seg_end'] - segs_consensus['seg_start'] + 1
     combined = pd.concat([segs_consensus, gaps], ignore_index=True)
     if 'cnv_state' not in combined.columns:
         combined['cnv_state'] = np.nan

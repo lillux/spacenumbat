@@ -5,8 +5,8 @@ from spacenumbat import hmm
 from spacenumbat import utils
 
 
-def test_generate_postfix_matches_r_style_sequence():
-    assert utils.generate_postfix([1, 2, 26, 27, 28, 52, 53]) == [
+def test_generate_postfix_uses_python_zero_based_indices():
+    assert utils.generate_postfix([0, 1, 25, 26, 27, 51, 52]) == [
         "a",
         "b",
         "z",
@@ -15,6 +15,11 @@ def test_generate_postfix_matches_r_style_sequence():
         "az",
         "ba",
     ]
+
+
+def test_generate_postfix_rejects_negative_indices():
+    with pytest.raises(ValueError, match="non-negative"):
+        utils.generate_postfix([-1])
 
 
 def test_annot_segs_sorts_by_chromosome_and_snp_index_before_segmenting():
@@ -53,3 +58,31 @@ def test_smooth_segs_fills_only_within_each_chromosome():
 
     with pytest.raises(ValueError, match="CHROM 2"):
         hmm.smooth_segs(bulk, min_genes=10)
+
+
+def test_fill_neu_segs_uses_inclusive_segment_ends_for_pyranges():
+    segs_consensus = pd.DataFrame(
+        {
+            "CHROM": ["1"],
+            "seg_start": [3],
+            "seg_end": [5],
+            "cnv_state": ["amp"],
+        }
+    )
+    segs_neu = pd.DataFrame(
+        {
+            "CHROM": ["1"],
+            "seg_start": [1],
+            "seg_end": [7],
+            "seg_length": [7],
+        }
+    )
+
+    out = utils.fill_neu_segs(segs_consensus, segs_neu)
+
+    assert out[["seg_start", "seg_end", "cnv_state", "seg_cons"]].to_dict("records") == [
+        {"seg_start": 1, "seg_end": 2, "cnv_state": "neu", "seg_cons": "1a"},
+        {"seg_start": 3, "seg_end": 5, "cnv_state": "amp", "seg_cons": "1b"},
+        {"seg_start": 6, "seg_end": 7, "cnv_state": "neu", "seg_cons": "1c"},
+    ]
+    assert out["seg_length"].tolist() == [2, 3, 2]

@@ -323,7 +323,7 @@ def preprocess_allele(
     pr_snps = pr.PyRanges(pd.DataFrame({
         "Chromosome": vcf_phased["CHROM"].astype(str),
         "Start": vcf_phased["POS"].astype(int),
-        "End": vcf_phased["POS"].astype(int),
+        "End": vcf_phased["POS"].astype(int) + 1,
         "snp_index_tmp": vcf_phased["snp_index_tmp"],
     }))
 
@@ -333,7 +333,7 @@ def preprocess_allele(
     pr_genes = pr.PyRanges(pd.DataFrame({
         "Chromosome": gtf_tmp["CHROM"].astype(str),
         "Start": gtf_tmp["gene_start"].astype(int),
-        "End": gtf_tmp["gene_end"].astype(int),
+        "End": gtf_tmp["gene_end"].astype(int) + 1,
         "gene_index_tmp": gtf_tmp["gene_index_tmp"],
     }))
 
