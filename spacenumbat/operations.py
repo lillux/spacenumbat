@@ -153,7 +153,7 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
     Parameters
     ----------
     segs_all
-        Input segments table. Expected columns (no explicit validation here):
+        Input segments table. Expected columns (no explicit validation):
         - CHROM
         - seg_start_index, seg_end_index
         - LLR_x, LLR_y
@@ -183,12 +183,7 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
     Notes
     -----
     - Overlap rule: the current filter keeps an edge if either interval meets the
-      threshold (more permissive). If you intended both intervals to pass, adjust
-      the filter accordingly.
-    - Zero-length segments (end == start) can cause division by zero when computing
-      overlap fractions; ensure non-zero lengths upstream or guard for them here.
-    - Natural sorting is applied using natsort for multi-column sorts; be aware it
-      may coerce values to strings when used across mixed dtypes.
+      threshold (permissive).
 
     Examples
     --------
@@ -338,10 +333,6 @@ def get_segs_consensus(
         the union of resolved aberrant segments, retest intervals (if any),
         and neutral segments filled via fill_neu_segs.
 
-    Examples
-    --------
-    >>> consensus = get_segs_consensus(bulks_df, min_LLR=6, min_overlap=0.5, retest=True)
-    >>> consensus.head()
     """
     
     bulks = bulks.copy()
@@ -373,10 +364,7 @@ def get_segs_consensus(
         "neu",
         segs_all.cnv_state)
     segs_star = segs_all[segs_all['cnv_state']!='neu'].copy()
-    #if segs_star.shape[0] == 0:
-    #    msg = "All segments have been predicted to be neutral. Try to decrease min_LLR."
-    #    log.info(msg)
-    #    return
+
     segs_star = resolve_cnvs(segs_star, min_overlap=min_overlap, debug=False)
     
     if retest:
@@ -413,8 +401,8 @@ def get_segs_consensus(
             if df_retest.shape[0] == 0:
                     df_retest = pd.DataFrame(columns=["CHROM", "seg_start", "seg_end", "cnv_state", "cnv_state_post"])
             else:
-                df_retest = df_retest[(df_retest['End'] - df_retest['Start']) > 0]
                 df_retest['End'] = df_retest['End'] - 1
+                df_retest = df_retest[(df_retest['End'] - df_retest['Start']) > 0]
                 # add cnv_state 'retest'
                 df_retest['cnv_state'] = 'retest'
                 df_retest['cnv_state_post'] = 'retest'
@@ -641,9 +629,6 @@ def test_multi_allelic(
 
     Notes
     -----
-    - No columns are created or dropped beyond those assigned in the body.
-      Ensure segs_consensus already includes the probability columns that may
-      be updated.
     - The function logs a summary with the number and IDs of multi-allelic
       segments found.
     - If bulks does not contain any rows passing the thresholds, no segments
@@ -1178,12 +1163,6 @@ def _compute_posterior_numba(
         Z_amp, Z_loh, Z_del, Z_bamp, Z_bdel, Z_n, Z, Z_cnv,
         p_amp, p_neu, p_del, p_loh, p_bamp, p_bdel, logBF, p_cnv, p_n.
 
-    Notes
-    -----
-    - Inputs must be contiguous float64 arrays for best Numba performance.
-    - Priors are used inside log operations; zeros will cause -inf. If needed,
-      clip priors to a small epsilon > 0 before calling.
-    - Parallelization uses prange over rows.
     """
     n = l21.shape[0]
     
@@ -1394,7 +1373,7 @@ def get_exp_post(
     segs_loh : Optional[pd.DataFrame], default None
         Intervals of clonal LOH to be excluded at the gene level by get_exp_sc.
         Expected columns include CHROM, seg_start, seg_end.
-    ncores : int, default 30
+    ncores : int, default 1
         Number of parallel workers used when computing per-cell likelihoods.
     verbose : bool, default True
         If True, prints progress and summaries.
@@ -1467,7 +1446,7 @@ def get_exp_post(
         "n_jobs": n_jobs,
         # `process_cell` closes over large AnnData/DataFrame objects. Using threads here
         # avoids repeatedly serializing those objects into child processes, which can
-        # otherwise trigger worker crashes and excessive memory usage on large samples.
+        # trigger worker crashes and excessive memory usage on large samples.
         "backend": "threading",
         # Keep dispatch bounded to avoid building up too many pending tasks/results
         # at once when cell count is large.
@@ -1670,7 +1649,6 @@ def get_allele_post(
     - SNPs are thinned within (cell, CHROM) by keeping only rows where inter_snp_dist > 250
       or the distance is missing (first SNP in a run).
     - MAF is computed as major / total. If DP or total are zero for a group, MAF may be NaN/inf.
-    - Requires scipy.stats.binom and compute_posterior to be available in scope.
 
     Raises
     ------
@@ -1695,16 +1673,14 @@ def get_allele_post(
                                             allele_counts['AD'],
                                             allele_counts['DP'] - allele_counts['AD'])
     
-    #warnings.filterwarnings('ignore')
     allele_counts['minor_count'] = allele_counts['DP'] - allele_counts['major_count']
     allele_counts['MAF'] = allele_counts['major_count'] / allele_counts['DP']
-    #warnings.filterwarnings('always')
     
     allele_counts = allele_counts.sort_values(["cell", "CHROM", "POS"], key=natsort.natsort_keygen())
     allele_counts['n_chrom_snp'] = allele_counts.groupby(['cell', 'CHROM'], sort=False, observed=True)['POS'].transform('count')
     allele_counts['inter_snp_dist'] = allele_counts.groupby(['cell', 'CHROM'], sort=False, observed=True)['POS'].diff()
     # Filter rows where inter_snp_dist > 250 or is NA.
-    allele_counts = allele_counts[(allele_counts['inter_snp_dist'] > 250) | (allele_counts['inter_snp_dist'].isna())]
+    allele_counts = allele_counts[(allele_counts['inter_snp_dist'] > 250) | (allele_counts['inter_snp_dist'].isna())]  # TODO: check skipping interval
     # Summarise by grouping over 'cell', 'CHROM', 'seg', and 'cnv_state'
     allele_post = allele_counts.groupby(['cell', 'CHROM', 'seg', 'cnv_state'],
                                          observed=True,
@@ -1805,7 +1781,7 @@ def get_joint_post(
         If True, apply neighborhood smoothing within each segment before merging.
     method
         Smoothing method passed to `neighbors_average` when `spatial=True`.
-        One of {"degree","weighted","diffuse","cpr"}.
+        One of {"degree","diffuse","cpr"}.
     distance_key
         Key in `count_mat.obsp` for the distance matrix (used by certain methods).
     method_kwargs
@@ -1824,13 +1800,6 @@ def get_joint_post(
         - Seg labels: 'seg_label' as "{seg}({cnv_state})"
         - Segment metadata/priors from `segs_consensus`.
 
-    Caveats / Potential Improvements
-    --------------------------------
-
-    - Key column presence is not validated explicitly; adding schema checks could
-      yield clearer errors when inputs are missing required fields.
-    - The per-row `apply(compute_states, axis=1)` can be a bottleneck; vectorizing
-      the MLE/MAP computation would speed up large datasets.
     """
 
     # Process expression posteriors
