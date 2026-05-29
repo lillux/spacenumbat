@@ -1061,11 +1061,6 @@ def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
     """
     Annotate contiguous segments along each chromosome based on a state column.
 
-    This follows numbat's R implementation by sorting rows by ``CHROM`` and
-    ``snp_index`` before detecting state-change boundaries. Segment numbering is
-    restarted from zero for each chromosome and uses alphabetical postfixes
-    (``1a``, ``1b``, ..., ``1z``, ``1aa``).
-
     Parameters
     ----------
     bulk : pandas.DataFrame
@@ -1143,7 +1138,7 @@ def t_test_pval(x: ArrayLike, y: ArrayLike) -> float:
     # Check length conditions
     if x.size <= 1 or y.size <= 1:
         return 1.0
-    # Perform two-sample t-test (assuming equal var)
+    # Perform two-sample t-test
     #_, pvalue = ttest_ind(x, y, equal_var=True, nan_policy='omit')
     _, pvalue = ttest_ind(x, y, equal_var=False, nan_policy='omit')
 
@@ -1166,17 +1161,12 @@ def simes_p(p_vals: ArrayLike, n_dim: int) -> float:
     float
         Simes-adjusted p-value.
 
-    Notes
-    -----
-    Classic Simes uses 1-based ranks k=1..m (i.e., ``min(m * p_(k) / k)``).
-    This implementation currently constructs ``indices = np.arange(len(sorted_p))``,
-    which starts at 0 and can cause division by zero. Keep this in mind if you
-    rely on this function; adjust the indexing if you revise the code.
     """
     p_vals = np.asarray(p_vals)
     sorted_p = np.sort(p_vals)
-    indices = np.arange(1, len(sorted_p)+1) # start at 1
+    indices = np.arange(1, len(sorted_p)+1) # start at rank 1
     return n_dim * np.min(sorted_p / indices)
+
 
 def Modes(x: Iterable[Any]) -> List[Any]:
     """
