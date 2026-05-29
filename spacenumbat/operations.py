@@ -1508,9 +1508,9 @@ def get_exp_post(
     for c in prior_cols:
         exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
     log.info('Disabling system warnings...')
-    warnings.filterwarnings('ignore')
+    #warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
-    warnings.filterwarnings('always')
+    #warnings.filterwarnings('always')
     log.info('System warnings enabled.')
     exp_posterior['seg_label'] = exp_posterior.apply(lambda r: f"{r['seg']}({r['cnv_state']})", axis=1)
 
@@ -1720,9 +1720,9 @@ def get_allele_post(
     
     allele_post = allele_post.apply(compute_ll, axis=1)
     # Compute the overall posterior probabilities.
-    warnings.filterwarnings('ignore')
+    #warnings.filterwarnings('ignore')
     allele_post = compute_posterior(allele_post)
-    warnings.filterwarnings('always')
+    #warnings.filterwarnings('always')
     # Create a seg_label by concatenating seg and cnv_state.
     allele_post['seg_label'] = allele_post['seg'].astype("string") + "(" + allele_post['cnv_state'].astype("string") + ")"
     
