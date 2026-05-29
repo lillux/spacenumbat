@@ -12,6 +12,7 @@ from . import plot
 from . import operations
 from . import tree
 from . import phylo
+from . import spatial_utils
 
 from .main import run_spacenumbat
 

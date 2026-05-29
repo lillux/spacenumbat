@@ -29,9 +29,6 @@ from scipy.stats import ttest_ind
 import natsort
 from natsort import natsorted
 
-
-
-
 from statsmodels.stats.multitest import multipletests
 import networkx as nx
 

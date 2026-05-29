@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spacenumbat"
+version = "0.1.0"
+description = "Haplotype aware CNAs caller with a spatial context"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+authors = [
+  { name = "Calogero Carlino", email = "calogero.carlino28@gmail.com" }
+]
+dependencies = [
+  "numpy",
+  "pandas",
+  "matplotlib",
+  "anndata",
+  "pyranges",
+  "joblib",
+  "scikit-learn",
+  "scikit-bio",
+  "squidpy",
+  "scipy",
+  "tqdm",
+  "natsort",
+  "numba",
+  "networkx",
+  "statsmodels",
+]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.urls]
+Homepage = "https://github.com/lillux/spacenumbat"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+"spacenumbat.data" = ["*.tsv"]
