@@ -43,7 +43,6 @@ def plot_psbulk(
     genome: str = "hg38",
     text_size: int = 10,
     raster: bool = False,
-    *,
     parent: Optional[plt.Figure] = None,   # draw into this Figure/SubFigure if provided
     cnv_colors: Optional[Dict[str, str]] = None,
     cnv_labels: Optional[Dict[str, str]] = None,
@@ -373,7 +372,6 @@ def plot_psbulk(
 
 def plot_bulks(
     bulks: pd.DataFrame,
-    *,
     ncol: int = 1,
     title: bool = True,
     title_size: int = 8,

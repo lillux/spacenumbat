@@ -375,22 +375,23 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     bulk = bulk.copy()
     # Within each segment, set 'cnv_state' to NaN if 'n_genes' <= min_genes
     # Get the number of genes per segment
-    bulk.seg = bulk.seg.astype("string") # TODO check validity of conversion
+    bulk.seg = bulk.seg.astype("string")
     n_genes_per_seg = bulk.groupby('seg', observed=True, sort=False)['n_genes'].first().reset_index()
     # Identify segments with insufficient genes
     small_segs = n_genes_per_seg.loc[n_genes_per_seg['n_genes'] <= min_genes, 'seg']
     # Set 'cnv_state' to NaN for these segments
     bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = np.nan
-    bulk.CHROM = bulk.CHROM.astype("string") # TODO check validity of conversion
+    bulk.CHROM = bulk.CHROM.astype("string")
     # Fill NaN values in 'cnv_state' forward and backward within each chromosome.
-    # Keep both operations grouped: calling .bfill() on the result of a grouped
-    # .ffill() would back-fill across chromosome boundaries, unlike the original
-    # R zoo::na.locf(..., fromLast = TRUE) inside group_by(CHROM).
-    bulk['cnv_state'] = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].transform(
-        lambda x: x.ffill().bfill()
-    )
+    bulk['cnv_state'] = bulk.groupby('CHROM', 
+                                     observed=True,
+                                     sort=False)['cnv_state'].transform(
+                                         lambda x: x.ffill().bfill()
+                                         )
     # Check if any chromosome has all NaN in 'cnv_state'
-    chrom_na = bulk.groupby('CHROM', observed=True, sort=False)['cnv_state'].apply(lambda x: x.isna().all()).reset_index(name='all_na')
+    chrom_na = bulk.groupby('CHROM',
+                            observed=True, 
+                            sort=False)['cnv_state'].apply(lambda x: x.isna().all()).reset_index(name='all_na')
 
     # THIS RAISE ERROR IF FEW GENES ARE FOUND IN A CHROMOSOME
     if chrom_na['all_na'].any():
@@ -464,8 +465,7 @@ def viterbi_joint(hmm: Mapping[str, Any]) -> NDArray[np.integer]:
     Notes
     -----
     - All log-domain inputs must be finite (no zeros before taking logs).
-    - NaNs in the allele/emission terms are treated as 0 contribution via
-      "np.nan_to_num(..., nan=0.0)" in the allele component.
+    - NaNs in the allele/emission terms are treated as 0 in the allele component.
     - If any expression key (e.g., "y") is absent or "None", only the
       allele component contributes to the emission log-probability.
 
@@ -473,7 +473,7 @@ def viterbi_joint(hmm: Mapping[str, Any]) -> NDArray[np.integer]:
     # N = number of observations
     x = hmm["x"]              # shape (N,)
     d = hmm["d"]              # shape (N,)
-    alpha = hmm["alpha"]      # expected shape (..., M) or (N, M) if time-varying
+    alpha = hmm["alpha"]      # expected shape (..., M) or (N, M)
     beta  = hmm["beta"]       # same shape as alpha
     delta = hmm["delta"]      # shape (M,)
     logPi = hmm["logPi"]      # shape (N, M, M)
@@ -502,7 +502,7 @@ def viterbi_joint(hmm: Mapping[str, Any]) -> NDArray[np.integer]:
                 mu=hmm["mu"][valid] + np.log(hmm["phi"][m] * hmm["l"][valid] * hmm["lambda"][valid]),
                 sig=hmm["sig"][valid],
                 log=True
-            )
+                )
         else:
             l_y = 0
         
@@ -512,7 +512,7 @@ def viterbi_joint(hmm: Mapping[str, Any]) -> NDArray[np.integer]:
         log_delta = np.log(delta),
         logprob   = logprob,
         logPi     = logPi
-    )
+        )
     
     return z
 
@@ -999,7 +999,7 @@ def log_sum_exp(vals: NDArray[np.floating]) -> float:
         return -np.inf
     max_val = np.max(vals)
     if not np.isfinite(max_val):
-        return max_val  # e.g. -inf if all -inf
+        return max_val
     cumsum = np.sum(np.exp(vals - max_val))
     return max_val + np.log(cumsum)
 
