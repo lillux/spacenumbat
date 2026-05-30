@@ -332,6 +332,42 @@ def run_allele_hmm_s5(pAD: np.ndarray,
     return mpc
 
 
+def _summarize_smooth_segs_failure(
+    bulk: pd.DataFrame,
+    n_genes_per_seg: pd.DataFrame,
+    failed_chroms: pd.Series,
+    min_genes: int,
+) -> str:
+    """Build a compact diagnostic summary for smooth_segs threshold failures."""
+    diag_rows = []
+    for chrom in failed_chroms.astype(str):
+        chrom_bulk = bulk.loc[bulk["CHROM"].astype(str) == chrom]
+        chrom_segs = n_genes_per_seg.loc[n_genes_per_seg["CHROM"].astype(str) == chrom]
+        top = (
+            chrom_segs.sort_values("n_genes", ascending=False)
+            .head(3)
+            .loc[:, ["seg", "n_genes"]]
+            .to_dict("records")
+        )
+        top_str = ",".join(f"{row['seg']}:{int(row['n_genes'])}" for row in top) or "none"
+        diag_rows.append(
+            "CHROM {chrom}: rows={rows}, unique_genes={genes}, segments={segments}, "
+            "max_segment_genes={max_genes}, top_segments={top}".format(
+                chrom=chrom,
+                rows=len(chrom_bulk),
+                genes=chrom_bulk["gene"].dropna().nunique() if "gene" in chrom_bulk else "NA",
+                segments=chrom_segs["seg"].nunique(),
+                max_genes=int(chrom_segs["n_genes"].max()) if not chrom_segs.empty else 0,
+                top=top_str,
+            )
+        )
+
+    return (
+        f"All segments on these chromosomes have <= {min_genes} genes after annot_segs(); "
+        + "; ".join(diag_rows)
+    )
+
+
 def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     """
     Smooth CNV segment states after HMM decoding by removing small segments and
@@ -373,16 +409,26 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     """
     # Copy the DataFrame to avoid modifying the original
     bulk = bulk.copy()
-    # Within each segment, set 'cnv_state' to NaN if 'n_genes' <= min_genes
-    # Get the number of genes per segment
+    # Within each segment, set 'cnv_state' to missing if 'n_genes' <= min_genes.
+    # Keep chromosome/state columns as pandas strings so ffill/bfill cannot silently
+    # downcast object arrays in newer pandas versions.
     bulk.seg = bulk.seg.astype("string")
-    n_genes_per_seg = bulk.groupby('seg', observed=True, sort=False)['n_genes'].first().reset_index()
+    bulk.CHROM = bulk.CHROM.astype("string")
+    bulk['cnv_state'] = bulk['cnv_state'].astype("string")
+
+    # Get the number of genes per segment. Carry CHROM for diagnostics; segment IDs
+    # are expected to be chromosome-prefixed but keeping CHROM makes failures easier
+    # to audit when a user suspects marker loss upstream.
+    n_genes_per_seg = (
+        bulk.groupby('seg', observed=True, sort=False)
+        .agg(n_genes=('n_genes', 'first'), CHROM=('CHROM', 'first'))
+        .reset_index()
+    )
     # Identify segments with insufficient genes
     small_segs = n_genes_per_seg.loc[n_genes_per_seg['n_genes'] <= min_genes, 'seg']
-    # Set 'cnv_state' to NaN for these segments
-    bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = np.nan
-    bulk.CHROM = bulk.CHROM.astype("string")
-    # Fill NaN values in 'cnv_state' forward and backward within each chromosome.
+    # Set 'cnv_state' to missing for these segments
+    bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = pd.NA
+    # Fill missing values in 'cnv_state' forward and backward within each chromosome.
     bulk['cnv_state'] = bulk.groupby('CHROM', 
                                      observed=True,
                                      sort=False)['cnv_state'].transform(
@@ -396,11 +442,15 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     # THIS RAISE ERROR IF FEW GENES ARE FOUND IN A CHROMOSOME
     if chrom_na['all_na'].any():
         chroms_na = ','.join(chrom_na.loc[chrom_na['all_na'], 'CHROM'].astype(str))
-        # Log the error message
+        # Log the error message with diagnostics that identify whether marker/gene
+        # loss happened before smoothing or whether HMM segmentation simply split
+        # each chromosome into too-small runs.
+        failed_chroms = chrom_na.loc[chrom_na['all_na'], 'CHROM']
         msg = f"No segments containing more than {min_genes} genes for CHROM {chroms_na}."
-        log.error(msg)
+        details = _summarize_smooth_segs_failure(bulk, n_genes_per_seg, failed_chroms, min_genes)
+        log.error("%s %s", msg, details)
         # Raise an exception
-        raise ValueError(msg)
+        raise ValueError(f"{msg} {details}")
 
     return bulk
 

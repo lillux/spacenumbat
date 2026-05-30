@@ -56,7 +56,7 @@ def test_smooth_segs_fills_only_within_each_chromosome():
         }
     )
 
-    with pytest.raises(ValueError, match="CHROM 2"):
+    with pytest.raises(ValueError, match="CHROM 2.*max_segment_genes=1"):
         hmm.smooth_segs(bulk, min_genes=10)
 
 
@@ -86,3 +86,24 @@ def test_fill_neu_segs_uses_inclusive_segment_ends_for_pyranges():
         {"seg_start": 6, "seg_end": 7, "cnv_state": "neu", "seg_cons": "1c"},
     ]
     assert out["seg_length"].tolist() == [2, 3, 2]
+
+
+def test_smooth_segs_error_reports_gene_and_segment_diagnostics():
+    bulk = pd.DataFrame(
+        {
+            "CHROM": ["1", "1", "1"],
+            "seg": ["1a", "1b", "1c"],
+            "n_genes": [3, 7, 2],
+            "gene": ["A", "B", "C"],
+            "cnv_state": ["neu", "amp", "del"],
+        }
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        hmm.smooth_segs(bulk, min_genes=10)
+
+    message = str(excinfo.value)
+    assert "unique_genes=3" in message
+    assert "segments=3" in message
+    assert "max_segment_genes=7" in message
+    assert "top_segments=1b:7,1a:3,1c:2" in message
