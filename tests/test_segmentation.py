@@ -113,3 +113,21 @@ def test_get_allele_bulk_matches_numbat_phased_marker_filters():
     assert out["pAD"].tolist() == [3, 6]
     assert out["p_s"].iloc[0] == 0
     assert out["p_s"].iloc[1] > 0
+
+
+def test_annot_segs_handles_nullable_missing_states_without_integer_cast_error():
+    bulk = pd.DataFrame(
+        {
+            "CHROM": ["1", "1", "1", "1", "1"],
+            "POS": [100, 200, 300, 400, 500],
+            "snp_index": [0, 1, 2, 3, 4],
+            "gene": ["A", "B", "C", "D", "E"],
+            "pAD": [1, 1, 1, 1, 1],
+            "cnv_state": pd.Series(["neu", pd.NA, pd.NA, "amp", "amp"], dtype="string"),
+        }
+    )
+
+    out = utils.annot_segs(bulk, var="cnv_state")
+
+    assert out["boundary"].tolist() == [0, 1, 0, 1, 0]
+    assert out["seg"].tolist() == ["1a", "1b", "1b", "1c", "1c"]

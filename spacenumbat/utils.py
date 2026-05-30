@@ -957,7 +957,7 @@ def get_bulk(
         # Annotate consensus segments
         bulk = annot_consensus(bulk, segs_loh, join_mode='left')
         # Set 'loh' to False where it's NaN
-        bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
+        bulk.loc[:,'loh'] = bulk.loc[:,'loh'].astype('boolean').fillna(False).astype(bool)
     
     return bulk
 
@@ -1079,11 +1079,28 @@ def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
     annotated = []
     for chrom, group in bulk.groupby('CHROM', observed=True, sort=False):
         group = group.copy()
-        boundary = group[var].ne(group[var].shift()).astype(int)
-        if len(boundary) > 0:
-            boundary.iloc[0] = 0
-        seg_numbers = boundary.cumsum()
-        group['boundary'] = boundary.to_numpy()
+
+        # Pandas nullable dtypes propagate pd.NA through comparisons, e.g.
+        # ``string`` values compared with their shifted neighbor can yield
+        # ``<NA>`` rather than True/False.  Segment boundaries, however, must
+        # be concrete integers.  Treat missing state labels as their own value:
+        # NA->NA is not a boundary, while NA<->non-NA is a boundary.
+        values = group[var].to_numpy(dtype=object)
+        boundary = np.zeros(len(group), dtype=int)
+        if len(group) > 1:
+            current = values[1:]
+            previous = values[:-1]
+            current_na = pd.isna(current)
+            previous_na = pd.isna(previous)
+            is_boundary = np.ones(len(group) - 1, dtype=bool)
+            both_na = current_na & previous_na
+            neither_na = ~(current_na | previous_na)
+            is_boundary[both_na] = False
+            is_boundary[neither_na] = current[neither_na] != previous[neither_na]
+            boundary[1:] = is_boundary.astype(int)
+
+        seg_numbers = pd.Series(boundary, index=group.index).cumsum()
+        group['boundary'] = boundary
         group['seg'] = [f"{chrom}{postfix}" for postfix in generate_postfix(seg_numbers.tolist())]
         annotated.append(group)
 
