@@ -614,43 +614,42 @@ def get_allele_bulk(
     - Switch probabilities are computed using `switch_prob` function (nu parameter).
     """
     df_allele = df_allele.loc[:, ['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'AD', 'DP', 'GT', 'gene']]
-    df_allele = df_allele[df_allele.GT.isin({'1|0', '0|1'})]
-    df_allele = df_allele[~np.isnan(df_allele.cM)]
-    
-    # Sum AD and DP grouped by SNP attributes
+    # Match Numbat's allele preprocessing: only phased heterozygous SNPs with
+    # genetic-map positions are informative for the allele HMM.  Keeping
+    # homozygous/unphased markers makes pAD arbitrary and can fragment Viterbi
+    # states into short segments that are later discarded by smooth_segs.
+    df_allele = df_allele[df_allele['GT'].isin(['1|0', '0|1'])].copy()
+    df_allele = df_allele[df_allele['cM'].notna()].copy()
+
+    # Sum AD and DP grouped by SNP attributes.
     df_allele = df_allele.groupby(['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'GT', 'gene'],
                                     sort=False, as_index=False, dropna=False).sum(['AD', 'DP'])
     
     df_allele['AR'] = df_allele.AD / df_allele.DP
     df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
 
-    # Assign SNP index per chromosome
+    # Assign SNP index per chromosome before depth filtering, as in Numbat.
     flat_list = []
     for chrom in df_allele.CHROM.unique():
         snps = df_allele[df_allele.CHROM == chrom].snp_id
         flat_list.extend(range(len(snps)))
     df_allele['snp_index'] = flat_list
 
-    # Filter by minimum depth
-    df_allele = df_allele[df_allele.DP >= min_depth]
+    # Filter by minimum depth.
+    df_allele = df_allele[df_allele.DP >= min_depth].copy()
 
-    # Compute probabilistic B-allele frequency and adjusted depth
-    pBAF = []
-    pAD = []
-    for _, data in df_allele.iterrows():
-        if data.GT == '1|0':
-            pBAF.append(data.AR)
-            pAD.append(data.AD)
-        else:
-            pBAF.append(1 - data.AR)
-            pAD.append(data.DP - data.AD)
-    df_allele['pBAF'] = pBAF
-    df_allele['pAD'] = pAD
+    # Compute probabilistic B-allele frequency and adjusted depth.
+    df_allele['pBAF'] = np.where(df_allele['GT'] == '1|0', df_allele['AR'], 1 - df_allele['AR'])
+    df_allele['pAD'] = np.where(df_allele['GT'] == '1|0', df_allele['AD'], df_allele['DP'] - df_allele['AD'])
 
-    df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen()) # REMOVED NOW
+    df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
     df_allele['CHROM'] = df_allele['CHROM'].astype('string')
 
-    # Compute inter-SNP genetic distances chromosome-wise
+    # Numbat drops chromosomes with one or zero heterozygous SNPs before
+    # computing inter-SNP switch probabilities.
+    df_allele = df_allele.groupby('CHROM', observed=True, sort=False).filter(lambda x: len(x) > 1).copy()
+
+    # Compute inter-SNP genetic distances chromosome-wise.
     inter_snp_cm = np.zeros(df_allele.shape[0])
     start_idx = 0
     for chrom in df_allele.CHROM.unique():
@@ -660,11 +659,11 @@ def get_allele_bulk(
         start_idx = end_idx
     df_allele['inter_snp_cm'] = inter_snp_cm
     
-    # Compute switch probabilities
+    # Compute switch probabilities.
     df_allele['p_s'] = switch_prob(df_allele['inter_snp_cm'].values, nu=nu)
 
-    # Ensure 'gene' column has string or NaN values
-    df_allele['gene'] = df_allele['gene'].apply(lambda i: i if isinstance(i, str) else np.nan)
+    # Ensure 'gene' column has string or NaN values.
+    df_allele['gene'] = df_allele['gene'].apply(lambda i: i if isinstance(i, str) and i != '' else np.nan)
     return df_allele
 
 
@@ -958,7 +957,7 @@ def get_bulk(
         # Annotate consensus segments
         bulk = annot_consensus(bulk, segs_loh, join_mode='left')
         # Set 'loh' to False where it's NaN
-        bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(0).astype(bool)
+        bulk.loc[:,'loh'] = bulk.loc[:,'loh'].fillna(False).astype(bool)
     
     return bulk
 

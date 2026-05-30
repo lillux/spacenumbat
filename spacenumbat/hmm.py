@@ -373,14 +373,18 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     """
     # Copy the DataFrame to avoid modifying the original
     bulk = bulk.copy()
-    # Within each segment, set 'cnv_state' to NaN if 'n_genes' <= min_genes
-    # Get the number of genes per segment
+    # Within each segment, set 'cnv_state' to NA if 'n_genes' <= min_genes.
+    # Use pandas' nullable string dtype for states so ffill/bfill does not
+    # silently downcast object arrays on newer pandas versions.
+    bulk['cnv_state'] = bulk['cnv_state'].astype('string')
+
+    # Get the number of genes per segment.
     bulk.seg = bulk.seg.astype("string")
     n_genes_per_seg = bulk.groupby('seg', observed=True, sort=False)['n_genes'].first().reset_index()
     # Identify segments with insufficient genes
     small_segs = n_genes_per_seg.loc[n_genes_per_seg['n_genes'] <= min_genes, 'seg']
-    # Set 'cnv_state' to NaN for these segments
-    bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = np.nan
+    # Set 'cnv_state' to NA for these segments.
+    bulk.loc[bulk['seg'].isin(small_segs), 'cnv_state'] = pd.NA
     bulk.CHROM = bulk.CHROM.astype("string")
     # Fill NaN values in 'cnv_state' forward and backward within each chromosome.
     bulk['cnv_state'] = bulk.groupby('CHROM', 
@@ -396,8 +400,21 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
     # THIS RAISE ERROR IF FEW GENES ARE FOUND IN A CHROMOSOME
     if chrom_na['all_na'].any():
         chroms_na = ','.join(chrom_na.loc[chrom_na['all_na'], 'CHROM'].astype(str))
-        # Log the error message
-        msg = f"No segments containing more than {min_genes} genes for CHROM {chroms_na}."
+        failed = chrom_na.loc[chrom_na['all_na'], 'CHROM'].astype(str)
+        max_genes = (
+            n_genes_per_seg.assign(CHROM=n_genes_per_seg['seg'].str.extract(r'^(.*?)(?:[A-Za-z]+)$', expand=False))
+            .groupby('CHROM', observed=True, sort=False)['n_genes']
+            .max()
+        )
+        max_summary = ','.join(
+            f"{chrom}:max={int(max_genes.get(chrom, 0))}" for chrom in failed
+        )
+        # Log the error message with enough context to distinguish true marker
+        # loss from HMM over-fragmentation into only short segments.
+        msg = (
+            f"No segments containing more than {min_genes} genes for CHROM {chroms_na}. "
+            f"Largest post-HMM segment sizes: {max_summary}."
+        )
         log.error(msg)
         # Raise an exception
         raise ValueError(msg)

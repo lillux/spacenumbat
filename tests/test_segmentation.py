@@ -86,3 +86,30 @@ def test_fill_neu_segs_uses_inclusive_segment_ends_for_pyranges():
         {"seg_start": 6, "seg_end": 7, "cnv_state": "neu", "seg_cons": "1c"},
     ]
     assert out["seg_length"].tolist() == [2, 3, 2]
+
+
+def test_get_allele_bulk_matches_numbat_phased_marker_filters():
+    df_allele = pd.DataFrame(
+        {
+            "cell": ["c1"] * 6,
+            "snp_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "CHROM": ["1", "1", "1", "1", "2", "3"],
+            "POS": [10, 20, 30, 40, 10, 10],
+            "cM": [0.1, 0.2, 0.3, pd.NA, 0.1, 0.1],
+            "REF": ["A"] * 6,
+            "ALT": ["C"] * 6,
+            "AD": [3, 4, 5, 6, 7, 8],
+            "DP": [10, 10, 10, 10, 10, 10],
+            "GT": ["1|0", "0|1", "0/1", "1|0", "1|0", "0|1"],
+            "gene": ["G1", "G2", "G3", "G4", "G5", ""],
+        }
+    )
+
+    out = utils.get_allele_bulk(df_allele, nu=1, min_depth=0)
+
+    # Keep only phased heterozygous markers with cM and drop chromosomes that
+    # have <=1 remaining marker, matching Numbat's get_allele_bulk pipeline.
+    assert out["snp_id"].tolist() == ["s1", "s2"]
+    assert out["pAD"].tolist() == [3, 6]
+    assert out["p_s"].iloc[0] == 0
+    assert out["p_s"].iloc[1] > 0
