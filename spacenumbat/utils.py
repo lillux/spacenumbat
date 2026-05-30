@@ -614,10 +614,7 @@ def get_allele_bulk(
     - Switch probabilities are computed using `switch_prob` function (nu parameter).
     """
     df_allele = df_allele.loc[:, ['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'AD', 'DP', 'GT', 'gene']]
-    # Match Numbat's allele preprocessing: only phased heterozygous SNPs with
-    # genetic-map positions are informative for the allele HMM.  Keeping
-    # homozygous/unphased markers makes pAD arbitrary and can fragment Viterbi
-    # states into short segments that are later discarded by smooth_segs.
+    # only phased heterozygous SNPs are retained
     df_allele = df_allele[df_allele['GT'].isin(['1|0', '0|1'])].copy()
     df_allele = df_allele[df_allele['cM'].notna()].copy()
 
@@ -628,7 +625,7 @@ def get_allele_bulk(
     df_allele['AR'] = df_allele.AD / df_allele.DP
     df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
 
-    # Assign SNP index per chromosome before depth filtering, as in Numbat.
+    # Assign SNP index per chromosome before depth filtering.
     flat_list = []
     for chrom in df_allele.CHROM.unique():
         snps = df_allele[df_allele.CHROM == chrom].snp_id
@@ -645,8 +642,7 @@ def get_allele_bulk(
     df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
     df_allele['CHROM'] = df_allele['CHROM'].astype('string')
 
-    # Numbat drops chromosomes with one or zero heterozygous SNPs before
-    # computing inter-SNP switch probabilities.
+    # drop chromosomes with one or zero heterozygous SNPs
     df_allele = df_allele.groupby('CHROM', observed=True, sort=False).filter(lambda x: len(x) > 1).copy()
 
     # Compute inter-SNP genetic distances chromosome-wise.
@@ -1080,10 +1076,7 @@ def annot_segs(bulk: pd.DataFrame, var: str = "cnv_state") -> pd.DataFrame:
     for chrom, group in bulk.groupby('CHROM', observed=True, sort=False):
         group = group.copy()
 
-        # Pandas nullable dtypes propagate pd.NA through comparisons, e.g.
-        # ``string`` values compared with their shifted neighbor can yield
-        # ``<NA>`` rather than True/False.  Segment boundaries, however, must
-        # be concrete integers.  Treat missing state labels as their own value:
+        # Treat missing state labels as their own value:
         # NA->NA is not a boundary, while NA<->non-NA is a boundary.
         values = group[var].to_numpy(dtype=object)
         boundary = np.zeros(len(group), dtype=int)
