@@ -847,23 +847,6 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     return bulk
 
 
-def sanityze_df(df):
-
-    group_collector = []
-    for idx, group in df.groupby("gene", sort=False):
-
-        if group.shape[0] > 1:
-            group.loc[group.index[1]:,"logFC"] = np.nan
-            group.loc[group.index[1]:,"lnFC"] = np.nan
-    
-        group_collector.append(group)
-        
-    nan_remove = pd.concat(group_collector, axis=0)
-    pd.concat([nan_remove,df[df.gene.isna()]],axis=0)
-
-    return df
-
-
 def get_bulk(
     count_mat: ad.AnnData,
     lambdas_ref: Union[pd.DataFrame, pd.Series],
@@ -1461,7 +1444,6 @@ def fill_neu_segs(segs_consensus: pd.DataFrame, segs_neu: pd.DataFrame) -> pd.Da
         postfix = generate_postfix(range(len_group))
         seg_cons[group.index] = group.CHROM.astype('string') + postfix
     combined.loc[:,'seg_cons'] = seg_cons
-    # combined.loc[:,'CHROM'] = combined.CHROM.astype('category')
 
     return combined
 
@@ -1618,7 +1600,7 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
     if not bulks_list:
         return pd.DataFrame()
 
-    # Combine all bulks into a single DataFrame # TODO DONE!!! check the 3 lines in the middle
+    # Combine all bulks into a single DataFrame
     bulks = pd.concat(bulks_list, ignore_index=True)
     # Arrange the DataFrame by 'CHROM' and 'POS'
     bulks = bulks.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())

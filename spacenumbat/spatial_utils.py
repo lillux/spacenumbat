@@ -67,12 +67,7 @@ def get_spatial_info(
     counts_mat.obsp[distance_key] = W
     dist_nans = int(np.isnan(dist_test).sum())
     w_nans = int(np.isnan(W.data).sum()) if W.nnz else 0
-    log.info(
-        "[sanity] get_spatial_info: dist_nans=%s weight_nans=%s obsp_keys=%s",
-        dist_nans,
-        w_nans,
-        list(counts_mat.obsp.keys()),
-    )
+    log.info(f"[sanity] get_spatial_info: dist_nans={dist_nans} weight_nans={w_nans} obsp_keys={list(counts_mat.obsp.keys())}")
 
     return counts_mat
 
@@ -250,7 +245,6 @@ def _pagerank_diffuse(
     X: np.ndarray,
     A: sp.spmatrix,
     alpha: float = 0.75,
-    *,
     coifman_alpha: float = 0.5,
     lazy: float = 0.0,
     steps: int | None = 4,
@@ -414,12 +408,7 @@ def neighbors_average(
     
     if method_kwargs is None:
         method_kwargs = {}
-    log.info(
-        "[sanity] neighbors_average: method=%s columns=%s by=%s",
-        method,
-        columns,
-        by,
-    )
+    log.info(f"[sanity] neighbors_average: method={method} columns={columns} by={{by}}")
 
     collector = []
 
