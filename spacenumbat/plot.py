@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from typing import Optional, Dict, Tuple, Any, Iterable, Set, List, Union
+from typing import Optional, Dict, Any, Iterable, Set, List, Union, Mapping, Sequence
 from pathlib import Path
+
+import re
 
 import numpy as np
 import pandas as pd
@@ -20,15 +22,364 @@ import anndata as ad
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import Line2D
 from matplotlib import gridspec
+from matplotlib.figure import Figure, SubFigure
 
-from natsort import natsorted, natsort_keygen
+
+from natsort import natsort_keygen
 
 from scipy.cluster.hierarchy import dendrogram, leaves_list, fcluster, linkage
 from scipy.spatial.distance import pdist
 
 
+
+
+_PLOT_STATE = "__plot_state__"
+_PLOT_CNV_STATE = "__plot_cnv_state__"
+_PLOT_PHF = "__plot_phf__"
+
+DEFAULT_LEGEND_BREAKS = (
+    "neu",
+    "loh_up",
+    "loh_down",
+    "del_up",
+    "del_down",
+    "amp_up",
+    "amp_down",
+    "bamp",
+    "bdel",
+    )
+
+
+@dataclass(frozen=True)
+class PsbulkColumns:
+    """Column names used by :func:`plot_psbulk` and :func:`plot_bulks`."""
+
+    chrom: str = "CHROM"
+    pos: str = "POS"
+    snp_index: str = "snp_index"
+
+    state_post: str = "state_post"
+    state_fallback: str = "state"
+    cnv_state_post: str | None = "cnv_state_post"
+    cnv_state_fallback: str | None = "cnv_state"
+
+    llr: str = "LLR"
+    loh: str = "loh"
+    p_up: str = "p_up"
+
+    logfc: str = "logFC"
+    mu: str = "mu"
+    pbaf: str = "pBAF"
+    depth: str = "DP"
+
+    theta_roll: str = "theta_hat_roll"
+    phi_mle: str = "phi_mle"
+    phi_roll: str = "phi_mle_roll"
+
+    seg_start: str = "seg_start"
+    seg_end: str = "seg_end"
+    seg_start_index: str = "seg_start_index"
+    seg_end_index: str = "seg_end_index"
+
+    sample: str = "sample"
+    n_cells: str = "n_cells"
+
+    region_chrom: str = "CHROM"
+    region_start: str = "start"
+    region_end: str = "end"
+
+
+DEFAULT_COLUMNS = PsbulkColumns()
+
+
+def default_cnv_colors() -> dict[str, str]:
+    """Return the default state-to-color mapping."""
+    return {
+        "neu": "grey",
+        "loh": "green",
+        "del": "cornflowerblue",
+        "amp": "red",
+        "loh_up": "lime",
+        "loh_down": "limegreen",
+        "del_up": "navy",
+        "del_down": "royalblue",
+        "amp_up": "crimson",
+        "amp_down": "deeppink",
+        "loh_2_up": "green",
+        "loh_2_down": "green",
+        "del_2_up": "blue",
+        "del_2_down": "blue",
+        "amp_2_up": "red",
+        "amp_2_down": "red",
+        "bamp": "blueviolet",
+        "bdel": "mediumblue",
+    }
+
+
+def _with_level1_aliases(colors: Mapping[str, str]) -> dict[str, str]:
+    """Add ``*_1_up/down`` aliases without overriding user-supplied colors."""
+    
+    out = dict(colors)
+    for state in ("loh", "del", "amp"):
+        for direction in ("up", "down"):
+            canonical = f"{state}_{direction}"
+            if canonical in out:
+                out.setdefault(f"{state}_1_{direction}", out[canonical])
+    return out
+
+
+def _require_columns(df: pd.DataFrame, columns: Sequence[str], context: str) -> None:
+    
+    missing = sorted(set(columns).difference(df.columns))
+    if missing:
+        raise KeyError(f"{context} requires columns: {missing}")
+
+
+def _resolve_column(
+    df: pd.DataFrame,
+    preferred: str,
+    fallback: str | None,
+    description: str,
+    ) -> str:
+    
+    if preferred in df.columns:
+        return preferred
+    if fallback is not None and fallback in df.columns:
+        return fallback
+    choices = [preferred] + ([fallback] if fallback is not None else [])
+    raise KeyError(f"Missing {description} column. Tried: {choices}")
+
+
+def _prepare_plot_states(
+    df: pd.DataFrame,
+    columns: PsbulkColumns,
+    min_llr: float,
+    transform_states: bool,
+    neutral_state: str,
+    loh_state: str,
+    p_up_states: Sequence[str],
+    p_up_threshold: float,
+    level2_pattern: str | None,
+    ) -> pd.DataFrame:
+    
+    """Prepare internal plotting states."""
+    out = df.copy()
+
+    state_source = _resolve_column(
+        out,
+        columns.state_post,
+        columns.state_fallback,
+        "state",
+    )
+    out[_PLOT_STATE] = out[state_source].astype("string")
+
+    if columns.cnv_state_post is not None:
+        cnv_source = _resolve_column(
+            out,
+            columns.cnv_state_post,
+            columns.cnv_state_fallback,
+            "CNV state",
+        )
+        out[_PLOT_CNV_STATE] = out[cnv_source].astype("string")
+
+    if not transform_states:
+        return out
+
+    if min_llr != 0 and columns.llr in out.columns:
+        llr = pd.to_numeric(out[columns.llr], errors="coerce").fillna(0.0)
+        neutral = llr < min_llr
+        out.loc[neutral, _PLOT_STATE] = neutral_state
+        if _PLOT_CNV_STATE in out.columns:
+            out.loc[neutral, _PLOT_CNV_STATE] = neutral_state
+
+    if columns.loh in out.columns:
+        loh = out[columns.loh].astype("boolean")
+        out.loc[loh.eq(True), _PLOT_STATE] = loh_state
+        out.loc[loh.isna(), _PLOT_STATE] = pd.NA
+
+    if columns.p_up not in out.columns or _PLOT_CNV_STATE not in out.columns:
+        return out
+
+    state = out[_PLOT_STATE].astype("string")
+    is_level2 = (
+        pd.Series(False, index=out.index)
+        if level2_pattern is None
+        else state.str.contains(level2_pattern, regex=False, na=False)
+    )
+
+    theta_level = pd.Series("1", index=out.index, dtype="string")
+    theta_level.loc[is_level2] = "2"
+    theta_level.loc[state.isna()] = pd.NA
+
+    p_up = pd.to_numeric(out[columns.p_up], errors="coerce")
+    direction = pd.Series(pd.NA, index=out.index, dtype="string")
+    direction.loc[p_up > p_up_threshold] = "up"
+    direction.loc[p_up <= p_up_threshold] = "down"
+
+    base_state = out[_PLOT_CNV_STATE].astype("string")
+    target = base_state.isin(tuple(map(str, p_up_states)))
+    refined = base_state + "_" + theta_level + "_" + direction
+    out.loc[target, _PLOT_STATE] = refined.loc[target]
+
+    return out
+
+
+def _ordered_present_states(
+    states: pd.Series,
+    colors: Mapping[str, str],
+    ) -> list[str]:
+    present = list(pd.unique(states.dropna().astype(str)))
+    mapped = [state for state in colors if state in present]
+    return mapped + [state for state in present if state not in colors]
+
+
+def _legend_states(
+    states: pd.Series,
+    colors: Mapping[str, str],
+    legend_breaks: Sequence[str] | None,
+    present_only: bool,
+    ) -> list[str]:
+    if legend_breaks is None:
+        return _ordered_present_states(states, colors)
+
+    ordered = [state for state in legend_breaks if state in colors]
+    if not present_only:
+        return ordered
+
+    present = set(states.dropna().astype(str))
+    canonical_present = present | {state.replace("_1_", "_") for state in present}
+    return [state for state in ordered if state in canonical_present]
+
+
+def _add_legend(
+    fig: Figure,
+    states: pd.Series,
+    colors: Mapping[str, str],
+    labels: Mapping[str, str],
+    legend_breaks: Sequence[str] | None,
+    present_only: bool,
+    fontsize: float,
+    legend_kwargs: Mapping[str, Any] | None,
+    ) -> None:
+    ordered = _legend_states(states, colors, legend_breaks, present_only)
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            color="none",
+            markerfacecolor=colors[state],
+            markeredgewidth=0,
+            markersize=6,
+            label=labels.get(state, state),
+        )
+        for state in ordered
+    ]
+
+    kwargs: dict[str, Any] = {
+        "loc": "upper right",
+        "bbox_to_anchor": (1.0, 1.0),
+        "frameon": False,
+        "fontsize": fontsize,
+        "title": "CNV state",
+    }
+    if legend_kwargs is not None:
+        kwargs.update(legend_kwargs)
+    fig.legend(handles=handles, **kwargs)
+
+
+def _natural_key(value: str) -> list[object]:
+    """Return a dependency-free natural-sort key."""
+    return [int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", value)]
+
+
+def _chromosomes(
+    chrom: pd.Series,
+    order: Sequence[str] | None,
+    ) -> list[str]:
+    
+    present = list(pd.unique(chrom.dropna().astype(str)))
+    if order is None:
+        return sorted(present, key=_natural_key)
+
+    requested = [str(value) for value in order]
+    requested_set = set(requested)
+    remaining = [value for value in present if value not in requested_set]
+    return [value for value in requested if value in present] + sorted(remaining, key=_natural_key)
+
+
+def _span(values: pd.Series) -> float:
+    
+    numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    numeric = numeric[np.isfinite(numeric)]
+    if numeric.size < 2:
+        return 1.0
+    return max(float(numeric.max() - numeric.min()), 1.0)
+
+
+def _excluded_regions(
+    gaps: pd.DataFrame | None,
+    acen: pd.DataFrame | None,
+    columns: PsbulkColumns,
+    ) -> pd.DataFrame | None:
+    
+    frames = [frame for frame in (gaps, acen) if frame is not None and not frame.empty]
+    if not frames:
+        return None
+
+    required = [columns.region_chrom, columns.region_start, columns.region_end]
+    for frame in frames:
+        _require_columns(frame, required, "Excluded-region shading")
+
+    regions = pd.concat(frames, ignore_index=True)
+    return regions.rename(
+        columns={
+            columns.region_chrom: "chrom",
+            columns.region_start: "start",
+            columns.region_end: "end",
+        }
+    )[["chrom", "start", "end"]]
+
+
+def _plot_state_colored_line(
+    ax: plt.Axes,
+    x: pd.Series,
+    y: pd.Series,
+    states: pd.Series,
+    colors: Mapping[str, str],
+    unknown_color: str,
+    linewidth: float,
+    zorder: float,
+    ) -> None:
+    
+    data = pd.DataFrame(
+        {
+            "x": pd.to_numeric(x, errors="coerce"),
+            "y": pd.to_numeric(y, errors="coerce"),
+            "state": states.astype("string"),
+        }
+    ).sort_values("x", kind="stable")
+
+    valid = np.isfinite(data["x"]) & np.isfinite(data["y"]) & data["state"].notna()
+    state_changed = data["state"].ne(data["state"].shift()).fillna(True)
+    new_run = (~valid) | (~valid.shift(fill_value=False)) | state_changed
+    data["run"] = new_run.cumsum()
+
+    for _, run in data.loc[valid].groupby("run", sort=False):
+        state = str(run["state"].iloc[0])
+        ax.plot(
+            run["x"],
+            run["y"],
+            color=colors.get(state, unknown_color),
+            linewidth=linewidth,
+            zorder=zorder,
+        )
+
+
 def plot_psbulk(
     bulk: pd.DataFrame,
+    columns: PsbulkColumns = DEFAULT_COLUMNS,
     use_pos: bool = True,
     allele_only: bool = False,
     min_LLR: float = 5.0,
@@ -36,472 +387,367 @@ def plot_psbulk(
     exp_limit: float = 2.0,
     phi_mle: bool = True,
     theta_roll: bool = False,
+    transform_states: bool = True,
+    neutral_state: str = "neu",
+    loh_state: str = "loh",
+    p_up_states: Sequence[str] = ("amp", "loh", "del"),
+    p_up_threshold: float = 0.5,
+    level2_pattern: str | None = "_2",
+    cnv_colors: Mapping[str, str] | None = None,
+    cnv_labels: Mapping[str, str] | None = None,
+    legend: bool = True,
+    legend_breaks: Sequence[str] | None = DEFAULT_LEGEND_BREAKS,
+    legend_present_only: bool = False,
+    legend_kwargs: Mapping[str, Any] | None = None,
+    unknown_color: str = "#666666",
     dot_size: float = 8.0,
     dot_alpha: float = 0.5,
-    legend: bool = True,
+    level1_marker: str = "o",
+    level2_marker: str = "s",
+    mu_scale: float = 1.0,
     exclude_gap: bool = True,
-    genome: str = "hg38",
-    text_size: int = 10,
+    gaps: pd.DataFrame | None = None,
+    acen: pd.DataFrame | None = None,
+    chrom_order: Sequence[str] | None = None,
+    text_size: float = 10,
     raster: bool = False,
-    parent: Optional[plt.Figure] = None,   # draw into this Figure/SubFigure if provided
-    cnv_colors: Optional[Dict[str, str]] = None,
-    cnv_labels: Optional[Dict[str, str]] = None,
-    gaps: Optional[pd.DataFrame] = None,   # columns: CHROM, start, end
-    acen: Optional[pd.DataFrame] = None,   # columns: CHROM, start, end
-    ) -> Tuple[plt.Figure, np.ndarray]:
+    show_x_ticks: bool = False,
+    figsize: tuple[float, float] | None = None,
+    chrom_width: float = 1.5,
+    track_height: float = 1.2,
+    parent: Figure | SubFigure | None = None,
+    close: bool = True,
+    ) -> tuple[Figure, np.ndarray]:
+    """Plot one pseudobulk HMM profile.
+
+    ``columns`` controls all input column names. A closed returned figure remains usable and saveable.
     """
-    Plot a single pseudobulk HMM panel (optionally inside a provided Figure/SubFigure).
+    if bulk.empty:
+        raise ValueError("bulk must contain at least one row")
+    if min_depth < 0:
+        raise ValueError("min_depth must be non-negative")
+    if exp_limit <= 0:
+        raise ValueError("exp_limit must be positive")
+    if not 0 <= dot_alpha <= 1:
+        raise ValueError("dot_alpha must be between 0 and 1")
 
-    The panel shows up to two tracks for each chromosome, arranged as facet columns:
-    - ``logFC`` (expression log fold-change, optional)
-    - ``pHF`` (pseudo-heterozygous fraction from SNP alleles)
+    marker_col = columns.pos if use_pos else columns.snp_index
+    required = [columns.chrom, marker_col, columns.pbaf, columns.depth]
+    if not allele_only:
+        required.extend([columns.logfc, columns.mu])
+    _require_columns(bulk, required, "Pseudobulk plotting")
 
-    Chromosomes are arranged using natural sorting (for example: 1, 2, ..., 10, X, Y),
-    and each chromosome column width is proportional to its x-span (POS or snp_index).
-    If ``parent`` is provided, the subplots are created inside that Figure/SubFigure;
-    otherwise a new Figure is created and returned.
-
-    Parameters
-    ----------
-    bulk
-        Long or wide pseudobulk table with at least these columns:
-        ``CHROM``, ``state_post`` or ``state``, ``cnv_state_post`` or ``cnv_state``,
-        and columns for the tracks being drawn:
-          - Expression track requires: ``logFC`` and ``mu`` (baseline), unless
-            ``allele_only=True``.
-          - Allele track requires: ``pBAF`` and ``DP`` (depth), used to form ``pHF``.
-        Optional columns used when present:
-        ``LLR`` (event filter), ``loh`` (boolean), ``p_up`` (allele HMM), segment
-        metadata (``seg``, ``seg_start``, ``seg_end``, ``seg_start_index``,
-        ``seg_end_index``), ``phi_mle`` or ``phi_mle_roll``, and ``theta_hat_roll``.
-    use_pos
-        If True, use ``POS`` as x; otherwise use ``snp_index``.
-    allele_only
-        If True, plot only the allele track (``pHF``) and omit ``logFC``.
-    min_LLR
-        LLR threshold below which events are set to neutral in ``state_post`` and
-        ``cnv_state_post`` (if ``LLR`` column exists).
-    min_depth
-        Minimum depth (``DP``) for a SNP to contribute to ``pHF``; others are masked.
-    exp_limit
-        Symmetric y-limits for the expression track (``[-exp_limit, +exp_limit]``).
-        Values outside this range are hidden.
-    phi_mle
-        If True and ``phi_mle`` exists, draw per-segment horizontal lines at
-        ``log2(phi_mle)`` on the expression track. If False and ``phi_mle_roll``
-        exists, draw the rolling estimate instead.
-    theta_roll
-        If True and ``theta_hat_roll`` exists, overlay two allele-imbalance curves
-        around 0.5 on the allele track.
-    dot_size
-        Marker size for SNP scatter points.
-    dot_alpha
-        Alpha for level-1 markers (round). Level-2 markers (square) are drawn opaque.
-    legend
-        If True, this function prepares legend handles but does not place a legend
-        by default when ``parent`` is used in a larger panel. Leave True when calling
-        this function standalone; set False when it is embedded by a wrapper that
-        adds a figure-level legend.
-    exclude_gap
-        If True and both ``gaps`` and ``acen`` are provided, shade those regions.
-    genome
-        Reserved for compatibility with upstream API. Not used by this function.
-    text_size
-        Base font size for titles and axis labels.
-    raster
-        If True, rasterize the scatter layers (useful for large point counts).
-    parent
-        A ``matplotlib.figure.Figure`` or ``SubFigure`` to draw into. If ``None``,
-        a new Figure is created and returned.
-    cnv_colors
-        Mapping from state label (e.g., ``"amp_up"``) to color hex string.
-        A sensible default is used when not provided.
-    cnv_labels
-        Mapping from state label to a human-readable legend label. Defaults to identity.
-    gaps
-        Genomic gap table with columns ``CHROM``, ``start``, ``end``; shaded if provided.
-    acen
-        Centromere table with columns ``CHROM``, ``start``, ``end``; shaded if provided.
-
-    Returns
-    -------
-    (fig, axes)
-        ``fig`` is the Figure that contains the panel (the provided ``parent`` when
-        not None, otherwise a newly created Figure). ``axes`` is a 2D array-like
-        of Axes with shape ``(n_tracks, n_chromosomes)``. ``n_tracks`` is 1 when
-        ``allele_only=True`` and 2 otherwise.
-
-    Raises
-    ------
-    KeyError
-        If the chosen x marker (``POS`` or ``snp_index``) is missing, or if
-        required columns for the selected tracks are missing (``pBAF``, ``DP``
-        for allele; ``logFC``, ``mu`` for expression).
-
-    Notes
-    -----
-    - The function will derive ``pHF`` as ``pBAF`` masked by ``DP >= min_depth``.
-    - When ``p_up`` is available, it refines ``state_post`` into up/down sublabels
-      per CNV state by combining with a detected theta level.
-    - Natural chromosome ordering.
-
-    Examples
-    --------
-    >>> fig, axes = plot_psbulk(bulk_df, use_pos=True, exp_limit=3.0)
-    >>> fig.savefig("panel.png", dpi=300)
-    """
-    df = bulk.copy()
-
-    # Ensure post columns exist
-    if not {"state_post", "cnv_state_post"}.issubset(df.columns):
-        if "state" in df.columns:
-            df["state_post"] = df["state"]
-        if "cnv_state" in df.columns:
-            df["cnv_state_post"] = df["cnv_state"]
-
-    # LLR filter to neutral
-    if "LLR" in df.columns and min_LLR != 0:
-        df["LLR"] = df["LLR"].fillna(0.0)
-        neu_mask = df["LLR"] < min_LLR
-        df.loc[neu_mask, "cnv_state_post"] = "neu"
-        df.loc[neu_mask, "state_post"] = "neu"
-
-    # Mark clonal LOH as deletions (as in the R code)
-    if "loh" in df.columns:
-        df.loc[df["loh"].astype(bool), "state_post"] = "del"
-
-    # Which x variable?
-    marker = "POS" if use_pos else "snp_index"
-    if marker not in df.columns:
-        raise KeyError(f"{marker} column is required for plotting")
-
-    # Up/down retest handling when p_up present
-    if "p_up" in df.columns:
-        theta_level = np.where(df["state_post"].astype(str).str.contains("_2"), 2, 1)
-        df["_theta_level"] = theta_level
-        mask_target = df["cnv_state_post"].isin(["amp", "loh", "del"])
-        up_mask = (df["p_up"] > 0.5) & mask_target
-        down_mask = (~up_mask) & mask_target
-        df.loc[up_mask, "state_post"] = (
-            df.loc[up_mask, "cnv_state_post"].astype(str)
-            + "_"
-            + df.loc[up_mask, "_theta_level"].astype(str)
-            + "_up"
-        )
-        df.loc[down_mask, "state_post"] = (
-            df.loc[down_mask, "cnv_state_post"].astype(str)
-            + "_"
-            + df.loc[down_mask, "_theta_level"].astype(str)
-            + "_down"
-        )
-
-    # Baseline correction for expression track
-    if not allele_only and "logFC" in df.columns and "mu" in df.columns:
-        #df["logFC"] = df["logFC"] - df["mu"]
-        df["logFC"] = df["logFC"] - (df["mu"] / np.log(2.0))
-
-    # Build long-form data (logFC, pHF)
-    D = df.copy()
-    if "pBAF" not in D.columns or "DP" not in D.columns:
-        raise KeyError("Columns pBAF and DP are required to construct the pHF track.")
-    if "logFC" in D.columns:
-        D["logFC"] = D["logFC"].where(~((D["logFC"] > exp_limit) | (D["logFC"] < -exp_limit)), np.nan)
-    D["pHF"] = D["pBAF"].where(D["DP"] >= min_depth, np.nan)
-
-    variables = ["pHF"] if allele_only else ["logFC", "pHF"]
-
-    long = D.melt(
-        id_vars=[c for c in D.columns if c not in {"logFC", "pHF"}],
-        value_vars=variables,
-        var_name="variable",
-        value_name="value",
+    df = _prepare_plot_states(
+        bulk,
+        columns=columns,
+        min_llr=min_LLR,
+        transform_states=transform_states,
+        neutral_state=neutral_state,
+        loh_state=loh_state,
+        p_up_states=p_up_states,
+        p_up_threshold=p_up_threshold,
+        level2_pattern=level2_pattern,
     )
 
-    # Natural chromosome ordering
-    chroms = natsorted(map(str, long["CHROM"].astype(str).unique()))
-    nrows, ncols = len(variables), len(chroms)
-
-    # Compute width ratios from marker span per chromosome
-    width_ratios = []
-    for chrom in chroms:
-        chx = long.loc[long["CHROM"].astype(str) == chrom, marker].to_numpy()
-        span = float(np.nanmax(chx) - np.nanmin(chx) + 1.0) if chx.size else 1.0
-        width_ratios.append(max(span, 1.0))
-
-    # Create axes grid (in parent if provided; otherwise new Figure)
-    if parent is None:
-        fig = plt.figure(figsize=(1.5 * ncols, 1.2 * max(1, nrows)))
-        gs = fig.add_gridspec(nrows=nrows, ncols=ncols, wspace=0.08, hspace=0.4, width_ratios=width_ratios)
-        axes = np.array([[fig.add_subplot(gs[ri, ci]) for ci in range(ncols)] for ri in range(nrows)])
-    else:
-        fig = parent  # might be a Figure or a SubFigure
-        gs = parent.add_gridspec(nrows=nrows, ncols=ncols, wspace=0.08, hspace=0.4, width_ratios=width_ratios)
-        axes = np.array([[parent.add_subplot(gs[ri, ci]) for ci in range(ncols)] for ri in range(nrows)])
-    
-    # Optional gap/acen shading (only with POS)
-    segs_exclude = None
-    if use_pos and exclude_gap and gaps is not None and acen is not None:
-        se = pd.concat([gaps, acen], ignore_index=True)
-        se = se.rename(columns={"start": "seg_start", "end": "seg_end"})
-        se = se[se["CHROM"].astype(str).isin(chroms)].copy()
-        segs_exclude = se
-
-    # Colors / labels
-    if cnv_colors is None:
-        cnv_colors = {
-            "neu": "#9e9e9e",
-            "loh_up": "#4a90e2", "loh_down": "#357ABD",
-            "del_up": "#d0021b", "del_down": "#a80012",
-            "amp_up": "#7ed321", "amp_down": "#5fa015",
-            "bamp": "#f5a623", "bdel": "#8b572a",
-            "loh_2_up": "#4a90e2", "loh_2_down": "#357ABD",
-            "del_2_up": "#d0021b", "del_2_down": "#a80012",
-            "amp_2_up": "#7ed321", "amp_2_down": "#5fa015",
-        }
-    if cnv_labels is None:
-        cnv_labels = {k: k for k in cnv_colors.keys()}
-
-    def state_to_color(states: pd.Series) -> np.ndarray:
-        return np.array([cnv_colors.get(s, "#666666") for s in states.astype(str)], dtype=object)
-
-    # Draw facets
-    for ci, chrom in enumerate(chroms):
-        ch_mask = long["CHROM"].astype(str) == chrom
-        se_chr = (
-            segs_exclude[segs_exclude["CHROM"].astype(str) == chrom]
-            if segs_exclude is not None else
-            pd.DataFrame(columns=["seg_start", "seg_end"])
+    if not allele_only:
+        logfc = pd.to_numeric(df[columns.logfc], errors="coerce")
+        mu = pd.to_numeric(df[columns.mu], errors="coerce")
+        df[columns.logfc] = (logfc - mu * mu_scale).where(
+            lambda values: values.between(-exp_limit, exp_limit)
         )
 
-        for ri, var in enumerate(variables):
-            ax = axes[ri, ci]
-            dat = long[ch_mask & (long["variable"] == var)]
+    pbaf = pd.to_numeric(df[columns.pbaf], errors="coerce")
+    depth = pd.to_numeric(df[columns.depth], errors="coerce")
+    df[_PLOT_PHF] = pbaf.where(depth >= min_depth)
 
-            # Background shading for gap/acen
-            if use_pos and not se_chr.empty:
-                for _, row in se_chr.iterrows():
-                    ax.axvspan(float(row["seg_start"]), float(row["seg_end"]), color="0.95", zorder=0)
+    tracks = (
+        [("pHF", _PLOT_PHF)]
+        if allele_only
+        else [("logFC", columns.logfc), ("pHF", _PLOT_PHF)]
+    )
+    chroms = _chromosomes(df[columns.chrom], chrom_order)
+    if not chroms:
+        raise ValueError("No non-missing chromosome values were found")
 
-            # Points: level-1 round, level-2 square
-            has_level2 = dat["state_post"].astype(str).str.contains("_2")
-            dat_lvl1 = dat[~has_level2]
-            dat_lvl2 = dat[has_level2]
-            c1 = state_to_color(dat_lvl1["state_post"])
-            c2 = state_to_color(dat_lvl2["state_post"])
-            
-            # Only show y-axis info on the first axis of each row
-            # Titles and labels
-            if ri == 0:
-                # add pad so the title sits a bit above the axes
+    width_ratios = [
+        _span(df.loc[df[columns.chrom].astype(str).eq(chrom), marker_col])
+        for chrom in chroms
+    ]
+    nrows, ncols = len(tracks), len(chroms)
+
+    if parent is None:
+        if figsize is None:
+            figsize = (chrom_width * ncols, track_height * nrows)
+        container: Figure | SubFigure = plt.figure(figsize=figsize)
+    else:
+        container = parent
+
+    gs = container.add_gridspec(
+        nrows=nrows,
+        ncols=ncols,
+        width_ratios=width_ratios,
+        wspace=0.08,
+        hspace=0.4,
+    )
+    axes = np.array(
+        [
+            [container.add_subplot(gs[row, col]) for col in range(ncols)]
+            for row in range(nrows)
+        ],
+        dtype=object,
+    )
+
+    colors = _with_level1_aliases(
+        default_cnv_colors() if cnv_colors is None else cnv_colors
+    )
+    labels = {state: state for state in colors} if cnv_labels is None else dict(cnv_labels)
+    regions = _excluded_regions(gaps, acen, columns) if exclude_gap and use_pos else None
+
+    chrom_as_string = df[columns.chrom].astype(str)
+    for col_index, chrom in enumerate(chroms):
+        chrom_data = df.loc[chrom_as_string.eq(chrom)]
+        x = pd.to_numeric(chrom_data[marker_col], errors="coerce")
+
+        chrom_regions = None
+        if regions is not None:
+            chrom_regions = regions.loc[regions["chrom"].astype(str).eq(chrom)]
+
+        states = chrom_data[_PLOT_STATE].astype("string")
+        level2 = (
+            pd.Series(False, index=chrom_data.index)
+            if level2_pattern is None
+            else states.str.contains(level2_pattern, regex=False, na=False)
+        )
+
+        for row_index, (track_label, value_col) in enumerate(tracks):
+            ax = axes[row_index, col_index]
+            y = pd.to_numeric(chrom_data[value_col], errors="coerce")
+            valid = np.isfinite(x) & np.isfinite(y) & states.notna()
+
+            if chrom_regions is not None:
+                for region in chrom_regions.itertuples(index=False):
+                    ax.axvspan(float(region.start), float(region.end), color="0.95", zorder=0)
+
+            for mask, marker, alpha, zorder in (
+                (valid & ~level2, level1_marker, dot_alpha, 2),
+                (valid & level2, level2_marker, 1.0, 3),
+            ):
+                if mask.any():
+                    ax.scatter(
+                        x.loc[mask],
+                        y.loc[mask],
+                        s=dot_size,
+                        c=[colors.get(str(state), unknown_color) for state in states.loc[mask]],
+                        marker=marker,
+                        alpha=alpha,
+                        rasterized=raster,
+                        linewidths=0,
+                        zorder=zorder,
+                    )
+
+            if row_index == 0:
                 ax.set_title(f"chr{chrom}", fontsize=text_size, rotation=45)
-            if ci == 0:
-                ax.set_ylabel(var, fontsize=text_size)          # row label on the first column
-                ax.tick_params(axis="y", labelleft=True)
+            if col_index == 0:
+                ax.set_ylabel(track_label, fontsize=text_size)
             else:
-                ax.set_ylabel("")                               # no y-axis title on other columns
                 ax.tick_params(axis="y", labelleft=False)
 
-            if not dat_lvl1.empty:
-                ax.scatter(
-                    dat_lvl1[marker].values, dat_lvl1["value"].values,
-                    s=dot_size, c=c1, marker="o", alpha=dot_alpha,
-                    rasterized=raster, linewidths=0, zorder=2
-                )
-            if not dat_lvl2.empty:
-                ax.scatter(
-                    dat_lvl2[marker].values, dat_lvl2["value"].values,
-                    s=dot_size, c=c2, marker="s", alpha=1.0,
-                    rasterized=raster, linewidths=0, zorder=3
-                )
+            if not show_x_ticks:
+                ax.tick_params(axis="x", bottom=False, labelbottom=False)
 
-            # Axis ranges and guides
-            if var == "logFC":
+            if track_label == "logFC":
                 ax.set_ylim(-exp_limit, exp_limit)
-                ax.axhline(0.0, color="0.4", linestyle="--", linewidth=0.8, zorder=1)
-            else:  # pHF
+                ax.axhline(0, color="0.4", linestyle="--", linewidth=0.8, zorder=1)
+            else:
                 ax.set_ylim(-0.05, 1.05)
-
-            # Segment overlays on logFC
-            if var == "logFC" and not allele_only:
-                if phi_mle and "phi_mle" in df.columns:
-                    segs = (
-                        df[["CHROM", "seg", "seg_start", "seg_start_index", "seg_end",
-                            "seg_end_index", "phi_mle"]]
-                        .drop_duplicates()
-                        .copy()
-                    )
-                    segs = segs[segs["CHROM"].astype(str) == chrom]
-                    segs = segs[np.log2(segs["phi_mle"]).values < exp_limit]
-                    x1, x2 = ("seg_start", "seg_end") if use_pos else ("seg_start_index", "seg_end_index")
-                    for _, row in segs.iterrows():
-                        y = float(np.log2(row["phi_mle"]))
-                        ax.hlines(y=y, xmin=float(row[x1]), xmax=float(row[x2]),
-                                  color="darkred", linewidth=0.8, zorder=4)
-                elif not phi_mle and "phi_mle_roll" in df.columns:
-                    ch_df = df[df["CHROM"].astype(str) == chrom].copy()
-                    ch_df = ch_df.assign(variable="logFC")
-                    mask_ok = np.isfinite(np.log2(ch_df["phi_mle_roll"].astype(float)))
-                    ch_df = ch_df[mask_ok]
-                    if not ch_df.empty:
-                        ax.plot(
-                            ch_df[marker].values,
-                            np.log2(ch_df["phi_mle_roll"].values),
-                            color="darkred", linewidth=0.8, zorder=4
-                        )
-                    ax.axhline(0.0, color="0.4", linestyle="--", linewidth=0.8, zorder=1)
-
-            # Theta rolling overlays on pHF
-            if theta_roll and var == "pHF" and "theta_hat_roll" in df.columns:
-                ch_df = df[df["CHROM"].astype(str) == chrom]
-                if "snp_index" in ch_df.columns:
-                    xvals = ch_df["snp_index"].values
-                    thr = ch_df["theta_hat_roll"].values.astype(float)
-                    # simple deterministic colors
-                    base_state = str(ch_df["cnv_state_post"].astype(str).iloc[0]) if len(ch_df) else "neu"
-                    down_color = cnv_colors.get(base_state + "_down", "#666666")
-                    up_color   = cnv_colors.get(base_state + "_up", "#666666")
-                    ax.plot(xvals, 0.5 - thr, color=down_color, linewidth=0.7, zorder=5)
-                    ax.plot(xvals, 0.5 + thr, color=up_color, linewidth=0.7, zorder=5)
 
             ax.tick_params(axis="both", labelsize=max(8, text_size - 2))
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
-    return (fig if isinstance(fig, plt.Figure) else fig.figure), axes
+        if not allele_only:
+            expression_ax = axes[0, col_index]
+            if phi_mle:
+                start_col = columns.seg_start if use_pos else columns.seg_start_index
+                end_col = columns.seg_end if use_pos else columns.seg_end_index
+                _require_columns(
+                    df,
+                    [columns.chrom, start_col, end_col, columns.phi_mle],
+                    "Segment expression overlay",
+                )
+                segments = chrom_data[[start_col, end_col, columns.phi_mle]].drop_duplicates()
+                phi = pd.to_numeric(segments[columns.phi_mle], errors="coerce")
+                segment_y = np.log2(phi.where(phi > 0))
+                keep = segment_y.between(-exp_limit, exp_limit)
+                for index in segments.index[keep]:
+                    expression_ax.hlines(
+                        y=float(segment_y.loc[index]),
+                        xmin=float(segments.loc[index, start_col]),
+                        xmax=float(segments.loc[index, end_col]),
+                        color="darkred",
+                        linewidth=0.8,
+                        zorder=4,
+                    )
+            else:
+                _require_columns(df, [columns.phi_roll], "Rolling expression overlay")
+                phi_roll = pd.to_numeric(chrom_data[columns.phi_roll], errors="coerce")
+                rolling_y = np.log2(phi_roll.where(phi_roll > 0))
+                keep = rolling_y.between(-exp_limit, exp_limit)
+                expression_ax.plot(
+                    x.loc[keep],
+                    rolling_y.loc[keep],
+                    color="darkred",
+                    linewidth=0.8,
+                    zorder=4,
+                )
+
+        if theta_roll:
+            _require_columns(df, [columns.theta_roll], "Theta rolling overlay")
+            theta = pd.to_numeric(chrom_data[columns.theta_roll], errors="coerce")
+            base_states = (
+                chrom_data[_PLOT_CNV_STATE]
+                if _PLOT_CNV_STATE in chrom_data.columns
+                else chrom_data[_PLOT_STATE]
+            ).astype("string")
+            allele_ax = axes[-1, col_index]
+            for suffix, y in (
+                ("down", 0.5 - theta),
+                ("up", 0.5 + theta),
+            ):
+                _plot_state_colored_line(
+                    allele_ax,
+                    x=x,
+                    y=y,
+                    states=base_states + f"_{suffix}",
+                    colors=colors,
+                    unknown_color=unknown_color,
+                    linewidth=0.7,
+                    zorder=5,
+                )
+
+    output_fig = container if isinstance(container, Figure) else container.figure
+    if legend and parent is None:
+        _add_legend(
+            output_fig,
+            states=df[_PLOT_STATE],
+            colors=colors,
+            labels=labels,
+            legend_breaks=legend_breaks,
+            present_only=legend_present_only,
+            fontsize=text_size,
+            legend_kwargs=legend_kwargs,
+        )
+
+    if close and parent is None:
+        plt.close(output_fig)
+
+    return output_fig, axes
 
 
 def plot_bulks(
     bulks: pd.DataFrame,
+    columns: PsbulkColumns = DEFAULT_COLUMNS,
     ncol: int = 1,
     title: bool = True,
-    title_size: int = 8,
-    panel_vspace: float = 0.25,   # space between sample rows
-    panel_wspace: float = 0.0,   # space between sample columns
-    **psbulk_kwargs: Any,
-    ) -> plt.Figure:
-    """
-    Plot a grid of pseudobulk panels (one per sample) and return a single Figure.
+    title_size: float = 8,
+    panel_vspace: float = 0.25,
+    panel_wspace: float = 0.0,
+    panel_size: tuple[float, float] = (18.0, 5.0),
+    figsize: tuple[float, float] | None = None,
+    legend: bool = True,
+    legend_fontsize: float = 15,
+    legend_kwargs: Mapping[str, Any] | None = None,
+    close: bool = True,
+    **plot_kwargs: Any,
+    ) -> Figure:
+    """Plot one pseudobulk panel per sample with a shared legend."""
+    if bulks.empty:
+        raise ValueError("bulks must contain at least one row")
+    if ncol < 1:
+        raise ValueError("ncol must be at least 1")
 
-    This is a small wrapper that:
-    1) splits ``bulks`` by the column ``sample``,
-    2) creates a grid of SubFigures,
-    3) calls `plot_psbulk` once per sample into each SubFigure (with legends disabled),
-    4) adds a single figure-level legend on the right.
-
-    Parameters
-    ----------
-    bulks
-        Long table with a ``sample`` column and all columns expected by
-        `plot_psbulk`. Each sample will produce one panel.
-        If ``sample`` is missing, a single sample named "1" is assumed.
-    ncol
-        Number of sample panels per row in the outer grid.
-    title
-        If True, put a title above each sample panel using the sample name and,
-        when available, ``n_cells``.
-    title_size
-        Font size for per-panel titles.
-    panel_vspace
-        Vertical spacing between panel rows in the outer grid (``GridSpec.hspace`` units).
-    panel_wspace
-        Horizontal spacing between panel columns in the outer grid (``GridSpec.wspace`` units).
-    **psbulk_kwargs
-        Any additional keyword arguments forwarded to :func:`plot_psbulk`
-        (for example: ``use_pos``, ``exp_limit``, ``theta_roll``, etc.). This
-        wrapper forces ``legend=False`` for each subpanel to avoid duplicates.
-
-    Returns
-    -------
-    fig
-        The single figure that contains all sample panels and the shared legend.
-
-    Examples
-    --------
-    >>> fig = plot_bulks(bulks_df, ncol=2, panel_vspace=0.15)
-    >>> fig.savefig("all_samples.png", dpi=300)
-    """
     df = bulks.copy()
-    if "sample" not in df.columns:
-        df["sample"] = "1"
+    if columns.sample not in df.columns:
+        df[columns.sample] = "1"
 
-    groups = [(k, g.copy()) for k, g in df.groupby("sample", observed=True, sort=False)]
-    ns = len(groups)
-    nrow = int(np.ceil(ns / ncol))
+    groups = list(df.groupby(columns.sample, observed=True, sort=False))
+    nrow = int(np.ceil(len(groups) / ncol))
+    if figsize is None:
+        figsize = (panel_size[0] * ncol, panel_size[1] * nrow)
 
-    # Pull the color/label mappings (or defaults) so we can build one legend later
-    cnv_colors = psbulk_kwargs.get("cnv_colors") or {
-        "neu": "#9e9e9e",
-        "loh_up": "#4a90e2", "loh_down": "#357ABD",
-        "del_up": "#d0021b", "del_down": "#a80012",
-        "amp_up": "#7ed321", "amp_down": "#5fa015",
-        "bamp": "#f5a623", "bdel": "#8b572a",
-        "loh_2_up": "#4a90e2", "loh_2_down": "#357ABD",
-        "del_2_up": "#d0021b", "del_2_down": "#a80012",
-        "amp_2_up": "#7ed321", "amp_2_down": "#5fa015",
-    }
-    cnv_labels = psbulk_kwargs.get("cnv_labels") or {k: k for k in cnv_colors.keys()}
+    colors = _with_level1_aliases(
+        default_cnv_colors()
+        if plot_kwargs.get("cnv_colors") is None
+        else plot_kwargs["cnv_colors"]
+    )
+    labels = (
+        {state: state for state in colors}
+        if plot_kwargs.get("cnv_labels") is None
+        else dict(plot_kwargs["cnv_labels"])
+    )
 
-    fig = plt.figure(figsize=(18 * ncol, 5 * nrow))
-    fig.subplots_adjust(left=0.05, right=0.85)
-    gs_outer = fig.add_gridspec(nrows=nrow, ncols=ncol, hspace=panel_vspace, wspace=panel_wspace)
-    subfigs = np.array([[fig.add_subfigure(gs_outer[r, c]) for c in range(ncol)] for r in range(nrow)])
+    fig = plt.figure(figsize=figsize)
+    outer = fig.add_gridspec(
+        nrows=nrow,
+        ncols=ncol,
+        hspace=panel_vspace,
+        wspace=panel_wspace,
+    )
 
-    i = 0
-    for r in range(nrow):
-        for c in range(ncol):
-            if i >= ns:
-                subfigs[r, c].set_visible(False)
-                continue
+    for index, (sample, sample_data) in enumerate(groups):
+        row, col = divmod(index, ncol)
+        subfig = fig.add_subfigure(outer[row, col])
 
-            sample, sub = groups[i]
-            i += 1
+        child_kwargs = dict(plot_kwargs)
+        child_kwargs.update(
+            {
+                "columns": columns,
+                "legend": False,
+                "parent": subfig,
+                "close": False,
+            }
+        )
+        plot_psbulk(sample_data, **child_kwargs)
 
-            # Important: disable per-panel legend to avoid overlaps/duplicates
-            kw = dict(psbulk_kwargs)
-            kw["legend"] = False
-            plot_psbulk(sub, parent=subfigs[r, c], **kw)
-            
-            if title:
-                if "n_cells" in sub.columns:
-                    vals = pd.unique(sub["n_cells"].dropna())
-                    n_cells = vals[0] if len(vals) else None
-                    ttl = f"{sample} (n={n_cells})" if n_cells is not None else f"{sample}"
-                else:
-                    ttl = f"{sample}"
-                subfigs[r, c].suptitle(ttl, fontsize=title_size)
-            
-            # make subfigure background transparent
-            subfigs[r, c].patch.set_alpha(0.0)
+        if title:
+            title_text = str(sample)
+            if columns.n_cells in sample_data.columns:
+                values = pd.unique(sample_data[columns.n_cells].dropna())
+                if len(values):
+                    title_text = f"{sample} (n={values[0]})"
+            subfig.suptitle(title_text, fontsize=title_size)
+        subfig.patch.set_alpha(0)
 
-    # Optionally filter to only states present in bulks (keeps legend compact)
-    present_states = set(df.get("state_post", pd.Series(dtype=str)).astype(str).unique())
-    ordered = [s for s in cnv_colors if (not present_states) or (s in present_states)]
-    if not ordered:  # fall back to all keys if we could not detect states
-        ordered = list(cnv_colors.keys())
+    for index in range(len(groups), nrow * ncol):
+        row, col = divmod(index, ncol)
+        empty = fig.add_subfigure(outer[row, col])
+        empty.set_visible(False)
 
-    handles = [
-        Line2D([0], [0], marker="o", color="none",
-               markerfacecolor=cnv_colors.get(s, "#666666"),
-               markeredgewidth=0, markersize=6,
-               label=cnv_labels.get(s, s))
-        for s in ordered
-    ]
-    # shape legend (level 1 vs level 2 markers)
-    shape_items = [
-        Line2D([0], [0], marker="o", color="k", label="level 1", linestyle="None",
-               markerfacecolor="k", alpha=psbulk_kwargs.get("dot_alpha", 0.5), markersize=6),
-        Line2D([0], [0], marker="s", color="k", label="level 2", linestyle="None",
-               markerfacecolor="k", alpha=1.0, markersize=6),
-    ]
+    if legend:
+        prepared = _prepare_plot_states(
+            df,
+            columns=columns,
+            min_llr=plot_kwargs.get("min_LLR", 5.0),
+            transform_states=plot_kwargs.get("transform_states", True),
+            neutral_state=plot_kwargs.get("neutral_state", "neu"),
+            loh_state=plot_kwargs.get("loh_state", "loh"),
+            p_up_states=plot_kwargs.get("p_up_states", ("amp", "loh", "del")),
+            p_up_threshold=plot_kwargs.get("p_up_threshold", 0.5),
+            level2_pattern=plot_kwargs.get("level2_pattern", "_2"),
+        )
+        _add_legend(
+            fig,
+            states=prepared[_PLOT_STATE],
+            colors=colors,
+            labels=labels,
+            legend_breaks=plot_kwargs.get("legend_breaks", DEFAULT_LEGEND_BREAKS),
+            present_only=plot_kwargs.get("legend_present_only", False),
+            fontsize=legend_fontsize,
+            legend_kwargs=legend_kwargs,
+        )
 
-    # Put it at the top-right of the overall figure; tweak as you like
-    fig.legend(handles=handles + shape_items,
-               loc="upper right",
-               frameon=False,
-               ncols=min(1, max(1, len(handles)//2 + 1)),
-               fontsize=15,
-               bbox_to_anchor=(1.0,1),
-               )
+    if close:
+        plt.close(fig)
 
     return fig
 
