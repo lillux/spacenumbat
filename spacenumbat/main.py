@@ -603,6 +603,7 @@ def run_spacenumbat(
             allele_post=allele_post,
             segs_consensus=segs_consensus,
             count_mat=count_mat,
+            connectivity_key=connectivity_key,
             distance_key=distance_key,
             spatial=spatial,
             method=spatial_method,
