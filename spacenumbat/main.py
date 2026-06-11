@@ -163,7 +163,6 @@ def run_spacenumbat(
     spatial_method : str
         You can choose one between:
             - "degree": unweighted neighbor mean using the connectivity matrix (adds self-loops).
-            - "weighted": inverse-distance weighted mean using the distance matrix (adds self-loops).
             - "diffuse": iterative random-walk diffusion (uses _random_walk_diffuse).
             - "cpr": personalized PageRank–style diffusion (uses _pagerank_diffuse).
     spatial_decay : str

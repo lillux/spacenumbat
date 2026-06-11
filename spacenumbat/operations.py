@@ -1735,7 +1735,7 @@ def get_joint_post(
     segs_consensus: pd.DataFrame,
     count_mat: Optional[ad.AnnData] = None,
     spatial: bool = False,
-    method: Literal["degree", "weighted", "diffuse", "cpr"] = "cpr",
+    method: Literal["degree", "diffuse", "cpr"] = "cpr",
     connectivity_key: str = "spatial_connectivities",
     distance_key: str = "weighted_adjacency",
     method_kwargs: Dict[str, Any] = None,
