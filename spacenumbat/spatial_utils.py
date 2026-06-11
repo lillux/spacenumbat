@@ -429,10 +429,10 @@ def neighbors_average(
             Z = num / den
 
         elif m == "diffuse":
-            Z = _random_walk_diffuse(X, A, **method_kwargs)
+            Z = _random_walk_diffuse(X, D, **method_kwargs)
 
         elif m == "cpr":
-            Z = _pagerank_diffuse(X, A, **method_kwargs)
+            Z = _pagerank_diffuse(X, D, **method_kwargs)
 
         else:
             msg = (f'Unknown method: {method}. Accepted methods are:\n'
