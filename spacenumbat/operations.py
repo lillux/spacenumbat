@@ -1508,9 +1508,9 @@ def get_exp_post(
     for c in prior_cols:
         exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
     log.info('Disabling system warnings...')
-    #warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
-    #warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     log.info('System warnings enabled.')
     exp_posterior['seg_label'] = exp_posterior.apply(lambda r: f"{r['seg']}({r['cnv_state']})", axis=1)
 
@@ -1720,9 +1720,9 @@ def get_allele_post(
     
     allele_post = allele_post.apply(compute_ll, axis=1)
     # Compute the overall posterior probabilities.
-    #warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     allele_post = compute_posterior(allele_post)
-    #warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     # Create a seg_label by concatenating seg and cnv_state.
     allele_post['seg_label'] = allele_post['seg'].astype("string") + "(" + allele_post['cnv_state'].astype("string") + ")"
     
@@ -1841,15 +1841,15 @@ def get_joint_post(
     joint_post_sp = pd.merge(exp_sel, allele_sel, on=['cell', 'CHROM', 'seg', 'cnv_state'], how='outer')
 
     # Replace NA values in all columns ending with _x or _y with 0. These are {'l*', 'Z*', 'logBF' }
-    for col in joint_post_sp.columns:
-      if col.endswith('_x') or col.endswith('_y'):
-          joint_post_sp[col] = joint_post_sp[col].fillna(0)
+    #for col in joint_post_sp.columns:
+    #  if col.endswith('_x') or col.endswith('_y'):
+    #      joint_post_sp[col] = joint_post_sp[col].fillna(0)
     
     # Only fill additive log-likelihood contributions  # TODO: new
-    #lik_cols = [f"{c}_{sfx}" for sfx in ("x", "y") for c in ("l11","l20","l10","l21","l31","l22","l00")]
-    #for c in lik_cols:
-    #    if c in joint_post_sp.columns:
-    #        joint_post_sp[c] = joint_post_sp[c].fillna(0.0)
+    lik_cols = [f"{c}_{sfx}" for sfx in ("x", "y") for c in ("l11","l20","l10","l21","l31","l22","l00")]
+    for c in lik_cols:
+        if c in joint_post_sp.columns:
+            joint_post_sp[c] = joint_post_sp[c].fillna(0.0)
     
     # Left join with segs_consensus
     segs_sel = segs_consensus.loc[:,
@@ -1880,9 +1880,9 @@ def get_joint_post(
        joint_post_sp[col] = joint_post_sp[f'{col}_x'] + joint_post_sp[f'{col}_y']
     
     # Compute the joint posterior # TODO: fix warnings
-    #warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
     joint_post_sp = compute_posterior(joint_post_sp)
-    #warnings.filterwarnings('always')
+    warnings.filterwarnings('always')
     
     # Compute logistic transformations for logBF values.
     joint_post_sp['p_cnv_x'] = 1 / (1 + np.exp(-joint_post_sp['logBF_x']))
