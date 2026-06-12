@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 import scipy
 from scipy.stats import binom
+from scipy.special import expit
 
 from joblib import cpu_count, Parallel, delayed
 from numba import njit, prange
@@ -24,7 +25,7 @@ import natsort
 import anndata as ad
 
 from . import utils, dist_prob, clustering, _progressbar, spatial_utils, hmrf
-import warnings
+#import warnings
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -1686,11 +1687,11 @@ def get_exp_post(
     prior_cols = ['prior_loh','prior_amp','prior_del','prior_bamp','prior_bdel']
     for c in prior_cols:
         exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
-    log.info('Disabling system warnings...')
+    #log.info('Disabling system warnings...')
     #warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
     #warnings.filterwarnings('always')
-    log.info('System warnings enabled.')
+    #log.info('System warnings enabled.')
     exp_posterior['seg_label'] = exp_posterior.apply(lambda r: f"{r['seg']}({r['cnv_state']})", axis=1)
 
     return exp_posterior
@@ -2097,7 +2098,8 @@ def get_joint_post(
         probability_column = f"p_cnv_{suffix}"
 
         if logbf_column in joint_post.columns:
-            joint_post[probability_column] = (1.0 / (1.0 + np.exp(-joint_post[logbf_column])))
+            #joint_post[probability_column] = (1.0 / (1.0 + np.exp(-joint_post[logbf_column])))
+            joint_post[probability_column] = expit(joint_post[logbf_column].to_numpy(dtype=np.float64))
 
     # MLE from the local joint likelihoods.
     mle_columns = [
@@ -2155,58 +2157,56 @@ def get_joint_post(
 
 def binary_entropy(p: np.ndarray) -> np.ndarray:
     """
-    Compute the element-wise binary entropy H(p) = -p log2 p - (1 - p) log2(1 - p).
+    Compute binary entropy without evaluating log2(0).
 
-    Parameters
-    ----------
-    p : np.ndarray
-        Array of probabilities in the range [0, 1]. Values outside this range
-        are not checked and may produce nonsensical results.
+    For valid probabilities:
+      - H(0) = H(1) = 0
+      - values in (0, 1) use the standard binary-entropy formula
 
-    Returns
-    -------
-    np.ndarray
-        Array of the same shape as `p` with the corresponding binary entropy
-        values. NaN entries produced by 0 * log2(0) or similar expressions are
-        replaced by 0 in the output.
+    NaN and out-of-range inputs return 0.
     """
-    H = -p * np.log2(p) - (1 - p) * np.log2(1 - p)
-    H[np.isnan(H)] = 0
-    return H
+    p = np.asarray(p, dtype=np.float64)
+    entropy = np.zeros_like(p)
+
+    interior = np.isfinite(p) & (p > 0.0) & (p < 1.0)
+    values = p[interior]
+
+    entropy[interior] = (
+        -values * np.log2(values)
+        - (1.0 - values) * np.log2(1.0 - values)
+    )
+
+    return entropy
 
 
 def joint_post_entropy(joint_post: pd.DataFrame) -> pd.Series:
     """
-    Compute per-segment mean binary entropy of the CNV posterior probability.
-
-    For each segment (seg), this function computes the binary entropy of the
-    `p_cnv` posterior probabilities across rows in that segment and assigns
-    the segment-wise mean entropy to all rows belonging to that segment.
-
-    Parameters
-    ----------
-    joint_post : pd.DataFrame
-        DataFrame containing at least the following columns:
-        - 'seg' : segment identifier used for grouping.
-        - 'p_cnv' : posterior probability of CNV (float), possibly with NaNs.
-
-    Returns
-    -------
-    pd.Series
-        A Series of dtype float64 indexed like `joint_post`, where each entry
-        is the mean binary entropy of `p_cnv` for the corresponding segment.
+    Compute the mean binary entropy of p_cnv within each segment.
     """
-    binary_entropy_series = pd.Series(
-        np.repeat(0.0, joint_post.shape[0]),
+    entropy_by_row = pd.Series(
+        np.nan,
         index=joint_post.index,
         dtype=np.float64,
     )
-    seg_group = joint_post.groupby(by="seg", observed=True, sort=False)
-    for _, group in seg_group:
-        binary_entropy_series[group.index] = np.mean(
-            binary_entropy(group.p_cnv[group.p_cnv.notna()])
+
+    for _, group in joint_post.groupby(
+        "seg",
+        observed=True,
+        sort=False,
+    ):
+        values = group["p_cnv"].to_numpy(dtype=np.float64)
+        values = values[~np.isnan(values)]
+
+        # Preserve the old result for an all-missing group: mean entropy is NaN.
+        mean_entropy = (
+            np.nan
+            if values.size == 0
+            else float(binary_entropy(values).mean())
         )
-    return binary_entropy_series
+
+        entropy_by_row.loc[group.index] = mean_entropy
+
+    return entropy_by_row
 
 
 def expand_states(

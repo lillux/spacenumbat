@@ -2425,50 +2425,68 @@ def log1mexp(x: float) -> float:
         return np.log1p(-np.exp(-x))
 
 
-def pnorm_range_log(lower: float, upper: float, mu: float, sd: float) -> float:
+def pnorm_range_log(
+    lower: float,
+    upper: float,
+    mu: float,
+    sd: float,
+    ) -> float:
     """
-    Return log P(lower <= X <= upper) for X ~ Normal(mu, sd^2).
+    Return log P(lower <= X <= upper) for X ~ Normal(mu, sd**2).
 
-    This function computes the log of the probability mass of a normal
-    distribution over a closed interval using log-CDFs for numerical
-    stability. It handles the degenerate case sd == 0 by treating the
-    distribution as a point mass at mu.
-
-    Algorithm
-    ---------
-    1) If sd == 0, return 0.0 if mu is in [lower, upper], else return -np.inf.
-    2) Compute l_upper = log CDF(upper; mu, sd).
-    3) Compute l_lower = log CDF(lower; mu, sd).
-    4) Combine them using a stable log-difference identity via log1mexp:
-         log_prob = l_upper + log1mexp(l_upper - l_lower)
-
-    Parameters
-    ----------
-    lower : float
-        Lower bound of the interval. May be -np.inf.
-    upper : float
-        Upper bound of the interval. May be np.inf. Must satisfy lower <= upper.
-    mu : float
-        Mean of the normal distribution.
-    sd : float
-        Standard deviation of the normal distribution. Must be non-negative.
-
-    Returns
-    -------
-    float
-        Log probability that a Normal(mu, sd^2) random variable lies in
-        [lower, upper]. Returns -np.inf if the probability is exactly zero.
+    Degenerate distributions and zero-probability intervals are handled
+    explicitly without subtracting infinities.
     """
+    if (
+        np.isnan(lower)
+        or np.isnan(upper)
+        or np.isnan(mu)
+        or np.isnan(sd)
+    ):
+        return np.nan
 
-    if sd == 0:
-        # If standard deviation is 0, the distribution is degenerate at mu.
-        return 0.0 if (lower <= mu <= upper) else -np.inf # This is consistent in log space
+    if lower > upper or sd < 0.0:
+        return np.nan
 
-    l_upper = scipy.stats.norm.logcdf(upper, loc=mu, scale=sd)
-    l_lower = scipy.stats.norm.logcdf(lower, loc=mu, scale=sd)
-    # Calculate log-prob
-    log_prob = l_upper + log1mexp(l_upper - l_lower)
-    return log_prob
+    if not np.isfinite(mu) or not np.isfinite(sd):
+        return np.nan
+
+    if sd == 0.0:
+        return 0.0 if lower <= mu <= upper else -np.inf
+
+    log_upper = scipy.stats.norm.logcdf(
+        upper,
+        loc=mu,
+        scale=sd,
+    )
+    log_lower = scipy.stats.norm.logcdf(
+        lower,
+        loc=mu,
+        scale=sd,
+    )
+
+    if np.isnan(log_upper) or np.isnan(log_lower):
+        return np.nan
+
+    # If the lower-tail probability is numerically zero:
+    #
+    # log(exp(log_upper) - 0) = log_upper
+    #
+    # This also covers log_upper == log_lower == -inf.
+    if log_lower == -np.inf:
+        return log_upper
+
+    delta = log_upper - log_lower
+
+    # Equal CDF values imply numerically zero interval probability.
+    if delta == 0.0:
+        return -np.inf
+
+    # With lower <= upper, delta must be non-negative.
+    if delta < 0.0:
+        return np.nan
+
+    return log_upper + log1mexp(delta)
 
 
 def approx_phi_post(Y_obs, lambda_ref, d, mu=None, sig=None, lower_val=0.2, upper_val=10, start=1.0, disp=False):
@@ -3266,7 +3284,6 @@ def analyze_bulk(
             log.info(f"Using diploid chromosomes given: {', '.join(diploid_chroms)}")
         bulk['diploid'] = bulk['CHROM'].isin(diploid_chroms)
     else:
-        # print(find_diploid)
         if find_diploid:
             bulk = find_common_diploid(
                 bulk,
