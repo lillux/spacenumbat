@@ -13,6 +13,7 @@ from . import operations
 from . import tree
 from . import phylo
 from . import spatial_utils
+from . import hmrf
 
 from .main import run_spacenumbat
 

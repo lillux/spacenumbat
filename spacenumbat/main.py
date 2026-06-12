@@ -62,10 +62,10 @@ def run_spacenumbat(
     exclude_neu=True,
     p_min = 1e-10,
     plot_results=True,
-    filter_hla_hg38=True, #Just added
-    filter_chromosome_segments=None, # .tsv or pd.Dataframe with coordinate to skip. Needs: [CHROM, start, end]
+    filter_hla_hg38=True,
+    filter_chromosome_segments=None,
     spatial=False,
-    spatial_method="cpr",
+    spatial_method="hmrf",
     spatial_decay="gaussian",
     spatial_method_kwargs: Mapping = None,
     connectivity_key: str ="spatial_connectivities",
@@ -221,6 +221,23 @@ def run_spacenumbat(
     
     if max_cost == None:
         max_cost = count_mat.shape[0]*tau
+        
+        
+    if spatial:
+        if connectivity_key not in count_mat.obsp:
+            raise KeyError(
+                f"{connectivity_key!r} is required when spatial=True. "
+                f"Available keys: {list(count_mat.obsp.keys())}"
+            )
+    
+        if spatial_method != "hmrf":
+            count_mat = spatial_utils.get_spatial_info(
+                counts_mat=count_mat,
+                ncores=ncores,
+                distance_key=distance_key,
+                kind=spatial_decay,
+                connectivity_key=connectivity_key,
+            )
         
         
     count_mat = utils.check_anndata(count_mat, count_to_int=False)
@@ -589,13 +606,6 @@ def run_spacenumbat(
         allele_post = operations.get_allele_post(df_allele=df_allele,
                                                  haplotypes=haplotype,
                                                  segs_consensus=segs_consensus_retest_corrected)
-        
-        if spatial:
-            count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
-                                                       ncores=ncores,
-                                                       distance_key=distance_key,
-                                                       kind=spatial_decay,
-                                                       connectivity_key=connectivity_key)
             
     
         joint_post = operations.get_joint_post(
