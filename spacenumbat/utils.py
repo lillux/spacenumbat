@@ -3358,7 +3358,7 @@ def analyze_bulk(
     if retest and not exp_only:
 
         if verbose:
-            print('Retesting CNVs..')    
+            log.info('Retesting CNVs..')    
         bulk_temp = bulk.copy()
         segs_post = retest_cnv(bulk_temp,
                                gamma=gamma,
