@@ -24,7 +24,8 @@ import natsort
 
 import anndata as ad
 
-from . import utils, dist_prob, clustering, _progressbar, spatial_utils, hmrf
+from . import utils, dist_prob, clustering, _progressbar, spatial_utils, hmrf, numeric
+
 #import warnings
 
 from spacenumbat._log import get_logger
@@ -1148,84 +1149,6 @@ def _safe_log_scaled_prior(
     return math.log(prior / divisor)
 
 
-@njit
-def _safe_add(
-    left: float,
-    right: float,
-    ) -> float:
-    """
-    Add two floating-point values without executing invalid inf + (-inf).
-    """
-    if np.isnan(left) or np.isnan(right):
-        return np.nan
-
-    if (
-        (left == np.inf and right == -np.inf)
-        or
-        (left == -np.inf and right == np.inf)
-    ):
-        return np.nan
-
-    return left + right
-
-
-@njit
-def _safe_subtract(
-    left: float,
-    right: float,
-    ) -> float:
-    """
-    Subtract two floating-point values without executing inf - inf.
-    """
-    if np.isnan(left) or np.isnan(right):
-        return np.nan
-
-    if (
-        (left == np.inf and right == np.inf)
-        or
-        (left == -np.inf and right == -np.inf)
-    ):
-        return np.nan
-
-    return left - right
-
-
-@njit
-def _safe_exp_difference(
-    numerator_log: float,
-    denominator_log: float,
-    ) -> float:
-    """
-    Compute exp(numerator_log - denominator_log) safely.
-
-    The function preserves the normal floating-point interpretation:
-    - undefined differences -> NaN
-    - exp(-inf) -> 0
-    - exp(+inf) -> +inf
-    - finite differences -> ordinary exponential
-    """
-    difference = _safe_subtract(
-        numerator_log,
-        denominator_log,
-    )
-
-    if np.isnan(difference):
-        return np.nan
-
-    if difference == -np.inf:
-        return 0.0
-
-    if difference == np.inf:
-        return np.inf
-
-    # Avoid overflow warnings for malformed inputs where the numerator is
-    # substantially greater than the normalization constant.
-    #if difference > 709.782712893384:
-    #    return np.inf
-
-    return math.exp(difference)
-
-
 @njit(parallel=True)
 def _compute_posterior_numba(
     l21: np.ndarray,
@@ -1301,11 +1224,11 @@ def _compute_posterior_numba(
             4.0,
         )
 
-        amp_21 = _safe_add(
+        amp_21 = numeric.safe_add(
             l21[i],
             log_prior_amp,
         )
-        amp_31 = _safe_add(
+        amp_31 = numeric.safe_add(
             l31[i],
             log_prior_amp,
         )
@@ -1316,27 +1239,27 @@ def _compute_posterior_numba(
 
         z_amp = _log_sum_exp(amp_values)
 
-        z_loh = _safe_add(
+        z_loh = numeric.safe_add(
             l20[i],
             _safe_log_scaled_prior(prior_loh[i], 2.0),
         )
 
-        z_del = _safe_add(
+        z_del = numeric.safe_add(
             l10[i],
             _safe_log_scaled_prior(prior_del[i], 2.0),
         )
 
-        z_bamp = _safe_add(
+        z_bamp = numeric.safe_add(
             l22[i],
             _safe_log_scaled_prior(prior_bamp[i], 2.0),
         )
 
-        z_bdel = _safe_add(
+        z_bdel = numeric.safe_add(
             l00[i],
             _safe_log_scaled_prior(prior_bdel[i], 2.0),
         )
 
-        z_neu = _safe_add(
+        z_neu = numeric.safe_add(
             l11[i],
             log_half,
         )
@@ -1371,19 +1294,19 @@ def _compute_posterior_numba(
 
         # Posterior probabilities. The helper handles NaN and infinite
         # normalization constants without invalid subtraction.
-        p_amp[i] = _safe_exp_difference(z_amp, z_total)
-        p_neu[i] = _safe_exp_difference(z_neu, z_total)
-        p_del[i] = _safe_exp_difference(z_del, z_total)
-        p_loh[i] = _safe_exp_difference(z_loh, z_total)
-        p_bamp[i] = _safe_exp_difference(z_bamp, z_total)
-        p_bdel[i] = _safe_exp_difference(z_bdel, z_total)
+        p_amp[i] = numeric.safe_exp_difference(z_amp, z_total)
+        p_neu[i] = numeric.safe_exp_difference(z_neu, z_total)
+        p_del[i] = numeric.safe_exp_difference(z_del, z_total)
+        p_loh[i] = numeric.safe_exp_difference(z_loh, z_total)
+        p_bamp[i] = numeric.safe_exp_difference(z_bamp, z_total)
+        p_bdel[i] = numeric.safe_exp_difference(z_bdel, z_total)
 
-        logBF[i] = _safe_subtract(
+        logBF[i] = numeric.safe_subtract(
             z_cnv,
             z_neu,
         )
 
-        p_cnv[i] = _safe_exp_difference(
+        p_cnv[i] = numeric.safe_exp_difference(
             z_cnv,
             z_total,
         )
