@@ -409,7 +409,7 @@ def smooth_segs(bulk: pd.DataFrame, min_genes: int = 10) -> pd.DataFrame:
         max_summary = ','.join(
             f"{chrom}:max={int(max_genes.get(chrom, 0))}" for chrom in failed
         )
-        # Log the error message with enough context to distinguish true marker
+        # Log the error message context to distinguish true marker
         # loss from HMM over-fragmentation into only short segments.
         msg = (
             f"No segments containing more than {min_genes} genes for CHROM {chroms_na}. "

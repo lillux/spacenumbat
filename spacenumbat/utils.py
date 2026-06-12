@@ -2985,25 +2985,41 @@ def retest_cnv(bulk:pd.DataFrame,
             cnv_log_terms[5] = np.log(G["00"]) + L_x_d[idx] + L_y_n[idx]
             
             Z_cnv[idx] = numeric.log_sum_exp(cnv_log_terms)
-            
             Z_n[idx] = (
                 np.log(G["11"])
                 + L_x_n[idx]
-                + L_y_n[idx]
-            )
-            
+                + L_y_n[idx])
             total_log_terms[0] = Z_n[idx]
             total_log_terms[1] = Z_cnv[idx]
-            
             Z[idx] = numeric.log_sum_exp(total_log_terms)
             
-            logBF[idx] = Z_cnv[idx] - Z_n[idx]
-            p_neu[idx] = np.exp(Z_n[idx] - Z[idx])
-            p_loh[idx] = np.exp(np.log(G['20']) + L_x_n[idx] + L_y_d[idx] - Z_cnv[idx])
-            p_amp[idx] = np.exp(np.log(G['31'] + G['21']) + L_x_a[idx] + L_y_a[idx] - Z_cnv[idx])
-            p_del[idx] = np.exp(np.log(G['10']) + L_x_d[idx] + L_y_d[idx] - Z_cnv[idx])
-            p_bamp[idx] = np.exp(np.log(G['22']) + L_x_a[idx] + L_y_n[idx] - Z_cnv[idx])
-            p_bdel[idx] = np.exp(np.log(G['00']) + L_x_d[idx] + L_y_n[idx] - Z_cnv[idx])
+            amp_log_term = (
+                np.log(G["31"] + G["21"])
+                + L_x_a[idx]
+                + L_y_a[idx])
+            
+            logBF[idx] = numeric.safe_subtract(
+                Z_cnv[idx],
+                Z_n[idx])
+            p_neu[idx] = numeric.safe_exp_difference(
+                Z_n[idx],
+                Z[idx])
+            p_loh[idx] = numeric.safe_exp_difference(
+                cnv_log_terms[0],
+                Z_cnv[idx])
+            p_amp[idx] = numeric.safe_exp_difference(
+                amp_log_term,
+                Z_cnv[idx])
+            p_del[idx] = numeric.safe_exp_difference(
+                cnv_log_terms[1],
+                Z_cnv[idx])
+            p_bamp[idx] = numeric.safe_exp_difference(
+                cnv_log_terms[4],
+                Z_cnv[idx])
+            p_bdel[idx] = numeric.safe_exp_difference(
+                cnv_log_terms[5],
+                Z_cnv[idx])
+            
             LLR_x[idx] = calc_exp_LLR(Y_obs      = group.Y_obs[group.Y_obs.notna()],
                                       lambda_ref = group.lambda_ref[group.Y_obs.notna()],
                                       d          = group.d_obs[group.Y_obs.notna()].unique(),
@@ -3048,12 +3064,12 @@ def retest_cnv(bulk:pd.DataFrame,
             'LLR_x':LLR_x,
             'LLR_y':LLR_y,
             #'LLR': LLR_x + LLR_y,
-            'LLR': logBF # This is in the original implementation, overwriting 'LLR' as defined before. I guess it is wrong.
+            'LLR': logBF # This is in the original implementation, overwriting 'LLR' as defined before.
         })
     
         segs_post.loc[:,'cnv_state_post'] = segs_post.loc[:,['p_loh', 'p_amp', 'p_del', 'p_bamp', 'p_bdel']].idxmax(axis=1).apply(lambda x: x.split('_')[-1])
         segs_post.loc[:,'cnv_state_post'] = ['neu' if segs_post.p_neu[i] >= 0.5 else segs_post.cnv_state_post[i] for i in segs_post.index]
-        segs_post = segs_post.astype({'CHROM':"string", #np.int64,
+        segs_post = segs_post.astype({'CHROM':"string",
                   'seg':'string',
                   'seg_start':np.int64,
                   'seg_end':np.int64,
@@ -3226,7 +3242,6 @@ def analyze_bulk(
     run_hmm: bool = True,
     prior=None,
     exclude_neu: bool = True,
-    # phasing: bool = True,
     verbose: bool = True
     ) -> pd.DataFrame:
     """
@@ -3268,8 +3283,6 @@ def analyze_bulk(
         Prior probabilities of states (internal use).
     exclude_neu : bool
         Whether to exclude neutral segments from retesting (internal use).
-    # phasing : bool
-    #     Whether to use phasing information (internal use).
     verbose : bool
         Verbosity.
 
@@ -3373,7 +3386,6 @@ def analyze_bulk(
                 exp_only       = exp_only,
                 allele_only    = allele_only,
                 classify_allele= classify_allele,
-                # phasing        = phasing
             )
             return pd.Series(states, index=df_group.index, name='state')
 
