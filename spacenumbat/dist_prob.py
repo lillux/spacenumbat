@@ -444,13 +444,12 @@ def fit_lnpois(
         initial_guess,
         method='L-BFGS-B',
         bounds=bounds,
-        #options={'disp': disp},
         tol=1e-5
     )
 
     if not result.success:
         warnings.warn(
-            "Optimization failed! Last step values are returned. This may be a problem!!!!",
+            "Optimization failed! Last step values are returned.",
             RuntimeWarning
         )
     return result.x
