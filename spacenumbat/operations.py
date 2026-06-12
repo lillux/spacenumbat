@@ -883,7 +883,7 @@ def get_exp_likelihoods(
     mu: Optional[float] = None,
     sigma: Optional[float] = None,
     disp: bool = False,
-    n_points: int = 200
+    n_points: int = 256,
     ) -> pd.DataFrame:
     """
     Compute expression-model likelihood summaries per segment.
@@ -966,7 +966,8 @@ def get_exp_likelihoods(
         fit = dist_prob.fit_lnpois(df_dip['Y_obs'].values,
                          df_dip['lambda_ref'].values,
                          depth_obs,
-                         disp=disp)
+                         #disp=disp,
+                         n_points=n_points)
         mu = fit[0]
         sigma = fit[1]
 
@@ -977,7 +978,8 @@ def get_exp_likelihoods(
         phi_mle_val = calc_phi_mle_lnpois(df['Y_obs'].values,
                                           df['lambda_ref'].values,
                                           depth_obs,
-                                          mu, sigma,
+                                          mu,
+                                          sigma,
                                           lower=0.1,
                                           upper=10)
 
@@ -1071,7 +1073,7 @@ def calc_phi_mle_lnpois(
         method='L-BFGS-B',
         bounds=[(lower, upper)],
         #options={'disp': disp},
-        tol = 1e-5 # added later
+        tol = 1e-5,
     )
     
     return res.x[0]
