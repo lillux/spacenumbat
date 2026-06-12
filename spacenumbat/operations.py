@@ -1078,31 +1078,151 @@ def calc_phi_mle_lnpois(
 @njit
 def _log_sum_exp(vals: np.ndarray) -> float:
     """
-    Compute log(sum(exp(vals))) in a numerically stable way.
+    Compute log(sum(exp(vals))) safely and stably.
 
-    This routine expects a 1D array of log-values and returns the
-    log-sum-exp. It handles empty inputs and all-negative-infinity inputs.
+    Behavior
+    --------
+    - Empty input -> -inf
+    - Any NaN -> NaN
+    - Any +inf, with no NaN -> +inf
+    - All -inf -> -inf
+    - Otherwise, use the standard max-shifted calculation
 
-    Parameters
-    ----------
-    vals : np.ndarray
-        One-dimensional array of log-values (shape: (n,)).
-
-    Returns
-    -------
-    float
-        The logarithm of the sum of exponentials of the input values.
-        Returns -inf if the input is empty. If all entries are -inf,
-        returns -inf as well; if the maximum is non-finite, that
-        maximum is returned.
+    For finite inputs, this uses the same calculation as the previous
+    implementation and therefore preserves numerical results.
     """
-    if vals.shape[0] == 0:
+    n = vals.shape[0]
+
+    if n == 0:
         return -np.inf
-    max_val = np.max(vals)
-    if not np.isfinite(max_val):
-        return max_val  # e.g. if all entries are -inf
+
+    max_val = -np.inf
+    has_pos_inf = False
+
+    for i in range(n):
+        value = vals[i]
+
+        if np.isnan(value):
+            return np.nan
+
+        if value == np.inf:
+            has_pos_inf = True
+        elif value > max_val:
+            max_val = value
+
+    if has_pos_inf:
+        return np.inf
+
+    # All entries are -inf.
+    if max_val == -np.inf:
+        return -np.inf
+
+    # max_val is finite here, so no invalid inf - inf subtraction occurs.
     cumsum = np.sum(np.exp(vals - max_val))
+
     return max_val + math.log(cumsum)
+
+
+@njit
+def _safe_log_scaled_prior(
+    prior: float,
+    divisor: float,
+    ) -> float:
+    """
+    Return log(prior / divisor) without invalid logarithm operations.
+    
+    """
+    if np.isnan(prior):
+        return np.nan
+
+    if prior < 0.0:
+        return np.nan
+
+    if prior == 0.0:
+        return -np.inf
+
+    if prior == np.inf:
+        return np.inf
+
+    return math.log(prior / divisor)
+
+
+@njit
+def _safe_add(
+    left: float,
+    right: float,
+    ) -> float:
+    """
+    Add two floating-point values without executing invalid inf + (-inf).
+    """
+    if np.isnan(left) or np.isnan(right):
+        return np.nan
+
+    if (
+        (left == np.inf and right == -np.inf)
+        or
+        (left == -np.inf and right == np.inf)
+    ):
+        return np.nan
+
+    return left + right
+
+
+@njit
+def _safe_subtract(
+    left: float,
+    right: float,
+    ) -> float:
+    """
+    Subtract two floating-point values without executing inf - inf.
+    """
+    if np.isnan(left) or np.isnan(right):
+        return np.nan
+
+    if (
+        (left == np.inf and right == np.inf)
+        or
+        (left == -np.inf and right == -np.inf)
+    ):
+        return np.nan
+
+    return left - right
+
+
+@njit
+def _safe_exp_difference(
+    numerator_log: float,
+    denominator_log: float,
+    ) -> float:
+    """
+    Compute exp(numerator_log - denominator_log) safely.
+
+    The function preserves the normal floating-point interpretation:
+    - undefined differences -> NaN
+    - exp(-inf) -> 0
+    - exp(+inf) -> +inf
+    - finite differences -> ordinary exponential
+    """
+    difference = _safe_subtract(
+        numerator_log,
+        denominator_log,
+    )
+
+    if np.isnan(difference):
+        return np.nan
+
+    if difference == -np.inf:
+        return 0.0
+
+    if difference == np.inf:
+        return np.inf
+
+    # Avoid overflow warnings for malformed inputs where the numerator is
+    # substantially greater than the normalization constant.
+    #if difference > 709.782712893384:
+    #    return np.inf
+
+    return math.exp(difference)
 
 
 @njit(parallel=True)
@@ -1118,117 +1238,176 @@ def _compute_posterior_numba(
     prior_loh: np.ndarray,
     prior_del: np.ndarray,
     prior_bamp: np.ndarray,
-    prior_bdel: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-           np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-           np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    prior_bdel: np.ndarray,
+    ) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     """
-    Vectorized posterior calculations for CNV states (Numba-accelerated).
+    Compute posterior probabilities for CNV states safely in log space.
 
-    For each row i, the function combines log-likelihood terms l..[i] with
-    prior probabilities to produce intermediate log-evidence quantities Z_*,
-    a total evidence Z, CNV-only evidence Z_cnv, and posterior probabilities
-    for each state. Computations are carried out in log space using
-    log-sum-exp for numerical stability.
+    The function preserves the existing input/output contract and output order.
+    Missing or mathematically undefined inputs propagate as NaN. They are never
+    replaced with zero.
 
-    The states and their log-evidence are:
-      - amp: log-sum-exp of l21 + log(prior_amp/4) and l31 + log(prior_amp/4)
-      - loh: l20 + log(prior_loh/2)
-      - del: l10 + log(prior_del/2)
-      - bamp: l22 + log(prior_bamp/2)
-      - bdel: l00 + log(prior_bdel/2)
-      - neu: l11 + log(1/2)
-
-    The totals are:
-      - Z = log-sum-exp([Z_n, Z_loh, Z_del, Z_amp, Z_bamp, Z_bdel])
-      - Z_cnv = log-sum-exp([Z_loh, Z_del, Z_amp, Z_bamp, Z_bdel])
-
-    Posterior probabilities are exp(Z_state - Z). The log Bayes factor
-    is logBF = Z_cnv - Z_n. p_cnv = exp(Z_cnv - Z), p_n = p_neu.
-
-    Parameters
-    ----------
-    l21, l31, l20, l10, l22, l00, l11 : np.ndarray
-        One-dimensional arrays of log-likelihood components for each state
-        (shape: (n,)). All must be float64-compatible.
-    prior_amp, prior_loh, prior_del, prior_bamp, prior_bdel : np.ndarray
-        One-dimensional arrays of prior probabilities for the corresponding
-        states (shape: (n,)). Values must be strictly greater than zero to
-        avoid log(0).
-
-    Returns
-    -------
-    Tuple of np.ndarray
-        Seventeen 1D arrays of length n, in the following order:
-        Z_amp, Z_loh, Z_del, Z_bamp, Z_bdel, Z_n, Z, Z_cnv,
-        p_amp, p_neu, p_del, p_loh, p_bamp, p_bdel, logBF, p_cnv, p_n.
-
+    Zero priors remain valid and produce -inf log evidence and zero posterior
+    probability when the total evidence is otherwise defined.
     """
     n = l21.shape[0]
-    
+
     Z_amp = np.empty(n, dtype=np.float64)
     Z_loh = np.empty(n, dtype=np.float64)
     Z_del = np.empty(n, dtype=np.float64)
     Z_bamp = np.empty(n, dtype=np.float64)
     Z_bdel = np.empty(n, dtype=np.float64)
     Z_n = np.empty(n, dtype=np.float64)
+
     Z = np.empty(n, dtype=np.float64)
     Z_cnv = np.empty(n, dtype=np.float64)
-    
+
     p_amp = np.empty(n, dtype=np.float64)
     p_neu = np.empty(n, dtype=np.float64)
     p_del = np.empty(n, dtype=np.float64)
     p_loh = np.empty(n, dtype=np.float64)
     p_bamp = np.empty(n, dtype=np.float64)
     p_bdel = np.empty(n, dtype=np.float64)
-    
+
     logBF = np.empty(n, dtype=np.float64)
     p_cnv = np.empty(n, dtype=np.float64)
     p_n = np.empty(n, dtype=np.float64)
-    
+
+    log_half = math.log(0.5)
+
     for i in prange(n):
-        a = l21[i] + math.log(prior_amp[i] / 4.0)
-        b = l31[i] + math.log(prior_amp[i] / 4.0)
-        Z_amp[i] = _log_sum_exp(np.array([a, b]))
-        
-        Z_loh[i] = l20[i] + math.log(prior_loh[i] / 2.0)
-        Z_del[i] = l10[i] + math.log(prior_del[i] / 2.0)
-        Z_bamp[i] = l22[i] + math.log(prior_bamp[i] / 2.0)
-        Z_bdel[i] = l00[i] + math.log(prior_bdel[i] / 2.0)
-        Z_n[i] = l11[i] + math.log(1.0 / 2.0)
-        
-        # Compute overall Z = log_sum_exp([Z_n, Z_loh, Z_del, Z_amp, Z_bamp, Z_bdel])
-        arr = np.empty(6, dtype=np.float64)
-        arr[0] = Z_n[i]
-        arr[1] = Z_loh[i]
-        arr[2] = Z_del[i]
-        arr[3] = Z_amp[i]
-        arr[4] = Z_bamp[i]
-        arr[5] = Z_bdel[i]
-        Z[i] = _log_sum_exp(arr)
-        
-        # Compute Z_cnv = log_sum_exp([Z_loh, Z_del, Z_amp, Z_bamp, Z_bdel])
-        arr2 = np.empty(5, dtype=np.float64)
-        arr2[0] = Z_loh[i]
-        arr2[1] = Z_del[i]
-        arr2[2] = Z_amp[i]
-        arr2[3] = Z_bamp[i]
-        arr2[4] = Z_bdel[i]
-        Z_cnv[i] = _log_sum_exp(arr2)
-        
-        # Compute posterior probabilities
-        p_amp[i] = math.exp(Z_amp[i] - Z[i])
-        p_neu[i] = math.exp(Z_n[i] - Z[i])
-        p_del[i] = math.exp(Z_del[i] - Z[i])
-        p_loh[i] = math.exp(Z_loh[i] - Z[i])
-        p_bamp[i] = math.exp(Z_bamp[i] - Z[i])
-        p_bdel[i] = math.exp(Z_bdel[i] - Z[i])
-        logBF[i] = Z_cnv[i] - Z_n[i]
-        p_cnv[i] = math.exp(Z_cnv[i] - Z[i])
+        # Amplification combines two underlying likelihood configurations.
+        log_prior_amp = _safe_log_scaled_prior(
+            prior_amp[i],
+            4.0,
+        )
+
+        amp_21 = _safe_add(
+            l21[i],
+            log_prior_amp,
+        )
+        amp_31 = _safe_add(
+            l31[i],
+            log_prior_amp,
+        )
+
+        amp_values = np.empty(2, dtype=np.float64)
+        amp_values[0] = amp_21
+        amp_values[1] = amp_31
+
+        z_amp = _log_sum_exp(amp_values)
+
+        z_loh = _safe_add(
+            l20[i],
+            _safe_log_scaled_prior(prior_loh[i], 2.0),
+        )
+
+        z_del = _safe_add(
+            l10[i],
+            _safe_log_scaled_prior(prior_del[i], 2.0),
+        )
+
+        z_bamp = _safe_add(
+            l22[i],
+            _safe_log_scaled_prior(prior_bamp[i], 2.0),
+        )
+
+        z_bdel = _safe_add(
+            l00[i],
+            _safe_log_scaled_prior(prior_bdel[i], 2.0),
+        )
+
+        z_neu = _safe_add(
+            l11[i],
+            log_half,
+        )
+
+        Z_amp[i] = z_amp
+        Z_loh[i] = z_loh
+        Z_del[i] = z_del
+        Z_bamp[i] = z_bamp
+        Z_bdel[i] = z_bdel
+        Z_n[i] = z_neu
+
+        all_values = np.empty(6, dtype=np.float64)
+        all_values[0] = z_neu
+        all_values[1] = z_loh
+        all_values[2] = z_del
+        all_values[3] = z_amp
+        all_values[4] = z_bamp
+        all_values[5] = z_bdel
+
+        z_total = _log_sum_exp(all_values)
+        Z[i] = z_total
+
+        cnv_values = np.empty(5, dtype=np.float64)
+        cnv_values[0] = z_loh
+        cnv_values[1] = z_del
+        cnv_values[2] = z_amp
+        cnv_values[3] = z_bamp
+        cnv_values[4] = z_bdel
+
+        z_cnv = _log_sum_exp(cnv_values)
+        Z_cnv[i] = z_cnv
+
+        # Posterior probabilities. The helper handles NaN and infinite
+        # normalization constants without invalid subtraction.
+        p_amp[i] = _safe_exp_difference(z_amp, z_total)
+        p_neu[i] = _safe_exp_difference(z_neu, z_total)
+        p_del[i] = _safe_exp_difference(z_del, z_total)
+        p_loh[i] = _safe_exp_difference(z_loh, z_total)
+        p_bamp[i] = _safe_exp_difference(z_bamp, z_total)
+        p_bdel[i] = _safe_exp_difference(z_bdel, z_total)
+
+        logBF[i] = _safe_subtract(
+            z_cnv,
+            z_neu,
+        )
+
+        p_cnv[i] = _safe_exp_difference(
+            z_cnv,
+            z_total,
+        )
+
         p_n[i] = p_neu[i]
-        
-    return (Z_amp, Z_loh, Z_del, Z_bamp, Z_bdel, Z_n, Z, Z_cnv, 
-            p_amp, p_neu, p_del, p_loh, p_bamp, p_bdel, logBF, p_cnv, p_n)
+
+    return (
+        Z_amp,
+        Z_loh,
+        Z_del,
+        Z_bamp,
+        Z_bdel,
+        Z_n,
+        Z,
+        Z_cnv,
+        p_amp,
+        p_neu,
+        p_del,
+        p_loh,
+        p_bamp,
+        p_bdel,
+        logBF,
+        p_cnv,
+        p_n,
+    )
 
 
 def compute_posterior(PL: pd.DataFrame) -> pd.DataFrame:
@@ -1953,9 +2132,17 @@ def get_joint_post(
         ]
         map_states = np.asarray(["neu", "loh", "del", "amp", "bamp", "bdel"])
 
-        joint_post["cnv_state_map"] = map_states[
-            np.argmax(joint_post.loc[:, map_columns].to_numpy(dtype=float), axis=1,)]
-
+        probabilities = joint_post[map_columns].to_numpy(dtype=float)
+        valid = np.isfinite(probabilities).all(axis=1)
+        
+        joint_post["cnv_state_map"] = pd.Series(pd.NA,
+                                                index=joint_post.index,
+                                                dtype="string",
+                                                )
+        
+        joint_post.loc[valid, "cnv_state_map"] = map_states[np.argmax(probabilities[valid], axis=1)]
+        
+        
     joint_post["seg_label"] = (
         joint_post["seg"].astype("string")
         + "("
