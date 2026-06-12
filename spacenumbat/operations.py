@@ -1078,54 +1078,6 @@ def calc_phi_mle_lnpois(
 
 
 @njit
-def _log_sum_exp(vals: np.ndarray) -> float:
-    """
-    Compute log(sum(exp(vals))) safely and stably.
-
-    Behavior
-    --------
-    - Empty input -> -inf
-    - Any NaN -> NaN
-    - Any +inf, with no NaN -> +inf
-    - All -inf -> -inf
-    - Otherwise, use the standard max-shifted calculation
-
-    For finite inputs, this uses the same calculation as the previous
-    implementation and therefore preserves numerical results.
-    """
-    n = vals.shape[0]
-
-    if n == 0:
-        return -np.inf
-
-    max_val = -np.inf
-    has_pos_inf = False
-
-    for i in range(n):
-        value = vals[i]
-
-        if np.isnan(value):
-            return np.nan
-
-        if value == np.inf:
-            has_pos_inf = True
-        elif value > max_val:
-            max_val = value
-
-    if has_pos_inf:
-        return np.inf
-
-    # All entries are -inf.
-    if max_val == -np.inf:
-        return -np.inf
-
-    # max_val is finite here, so no invalid inf - inf subtraction occurs.
-    cumsum = np.sum(np.exp(vals - max_val))
-
-    return max_val + math.log(cumsum)
-
-
-@njit
 def _safe_log_scaled_prior(
     prior: float,
     divisor: float,
@@ -1237,7 +1189,7 @@ def _compute_posterior_numba(
         amp_values[0] = amp_21
         amp_values[1] = amp_31
 
-        z_amp = _log_sum_exp(amp_values)
+        z_amp = numeric.log_sum_exp(amp_values)
 
         z_loh = numeric.safe_add(
             l20[i],
@@ -1279,7 +1231,7 @@ def _compute_posterior_numba(
         all_values[4] = z_bamp
         all_values[5] = z_bdel
 
-        z_total = _log_sum_exp(all_values)
+        z_total = numeric.log_sum_exp(all_values)
         Z[i] = z_total
 
         cnv_values = np.empty(5, dtype=np.float64)
@@ -1289,7 +1241,7 @@ def _compute_posterior_numba(
         cnv_values[3] = z_bamp
         cnv_values[4] = z_bdel
 
-        z_cnv = _log_sum_exp(cnv_values)
+        z_cnv = numeric.log_sum_exp(cnv_values)
         Z_cnv[i] = z_cnv
 
         # Posterior probabilities. The helper handles NaN and infinite

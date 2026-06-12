@@ -34,7 +34,7 @@ import networkx as nx
 
 from joblib import cpu_count, Parallel, delayed
 
-from spacenumbat import dist_prob
+from spacenumbat import dist_prob, numeric
 from spacenumbat import hmm as hmmlib
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -2386,7 +2386,7 @@ def calc_allele_LLR(
                    beta=beta_0)
 
     # Return difference
-    return l_1 - l_0
+    return numeric.safe_subtract(l_1, l_0)
 
 
 def log1mexp(x: float) -> float:
@@ -2571,7 +2571,7 @@ def calc_exp_LLR(
     sig: Optional[float | NDArray] = None,
     alpha: Optional[float | NDArray] = None,
     beta: Optional[float | NDArray] = None,
-) -> float:
+    ) -> float:
     """
     Compute the expression log-likelihood ratio (LLR) between an alternative
     overdispersion model and a null model.
@@ -2617,7 +2617,8 @@ def calc_exp_LLR(
     l1 = dist_prob.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=phi_mle)
     # Null model: phi=1
     l0 = dist_prob.l_lnpois(Y_obs, lambda_ref, d, mu, sig, phi=1.0)
-    return l1 - l0
+    
+    return numeric.safe_subtract(l1, l0)
 
 
 def classify_alleles(bulk: pd.DataFrame) -> pd.DataFrame:
@@ -2939,6 +2940,9 @@ def retest_cnv(bulk:pd.DataFrame,
         LLR_y = np.zeros(group_len)
         LLR = np.zeros(group_len)
         
+        cnv_log_terms = np.empty(6, dtype=np.float64)
+        total_log_terms = np.empty(2, dtype=np.float64)
+        
         for idx, curr_group in enumerate(bulk_group):
             
             group = curr_group[1]
@@ -2972,14 +2976,27 @@ def retest_cnv(bulk:pd.DataFrame,
             L_x_n[idx] = pnorm_range_log(2**(-logphi_min), 2**logphi_min, phi_mle[idx], phi_sigma[idx])
             L_x_d[idx] = pnorm_range_log(0.1, 2**(-logphi_min), phi_mle[idx], phi_sigma[idx])
             L_x_a[idx] = pnorm_range_log(2**logphi_min, 3, phi_mle[idx], phi_sigma[idx])
-            Z_cnv[idx] = hmmlib.log_sum_exp((np.log(G['20']) + L_x_n[idx] + L_y_d[idx],
-                                      np.log(G['10']) + L_x_d[idx] + L_y_d[idx],
-                                      np.log(G['21']) + L_x_a[idx] + L_y_a[idx],
-                                      np.log(G['31']) + L_x_a[idx] + L_y_a[idx],
-                                      np.log(G['22']) + L_x_a[idx] + L_y_n[idx], 
-                                      np.log(G['00']) + L_x_d[idx] + L_y_n[idx]))
-            Z_n[idx] = np.log(G['11']) + L_x_n[idx] + L_y_n[idx]
-            Z[idx] = hmmlib.log_sum_exp((Z_n[idx], Z_cnv[idx]))
+        
+            cnv_log_terms[0] = np.log(G["20"]) + L_x_n[idx] + L_y_d[idx]
+            cnv_log_terms[1] = np.log(G["10"]) + L_x_d[idx] + L_y_d[idx]
+            cnv_log_terms[2] = np.log(G["21"]) + L_x_a[idx] + L_y_a[idx]
+            cnv_log_terms[3] = np.log(G["31"]) + L_x_a[idx] + L_y_a[idx]
+            cnv_log_terms[4] = np.log(G["22"]) + L_x_a[idx] + L_y_n[idx]
+            cnv_log_terms[5] = np.log(G["00"]) + L_x_d[idx] + L_y_n[idx]
+            
+            Z_cnv[idx] = numeric.log_sum_exp(cnv_log_terms)
+            
+            Z_n[idx] = (
+                np.log(G["11"])
+                + L_x_n[idx]
+                + L_y_n[idx]
+            )
+            
+            total_log_terms[0] = Z_n[idx]
+            total_log_terms[1] = Z_cnv[idx]
+            
+            Z[idx] = numeric.log_sum_exp(total_log_terms)
+            
             logBF[idx] = Z_cnv[idx] - Z_n[idx]
             p_neu[idx] = np.exp(Z_n[idx] - Z[idx])
             p_loh[idx] = np.exp(np.log(G['20']) + L_x_n[idx] + L_y_d[idx] - Z_cnv[idx])

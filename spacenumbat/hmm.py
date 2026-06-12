@@ -10,7 +10,7 @@ from numpy.typing import NDArray, ArrayLike
 from typing import List, Optional, Dict, Any, Mapping, Sequence, Union
 import pandas as pd
 from spacenumbat.dist_prob import dnbinom, dpoilog, log_beta_binomial_pmf
-from spacenumbat import utils
+from spacenumbat import utils, numeric
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -988,38 +988,6 @@ def run_joint_hmm_s15(
     return MPC
 
 
-def log_sum_exp(vals: NDArray[np.floating]) -> float:
-    """
-    Compute log(sum(exp(vals))) in a numerically stable way.
-
-    This function uses the trick of subtracting the maximum entry
-    before exponentiation to avoid overflow/underflow:
-
-      log sum_i exp(v_i) = v_max + log sum_i exp(v_i - v_max)
-
-    Special cases:
-    - If vals is empty, returns -np.inf (log of zero).
-    - If the maximum value is non-finite (for example, all entries are -inf),
-      that maximum is returned (for example, -inf).
-
-    Parameters
-    ----------
-    vals : numpy.ndarray, shape (n,)
-        One-dimensional array of real values in log-space.
-
-    Returns
-    -------
-    float
-        The scalar value log(sum(exp(vals))) computed stably.
-    """
-    if len(vals) == 0:
-        return -np.inf
-    max_val = np.max(vals)
-    if not np.isfinite(max_val):
-        return max_val
-    cumsum = np.sum(np.exp(vals - max_val))
-    return max_val + np.log(cumsum)
-
 
 def likelihood_compute(logphi: NDArray, logprob: NDArray, logPi: NDArray,) -> float:
     """
@@ -1085,13 +1053,13 @@ def likelihood_compute(logphi: NDArray, logprob: NDArray, logPi: NDArray,) -> fl
             for c in range(m):
                 # elementwise sum of logphi[r] + subset_logPi[r, c]
                 sums = curr_logphi + subset_logPi[:, c]
-                next_logphi[c] = log_sum_exp(sums)
+                next_logphi[c] = numeric.log_sum_exp(sums)
             curr_logphi = next_logphi
 
         # add the observation log-likelihood:  logprob[i, :]
         curr_logphi = curr_logphi + logprob[i, :]
         # normalize
-        logSumPhi = log_sum_exp(curr_logphi)
+        logSumPhi = numeric.log_sum_exp(curr_logphi)
         curr_logphi = curr_logphi - logSumPhi
         # accumulate
         LL += logSumPhi
@@ -1354,13 +1322,13 @@ def forward_backward_compute(
             subset_logPi = logPi[t]  # shape (m,m)
             for j in range(m):
                 arr = current_logphi + subset_logPi[:, j]
-                logphi_new[j] = log_sum_exp(arr)
+                logphi_new[j] = numeric.log_sum_exp(arr)
             current_logphi = logphi_new
 
         # add logprob[t,:]
         current_logphi = current_logphi + logprob[t, :]
         # normalize
-        logSumPhi = log_sum_exp(current_logphi)
+        logSumPhi = numeric.log_sum_exp(current_logphi)
         current_logphi = current_logphi - logSumPhi
         lscale += logSumPhi
         # store in logalpha[t, :]
@@ -1378,14 +1346,14 @@ def forward_backward_compute(
         subset_logPi = logPi[t+1]  # shape(m,m)
         for j in range(m):
             arr = logphi_ + logprob[t+1, :] + subset_logPi[j, :]
-            logphi_new[j] = log_sum_exp(arr)
+            logphi_new[j] = numeric.log_sum_exp(arr)
 
         logphi_ = logphi_new
         # store in logbeta[t,:]
         logbeta[t, :] = logphi_ + lscale_
 
         # normalize
-        logSumPhi = log_sum_exp(logphi_)
+        logSumPhi = numeric.log_sum_exp(logphi_)
         logphi_ = logphi_ - logSumPhi
         lscale_ += logSumPhi
 

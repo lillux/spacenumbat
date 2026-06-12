@@ -17,8 +17,8 @@ import networkx as nx
 
 from skbio.tree import TreeNode
 
-from spacenumbat.operations import _log_sum_exp
 from spacenumbat.tree import score_tree_treenode_fast
+from spacenumbat import numeric
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -1184,13 +1184,13 @@ def get_clone_post(
     merged["p_y"] = np.nan
 
     for _, idx in merged.groupby(cell_col, sort=False).groups.items():
-        z = merged.loc[idx, "Z_clone"].to_numpy()
-        zx = merged.loc[idx, "Z_clone_x"].to_numpy()
-        zy = merged.loc[idx, "Z_clone_y"].to_numpy()
-
-        merged.loc[idx, "p"] = np.exp(z - _log_sum_exp(z))
-        merged.loc[idx, "p_x"] = np.exp(zx - _log_sum_exp(zx))
-        merged.loc[idx, "p_y"] = np.exp(zy - _log_sum_exp(zy))
+        z = np.ascontiguousarray(merged.loc[idx, "Z_clone"].to_numpy(dtype=np.float64),)
+        zx = np.ascontiguousarray(merged.loc[idx, "Z_clone_x"].to_numpy(dtype=np.float64),)
+        zy = np.ascontiguousarray(merged.loc[idx, "Z_clone_y"].to_numpy(dtype=np.float64),)
+    
+        merged.loc[idx, "p"] = np.exp(z - numeric.log_sum_exp(z))
+        merged.loc[idx, "p_x"] = np.exp(zx - numeric.log_sum_exp(zx))
+        merged.loc[idx, "p_y"] = np.exp(zy - numeric.log_sum_exp(zy))
 
     def _opt_block(df: pd.DataFrame) -> pd.Series:
         i = int(df["p"].to_numpy().argmax())
