@@ -61,7 +61,7 @@ def _row_softmax(logits: np.ndarray) -> np.ndarray:
 
 
 def _mean_field_potts(
-    unary_log_scores: np.ndarray,
+    log_scores: np.ndarray,
     adjacency: sp.spmatrix,
     beta: float = 0.5,
     max_iter: int = 50,
@@ -73,7 +73,7 @@ def _mean_field_potts(
 
     Parameters
     ----------
-    unary_log_scores
+    log_scores
         Local log scores with shape ``(n_nodes, n_states)``.
     adjacency
         Binary or weighted adjacency matrix with shape ``(n_nodes, n_nodes)``.
@@ -101,23 +101,23 @@ def _mean_field_potts(
     if not 0 < damping <= 1:
         raise ValueError("damping must be in the interval (0, 1].")
 
-    unary_log_scores = np.asarray(unary_log_scores, dtype=float)
+    log_scores = np.asarray(log_scores, dtype=float)
     adjacency = adjacency.tocsr().astype(float)
 
-    if adjacency.shape[0] != unary_log_scores.shape[0]:
+    if adjacency.shape[0] != log_scores.shape[0]:
         raise ValueError(
             "Adjacency and unary score matrices have incompatible shapes: "
-            f"{adjacency.shape} and {unary_log_scores.shape}."
+            f"{adjacency.shape} and {log_scores.shape}."
         )
 
-    probabilities = _row_softmax(unary_log_scores)
+    probabilities = _row_softmax(log_scores)
     converged = False
 
     for iteration in range(1, max_iter + 1):
         neighbor_support = adjacency @ probabilities
 
         proposal = _row_softmax(
-            unary_log_scores + beta * neighbor_support
+            log_scores + beta * neighbor_support
         )
 
         updated = (
@@ -251,10 +251,10 @@ def hmrf_regularize_joint_post(
         # Ensure an undirected adjacency.
         adjacency = ((adjacency + adjacency.T) > 0).astype(float).tocsr()
 
-        unary_log_scores = group.loc[:, _HMRF_SCORE_COLUMNS].to_numpy(dtype=float)
+        log_scores = group.loc[:, _HMRF_SCORE_COLUMNS].to_numpy(dtype=float)
 
         probabilities, n_iter, converged = _mean_field_potts(
-            unary_log_scores=unary_log_scores,
+            log_scores=log_scores,
             adjacency=adjacency,
             beta=beta,
             max_iter=max_iter,
