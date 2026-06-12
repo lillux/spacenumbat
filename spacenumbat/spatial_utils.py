@@ -205,8 +205,8 @@ def _get_graph(
 def _random_walk_diffuse(
     X: np.ndarray,
     A: sp.spmatrix,
-    alpha: float = 0.7,
-    steps: int = 5,
+    alpha: float = 0.4,
+    steps: int = 2,
     ) -> np.ndarray:
     """
     Diffuse features over a graph via an iterated random-walk update.
@@ -244,10 +244,10 @@ def _random_walk_diffuse(
 def _pagerank_diffuse(
     X: np.ndarray,
     A: sp.spmatrix,
-    alpha: float = 0.75,
+    alpha: float = 0.4,
     coifman_alpha: float = 0.5,
     lazy: float = 0.0,
-    steps: int | None = 4,
+    steps: int | None = 2,
     ) -> np.ndarray:
     """
     Personalized PageRank diffusion with Coifman density correction.
@@ -429,10 +429,10 @@ def neighbors_average(
             Z = num / den
 
         elif m == "diffuse":
-            Z = _random_walk_diffuse(X, D, **method_kwargs)
+            Z = _random_walk_diffuse(X, A, **method_kwargs) # A: adjacency
 
         elif m == "cpr":
-            Z = _pagerank_diffuse(X, D, **method_kwargs)
+            Z = _pagerank_diffuse(X, D, **method_kwargs) # D: transcriptome weighted adjacency
 
         else:
             msg = (f'Unknown method: {method}. Accepted methods are:\n'
