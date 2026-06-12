@@ -270,7 +270,7 @@ def hmrf_regularize_joint_post(
         result.loc[group.index, "hmrf_iterations"] = n_iter
         result.loc[group.index, "hmrf_converged"] = converged
 
-    # The CNV probability is the complement of the neutral state.
+    # CNV probability is the complement of neutral state.
     result["p_cnv"] = 1.0 - result["p_neu"]
     result["p_n"] = result["p_neu"]
 
@@ -278,7 +278,7 @@ def hmrf_regularize_joint_post(
 
     result["cnv_state_map"] = state_array[np.argmax(probability_matrix, axis=1)]
 
-    # HMRF posterior log odds. Keep the original logBF unchanged.
+    # HMRF posterior log odds.
     eps = 1e-12
     result["logBF_hmrf"] = (np.log(result["p_cnv"].clip(eps, 1.0 - eps))
                             - np.log(result["p_neu"].clip(eps, 1.0 - eps))
