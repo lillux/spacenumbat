@@ -21,78 +21,79 @@ log = get_logger(__name__)
 #log.info("Test diagnostics")
 
 
-def load_and_validate_annotation(file_path: str, sep: str = "\t") -> pd.DataFrame:
+def validate_annotation(annotation: pd.DataFrame) -> pd.DataFrame:
     """
-    Load and validate a gene annotation TSV file.
+    Validate a gene-level annotation table.
 
-    The file is expected to have the following columns:
-        - gene: gene name (string)
-        - gene_start: gene start coordinate (integer)
-        - gene_end: gene end coordinate (integer)
-        - CHROM: chromosome identifier (string)
-
-    If the first four columns are present and have the expected data types, the 
-    function issues a warning and calculates 'gene_length' as gene_end - gene_start.
-    
-    Parameters
-    ----------
-    file_path : str
-        The path to the TSV file containing gene annotations.
-    sep : str, optional
-        The delimiter used in the TSV file (default is tab, i.e., "\t").
-    
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame containing the gene annotations with the calculated 'gene_length'.
-    
-    aises
-    ------
-    FileNotFoundError
-        If the file specified by file_path does not exist.
-    ValueError
-        If any of the required columns ('gene', 'gene_start', 'gene_end', 'CHROM') are missing
-        or if their data types do not match the expected types.
+    The ``gene`` column must uniquely identify one genomic interval because
+    expression matrices and reference profiles use it as their feature key.
     """
-    # Check that the file exists.
+    required = ["CHROM", "gene_start", "gene_end", "gene"]
+    missing = [column for column in required if column not in annotation.columns]
+
+    if missing:
+        raise ValueError(
+            "Gene annotation is missing required columns: "
+            + ", ".join(missing)
+        )
+
+    annotation = annotation.loc[:, required].copy()
+
+    annotation["gene"] = annotation["gene"].astype("string").str.strip()
+    annotation["CHROM"] = annotation["CHROM"].astype("string").str.strip()
+    annotation["gene_start"] = pd.to_numeric(annotation["gene_start"], errors="raise").astype(np.int64)
+    annotation["gene_end"] = pd.to_numeric(annotation["gene_end"], errors="raise").astype(np.int64)
+
+    missing_gene = annotation["gene"].isna() | annotation["gene"].eq("")
+    if missing_gene.any():
+        raise ValueError(
+            f"Gene annotation contains {missing_gene.sum()} missing or empty "
+            "gene identifiers."
+        )
+
+    invalid_coordinates = (
+        annotation["gene_start"].lt(0)
+        | annotation["gene_end"].lt(annotation["gene_start"])
+    )
+    if invalid_coordinates.any():
+        raise ValueError(
+            f"Gene annotation contains {invalid_coordinates.sum()} invalid "
+            "genomic intervals."
+        )
+
+    duplicated = annotation["gene"].duplicated(keep=False)
+    if duplicated.any():
+        duplicate_counts = (annotation.loc[duplicated, "gene"].value_counts().head(10))
+        preview = ", ".join(
+            f"{gene} ({count})"
+            for gene, count in duplicate_counts.items()
+        )
+
+        raise ValueError(
+            "Column 'gene' must contain unique feature identifiers. "
+            f"Found {annotation.loc[duplicated, 'gene'].nunique()} duplicated "
+            f"identifiers. Examples: {preview}. "
+            "Collapse transcript records to one gene-level interval or use "
+            "unique gene identifiers consistently in the annotation, count "
+            "matrix, and reference profile."
+        )
+
+    annotation["gene_length"] = (
+        annotation["gene_end"] - annotation["gene_start"]
+    )
+
+    return annotation
+
+
+
+def load_and_validate_annotation(
+    file_path: str,
+    sep: str = "\t",
+    ) -> pd.DataFrame:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-    
-    # Load the TSV file.
-    df = pd.read_csv(file_path, sep=sep)
-    
-    # Verify the presence of required columns.
-    required_columns = ["gene", "gene_start", "gene_end", "CHROM"]
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        raise ValueError(f"Missing required column(s): {missing_columns}")
-    
-    # Validate that 'gene' is of string type.
-    if not pd.api.types.is_string_dtype(df["gene"]):
-        raise ValueError("Column 'gene' must be of type string.")
-    
-    # Validate that 'gene_start' and 'gene_end' can be converted to integers.
-    try:
-        df["gene_start"] = df["gene_start"].astype(int)
-    except Exception as e:
-        raise ValueError("Column 'gene_start' must be convertible to integer.") from e
-    
-    try:
-        df["gene_end"] = df["gene_end"].astype(int)
-    except Exception as e:
-        raise ValueError("Column 'gene_end' must be convertible to integer.") from e
 
-    # Validate that 'CHROM' is of string type.
-    try:
-        df["CHROM"] = df["CHROM"].astype('string')
-    except Exception as e:
-        raise ValueError("Column 'CHROM' must be convertible to string.") from e
-
-    # Warn the user that gene_length will be calculated.
-    warnings.warn("Calculating 'gene_length' as gene_end - gene_start.", UserWarning)
-    df["gene_length"] = df["gene_end"] - df["gene_start"]
-    
-    return df
+    return validate_annotation(pd.read_csv(file_path, sep=sep))
 
 
 def check_segs_fix(segs_consensus_fix: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:

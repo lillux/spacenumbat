@@ -15,7 +15,7 @@ import anndata as ad
 from scipy.cluster.hierarchy import ClusterNode, fcluster, to_tree
 from sklearn.metrics import pairwise_distances
 
-from spacenumbat.utils import filter_genes, check_anndata
+from spacenumbat.utils import filter_genes, check_anndata, get_common_genes
 
 from typing import Any, Dict, Union, Optional, List
 
@@ -87,9 +87,9 @@ def choose_ref_cor(
         best_refs = pd.Series(np.repeat(ref_name, len(cells)), index=cells)
         return best_refs
 
-    genes_annotated = set(gtf.gene).intersection(set(count_mat.var.index)).intersection(set(lambdas_ref.index))
-    genes_annotated = [i for i in gtf.gene if i in genes_annotated]
-
+    genes_annotated = get_common_genes(count_mat=count_mat,
+                                       reference=lambdas_ref,
+                                       gtf=gtf)
     count_mat = count_mat[:, genes_annotated].copy()
     lambdas_ref_annot = lambdas_ref.loc[genes_annotated, :].copy()
 

@@ -116,14 +116,9 @@ def _mean_field_potts(
     for iteration in range(1, max_iter + 1):
         neighbor_support = adjacency @ probabilities
 
-        proposal = _row_softmax(
-            log_scores + beta * neighbor_support
-        )
+        proposal = _row_softmax(log_scores + beta * neighbor_support)
 
-        updated = (
-            (1.0 - damping) * probabilities
-            + damping * proposal
-        )
+        updated = ((1.0 - damping) * probabilities + damping * proposal)
 
         difference = np.max(np.abs(updated - probabilities))
         probabilities = updated
@@ -228,15 +223,10 @@ def hmrf_regularize_joint_post(
                 f"Segment {segment!r} contains duplicated cell identifiers."
             )
 
-        missing_cells = [
-            cell for cell in cells
-            if cell not in adata.obs_names
-        ]
+        missing_cells = [cell for cell in cells if cell not in adata.obs_names]
         if missing_cells:
-            raise KeyError(
-                f"Segment {segment!r} contains cells absent from AnnData: "
-                f"{missing_cells[:10]}"
-            )
+            raise KeyError(f"Segment {segment!r} contains cells absent from AnnData: "
+                           f"{missing_cells[:10]}")
 
         # AnnData preserves the requested observation order.
         view = adata[cells, :]

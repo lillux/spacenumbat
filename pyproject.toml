@@ -21,7 +21,6 @@ dependencies = [
   "joblib",
   "scikit-learn",
   "scikit-bio",
-  "squidpy",
   "scipy",
   "tqdm",
   "natsort",

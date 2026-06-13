@@ -201,7 +201,7 @@ def run_spacenumbat(
     log = get_logger(__name__)
     log.info("Starting pipeline!")
     
-    if not gtf:
+    if gtf is None:
         if genome == "hg38":
             gtf = spacenumbat.data.hg38
         elif genome == "hg19":
@@ -214,8 +214,14 @@ def run_spacenumbat(
             msg = f"genome version must be hg38, hg19, or mm10, not {genome}"
             raise ValueError(msg)
     else:
-        filter_hla_hg38=False
-        gtf = diagnostics.load_and_validate_annotation(gtf)
+        msg=(f"You have passed a custom reference genome.\n"
+             f"filter_hla_hg38 is: {filter_hla_hg38}.\n"
+             f"You can supply a pandas.DataFrame with genome segment to skip\n"
+             f"using the variable filter_chromosome_segments, that is currently:\n"
+             f"{filter_chromosome_segments}.\n")
+        log.info(msg)
+        
+    gtf = diagnostics.validate_annotation(gtf)
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
@@ -246,10 +252,17 @@ def run_spacenumbat(
     lambdas_ref = utils.check_exp_ref(lambdas_ref)
     
     # filter for annotated genes
-    gene_shared = set(gtf['gene']).intersection(set(count_mat.var_names.values)).intersection(set(lambdas_ref.index.values))
-    ordered_gene_shared = [i for i in gtf['gene'] if i in gene_shared]
-    count_mat = count_mat[:,ordered_gene_shared]
-    lambdas_ref = lambdas_ref.loc[ordered_gene_shared,:]
+    common_genes = utils.get_common_genes(count_mat=count_mat,
+                                          reference=lambdas_ref,
+                                          gtf=gtf)
+
+    count_mat = count_mat[:, common_genes].copy()
+    lambdas_ref = lambdas_ref.reindex(common_genes).copy()
+    
+    if not count_mat.var_names.equals(lambdas_ref.index):
+        raise RuntimeError(
+            "Internal gene alignment failed: count_mat and lambdas_ref "
+            "do not have identical feature indices.")
     
     # filter 0 coverage cells
     zero_cov = count_mat[count_mat.X.sum(1) == 0].obs_names.to_list()

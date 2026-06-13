@@ -41,8 +41,49 @@ log = get_logger(__name__)
 #log.info("This is an info message.")
 
 
-## Prepare bulk data
 
+def get_common_genes(
+    count_mat: ad.AnnData,
+    reference: pd.DataFrame | pd.Series,
+    gtf: pd.DataFrame,
+    min_reference_mean: float | None = None,
+    ) -> list[str]:
+    """
+    Return unique shared genes in annotation order.
+    """
+    if count_mat.var_names.has_duplicates:
+        raise ValueError("count_mat.var_names must be unique before gene alignment.")
+
+    if reference.index.has_duplicates:
+        raise ValueError("The reference expression index must contain unique genes.")
+
+    if gtf["gene"].duplicated().any():
+        raise ValueError("The annotation 'gene' column must contain unique identifiers.")
+
+    annotation_genes = pd.Index(gtf["gene"].dropna().astype(str), name="gene",)
+
+    reference_genes = reference.index
+
+    if min_reference_mean is not None:
+        if not isinstance(reference, pd.DataFrame):
+            raise TypeError("min_reference_mean requires a DataFrame reference.")
+
+        reference_genes = reference.index[reference.mean(axis=1).gt(min_reference_mean)]
+
+    shared = annotation_genes[
+        annotation_genes.isin(count_mat.var_names)
+        & annotation_genes.isin(reference_genes)
+    ]
+
+    if shared.empty:
+        raise ValueError("No common genes were found between the annotation, count "
+                         "matrix, and reference profile.")
+
+    return shared.tolist()
+
+
+
+## Prepare bulk data
 def annotate_genes(
     df: pd.DataFrame,
     gtf: pd.DataFrame
@@ -281,67 +322,66 @@ def fit_ref_sse_ad(
     lambdas_ref: pd.DataFrame,
     gtf: pd.DataFrame,
     min_lambda: float = 2e-6,
-    verbose: bool = False
+    verbose: bool = False,
     ) -> Dict[str, Any]:
     """
-    Fit a reference expression profile to a count matrix using sum-of-squared-errors on log-scaled values.
-
-    Parameters
-    ----------
-    count_mat : ad.AnnData
-        AnnData object containing sample counts (cells x genes).
-    lambdas_ref : pd.DataFrame
-        Reference expression profiles; genes as index, profiles as columns.
-    gtf : pd.DataFrame
-        Genome annotation with a 'gene' column listing gene names.
-    min_lambda : float, optional
-        Minimum mean expression threshold for genes to include (default 2e-6).
-    verbose : bool, optional
-        If True, show optimization progress (default False).
-
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary with keys:
-        - 'w': np.ndarray of optimized weights per reference profile.
-        - 'lambdas_bar': np.ndarray weighted combination of reference profiles.
-        - 'mse': float mean squared error of the fit per gene.
+    Fit reference-profile weights using squared error on log expression.
     """
-    count_mat = count_mat[:, np.array(count_mat.X.sum(0) > 0).flatten()]
-    common_genes = set(
-        gtf.loc[:,'gene']).intersection(
-        set(count_mat.var_names)).intersection(
-            set(lambdas_ref[lambdas_ref.mean(1) > min_lambda].index))
-    common_genes = [g for g in gtf.loc[:, 'gene'] if g in common_genes]
+    expressed = np.asarray(count_mat.X.sum(axis=0)).ravel() > 0
+    count_mat = count_mat[:, expressed]
+
+    common_genes = get_common_genes(count_mat=count_mat,
+                                    reference=lambdas_ref,
+                                    gtf=gtf,
+                                    min_reference_mean=min_lambda)
 
     count_mat = count_mat[:, common_genes]
-    lambdas_obs = np.exp(np.log(np.array(count_mat.X.sum(0)).flatten()) -
-                         np.log(np.array(count_mat.X.sum(0)).flatten().sum()))
-    lambdas_ref = lambdas_ref.loc[common_genes, :]
+    lambdas_ref = lambdas_ref.reindex(common_genes)
 
-    n_ref = lambdas_ref.shape[1]
+    observed_counts = np.asarray(count_mat.X.sum(axis=0)).ravel().astype(np.float64)
 
-    def kl_to_min(x):
-        return np.sum(np.power(np.log(lambdas_obs) -
-                               np.log(np.matmul(lambdas_ref, x / np.sum(x))),
-                               2))
+    lambdas_obs = observed_counts / observed_counts.sum()
+    reference_values = lambdas_ref.to_numpy(dtype=np.float64,
+                                            copy=False)
+
+    if lambdas_obs.shape[0] != reference_values.shape[0]:
+        raise RuntimeError(
+            "Gene alignment failed in fit_ref_sse_ad: "
+            f"{lambdas_obs.shape[0]} observed genes versus "
+            f"{reference_values.shape[0]} reference genes.")
+
+    n_ref = reference_values.shape[1]
+
+    def sse_to_minimize(weights: np.ndarray) -> float:
+        weights = weights / weights.sum()
+        expected = reference_values @ weights
+
+        return float(np.square(
+            np.log(lambdas_obs) - np.log(expected)
+            ).sum())
+
+    initial_weights = np.full(n_ref, 1.0 / n_ref)
     bounds = [(1e-6, None)] * n_ref
-    par = np.ones(n_ref) / n_ref
+
     fit = scipy.optimize.minimize(
-        fun=kl_to_min,
-        x0=par,
-        method='L-BFGS-B',
+        fun=sse_to_minimize,
+        x0=initial_weights,
+        method="L-BFGS-B",
         tol=1e-6,
         bounds=bounds,
-        #options={'disp': verbose}
+        #options={"disp": verbose},
     )
 
-    x = fit.x
-    x /= np.sum(x)
-    lambdas_bar = np.matmul(lambdas_ref, x)
-    lambdas_mse = fit.fun / len(lambdas_obs)
+    weights = fit.x
+    weights /= weights.sum()
 
-    return {'w': x, 'lambdas_bar': lambdas_bar, 'mse': lambdas_mse}
+    lambdas_bar = pd.Series(reference_values @ weights,
+                            index=common_genes,
+                            name="lambda_ref")
+
+    mse = float(fit.fun / len(lambdas_obs))
+
+    return {"w": weights, "lambdas_bar": lambdas_bar, "mse": mse}
 
 
 def filter_genes(
@@ -387,11 +427,9 @@ def filter_genes(
     """
     gtf_df = pd.DataFrame(gtf)
 
-    # Get genes to keep - intersection of gtf genes, count_mat genes, and lambdas_bar keys
-    genes_keep = set(gtf_df['gene']).intersection(set(count_mat.var_names)).intersection(set(lambdas_bar.keys()))
-    # Sort genes following gtf ordering
-    genes_keep = [gene for gene in gtf_df['gene'] if gene in genes_keep]
-
+    genes_keep = get_common_genes(count_mat=count_mat,
+                                  reference=lambdas_bar,
+                                  gtf=gtf_df)
     if filter_hla:
         # Exclude genes in HLA region (chr6: 28,510,120 - 33,480,577) in hg38 and hg19
         genes_exclude = gtf_df[(gtf_df['CHROM'].astype("string").isin(["6", "chr6"]) &
@@ -501,10 +539,14 @@ def get_exp_bulk(
     gtf = gtf.copy()
     bulk_obs.gene = bulk_obs.gene.astype("string")
     gtf.gene = gtf.gene.astype("string")
-    bulk_obs = bulk_obs.merge(gtf, on='gene', how='left', sort=False)
+    bulk_obs = bulk_obs.merge(gtf, 
+                              on='gene',
+                              how='left',
+                              sort=False,
+                              validate="one_to_one",)
 
-    bulk_obs['CHROM'] = bulk_obs['CHROM'].astype('string') #was category
-    bulk_obs['gene'] = bulk_obs['gene'].astype('string') #was category
+    bulk_obs['CHROM'] = bulk_obs['CHROM'].astype('string')
+    bulk_obs['gene'] = bulk_obs['gene'].astype('string')
     bulk_obs['logFC'] = np.log2(bulk_obs['lambda_obs']) - np.log2(bulk_obs['lambda_ref'])
     bulk_obs['lnFC'] = np.log(bulk_obs['lambda_obs']) - np.log(bulk_obs['lambda_ref'])
 

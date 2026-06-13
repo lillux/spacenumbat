@@ -1909,14 +1909,9 @@ def get_joint_post(
             distance_key=distance_key,
         )
 
-    joint_post = pd.merge(
-        exp_sel,
-        allele_sel,
-        on=key_columns,
-        how="outer",
-    )
+    joint_post = pd.merge(exp_sel, allele_sel, on=key_columns, how="outer")
 
-    # A missing modality contributes zero additive log-likelihood.
+    # missing modality contributes zero additive log-likelihood.
     for suffix in ("x", "y"):
         for likelihood in likelihood_columns:
             column = f"{likelihood}_{suffix}"
@@ -1953,12 +1948,7 @@ def get_joint_post(
             "p_bdel": "prior_bdel",
             })
 
-    joint_post = pd.merge(
-        joint_post,
-        segs_sel,
-        on="seg",
-        how="left",
-        )
+    joint_post = pd.merge(joint_post, segs_sel, on="seg", how="left")
 
     # Combine expression and allele log-likelihoods.
     for likelihood in likelihood_columns:
@@ -2009,8 +1999,8 @@ def get_joint_post(
             "p_bamp",
             "p_bdel",
         ]
+        
         map_states = np.asarray(["neu", "loh", "del", "amp", "bamp", "bdel"])
-
         probabilities = joint_post[map_columns].to_numpy(dtype=float)
         valid = np.isfinite(probabilities).all(axis=1)
         

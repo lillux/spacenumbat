@@ -13,7 +13,6 @@ import pandas as pd
 from sklearn.metrics import pairwise_distances
 
 import anndata as ad
-import squidpy as sq
 
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
@@ -45,11 +44,9 @@ def get_spatial_info(
     """
     # Ensure spatial_connectivities exists
     if connectivity_key not in counts_mat.obsp:
-        sq.gr.spatial_neighbors(counts_mat)
-    if connectivity_key not in counts_mat.obsp:
         raise KeyError(
-            f"{connectivity_key} is not found in counts_mat.obsp "
-            f"after calling sq.gr.spatial_neighbors.\nCurrent keys are: "
+            f"{connectivity_key} is not found in counts_mat.obsp.\n"
+            f"Current keys are: "
             f"{counts_mat.obsp.keys()}"
         )
 
@@ -221,9 +218,9 @@ def _random_walk_diffuse(
         Input features to diffuse.
     A : sparse matrix, shape (n_nodes, n_nodes)
         Sparse adjacency (weights allowed).
-    alpha : float, default 0.7
+    alpha : float, default 0.4
         Mixing parameter between propagated features and the original signal.
-    steps : int, default 8
+    steps : int, default 2
         Number of diffusion iterations.
 
     Returns
@@ -268,7 +265,7 @@ def _pagerank_diffuse(
         Teleportation pushes the diffusion back to X at every step.
     A : sparse matrix (n, n)
         Symmetric, nonnegative affinity/adjacency (e.g., kNN with weights).
-    alpha : float, default 0.75
+    alpha : float, default 0.4
         PageRank continuation (walk) probability. (1 - alpha) is the teleport
         probability to X. Larger alpha -> stronger smoothing; smaller -> sharp boundaries.
     coifman_alpha : float, default 0.5
@@ -278,7 +275,7 @@ def _pagerank_diffuse(
         Laziness parameter for boundary preservation. P_lazy = (1 - lazy) P + lazy I
         reduces “leakage” across weak boundaries and stabilizes the iteration.
         Not required in regular lattice.
-    steps : int or None, default 4
+    steps : int or None, default 2
         If provided, run exactly this many iterations (power method).
         If None, return X unaltered.
 
@@ -322,7 +319,7 @@ def _pagerank_diffuse(
         return Z
     
     else:
-        msg = f"Spatial algorithm have not been applied because steps value was: {steps}\n"
+        msg = f"Spatial algorithm has not been applied because steps value was: {steps}\n"
         log.warning(msg)
 
     return Z
