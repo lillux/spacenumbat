@@ -411,13 +411,14 @@ def run_spacenumbat(
         
         # extract cell groupings
         subtrees = clustering.get_nodes_celltree(clust, init_k)
+        current_k = len(subtrees["0"]["members"])
         
         ## optional plot
         if plot_results:
             exp_roll_path_png = os.path.join(out_dir, "exp_roll_clust.png")
             p = plot.plot_exp_roll(clust["gexp_roll_wide"],
                                    clust["hc"],
-                                   k=3,
+                                   k=current_k,
                                    gtf=gtf,
                                    n_sample=500,
                                    layer="X_smooth",
