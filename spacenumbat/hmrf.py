@@ -102,19 +102,24 @@ def _mean_field_potts(
         raise ValueError("damping must be in the interval (0, 1].")
 
     log_scores = np.asarray(log_scores, dtype=float)
-    adjacency = adjacency.tocsr().astype(float)
+    A = adjacency.tocsr().astype(float)
 
-    if adjacency.shape[0] != log_scores.shape[0]:
-        raise ValueError(
-            "Adjacency and unary score matrices have incompatible shapes: "
-            f"{adjacency.shape} and {log_scores.shape}."
-        )
+    if A.shape[0] != log_scores.shape[0]:
+        raise ValueError("Adjacency and unary score matrices have incompatible shapes: "
+                         f"{adjacency.shape} and {log_scores.shape}.")
 
+    D = np.asarray(A.sum(0)).ravel()
+    D_inv_sqrt = np.diag(np.divide(1,
+                                   np.sqrt(D),
+                                   where=D>0, 
+                                   out=np.zeros_like(D)))
+    A_norm = D_inv_sqrt @ A @ D_inv_sqrt
+    
     probabilities = _row_softmax(log_scores)
     converged = False
 
     for iteration in range(1, max_iter + 1):
-        neighbor_support = adjacency @ probabilities
+        neighbor_support = A_norm @ probabilities
 
         proposal = _row_softmax(log_scores + beta * neighbor_support)
 
