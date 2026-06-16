@@ -757,21 +757,22 @@ def run_spacenumbat(
                                             panel_vspace=1)
             plot_subtrees.savefig(os.path.join(out_dir, "bulk_clones_final.jpg"), dpi=250)
             plt.close("all")
-            
+    
+    terminated_with_results = True
     log.info(f"All done! Pipeline terminated. Results are at:\n{out_dir}")
 
     
-    
-    return (exp_post,
-            allele_post, 
-            segs_consensus,
-            count_mat,
-            treeML,
-            clone_post,
-            G_m, 
-            subtrees, 
-            clones, 
-            bulk_clones)
+    return {"exp_post": exp_post,
+            "allele_post": allele_post, 
+            "segs_consensus": segs_consensus,
+            "count_mat": count_mat,
+            "treeML": treeML,
+            "clone_post": clone_post,
+            "G_m": G_m, 
+            "subtrees": subtrees, 
+            "clones": clones, 
+            "bulk_clones": bulk_clones,
+            "success":terminated_with_results},
     #return clone_post, G_m
 
     
