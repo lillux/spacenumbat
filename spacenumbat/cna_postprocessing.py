@@ -39,71 +39,6 @@ CNA_STATE_COLS = tuple(f"p_{state}" for state in CNA_STATES)
 ALTERED_STATES = CNA_STATES[1:]
 
 
-
-def _harmonize_cna_probability_columns(
-    table: pd.DataFrame,
-    state_cols: Mapping[str, str] | Sequence[str] | None,
-    table_name: str,
-    ) -> tuple[pd.DataFrame, dict[str, str]]:
-    """
-    Rename source CNA posterior columns to canonical internal names.
-
-    The returned table always contains:
-
-        p_neu, p_loh, p_amp, p_del, p_bamp, p_bdel
-    """
-    state_column_map = _resolve_cna_state_columns(state_cols)
-
-    source_columns = list(state_column_map.values())
-
-    missing = set(source_columns).difference(table.columns)
-
-    if missing:
-        raise KeyError(
-            f"{table_name} is missing CNA probability columns: "
-            f"{sorted(missing)}"
-        )
-
-    source_column_set = set(source_columns)
-    rename_map: dict[str, str] = {}
-
-    for state, source_column in state_column_map.items():
-        canonical_column = f"p_{state}"
-
-        # Avoid silently creating duplicate canonical columns.
-        if (
-            source_column != canonical_column
-            and canonical_column in table.columns
-            and canonical_column not in source_column_set
-        ):
-            raise ValueError(
-                f"Cannot rename {source_column!r} to "
-                f"{canonical_column!r} in {table_name}: the canonical "
-                "column already exists and is not part of state_cols."
-            )
-
-        rename_map[source_column] = canonical_column
-
-    harmonized = table.rename(columns=rename_map).copy()
-
-    duplicated_columns = (
-        harmonized.columns[
-            harmonized.columns.duplicated(keep=False)
-        ]
-        .unique()
-        .tolist()
-    )
-
-    if duplicated_columns:
-        raise ValueError(
-            f"Column harmonization created duplicate columns in "
-            f"{table_name}: {duplicated_columns}"
-        )
-
-    return harmonized, state_column_map
-
-
-
 def _resolve_cna_state_columns(
     state_cols: Mapping[str, str] | Sequence[str] | None,
     ) -> dict[str, str]:
@@ -379,484 +314,6 @@ def prepare_arm_reference(
                                   ).reset_index(drop=True))
 
 
-
-def _canonical_cna_state(value: object) -> str | None:
-    """Normalize a CNA-state label."""
-    if pd.isna(value):
-        return None
-
-    state = str(value).strip().lower()
-
-    aliases = {
-        "neutral": "neu",
-        "normal": "neu",
-        "diploid": "neu",
-        "gain": "amp",
-        "loss": "del",
-    }
-
-    return aliases.get(state, state)
-
-
-def _parse_consensus_states(value: object) -> list[str]:
-    """
-    Parse strings such as:
-        'bdel,del'
-        'amp'
-        'loh'
-    """
-    if pd.isna(value):
-        return []
-
-    states = [
-        _canonical_cna_state(state)
-        for state in str(value).split(",")
-    ]
-
-    return [
-        state
-        for state in states
-        if state in {*ALTERED_STATES, "neu"}
-    ]
-
-
-def resolve_multistate_joint_segments(
-    joint_post: pd.DataFrame,
-    segs_consensus: pd.DataFrame,
-    cell_col: str = "cell",
-    chrom_col: str = "CHROM",
-    start_col: str = "seg_start",
-    end_col: str = "seg_end",
-    segment_col: str = "seg",
-    consensus_segment_col: str = "seg_cons",
-    consensus_states_col: str = "cnv_states",
-    consensus_state_col: str = "cnv_state_post",
-    state_cols: Mapping[str, str] | Sequence[str] | None = None,
-    consensus_state_cols: Mapping[str, str] | Sequence[str] | None = None,
-    mle_score_cols: Mapping[str, str] | Sequence[str] | None = None,
-    resolution: str = "joint",
-    probability_tolerance: float = 1e-8,
-    mle_score_tolerance: float = 1e-8,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Collapse alternative state-specific rows representing one consensus
-    genomic segment.
-
-    Parameters
-    ----------
-    joint_post
-        Barcode-by-segment posterior table. Some genomic intervals may
-        appear more than once because alternative states were retained,
-        for example ``9a_del`` and ``9a_bdel``.
-
-    segs_consensus
-        Consensus segmentation table. Multi-state segments are described
-        by columns such as:
-
-            seg_cons = "9a"
-            cnv_states = "bdel,del"
-            n_states = 2
-
-    resolution
-        How to distribute the altered posterior mass among the states
-        allowed by ``segs_consensus``.
-
-        ``"joint"``
-            Recommended. Average the barcode-level posterior vectors from
-            joint_post, restrict them to the consensus-allowed states, and
-            renormalize. This preserves barcode-specific evidence.
-
-        ``"consensus"``
-            Use the state proportions in segs_consensus, such as
-            p_del=0.5 and p_bdel=0.5. This gives every barcode the same
-            relative split among the allowed altered states, while retaining
-            its barcode-specific p_neu.
-
-    state_cols
-        Posterior columns in joint_post.
-        
-    consensus_state_cols
-        Posterior columns in segs_consensus used by the consensus fallback.
-        If None, canonical p_* names are expected.
-    
-    mle_score_cols
-        Per-state likelihood or log-likelihood columns in joint_post.
-        Larger values must indicate a better likelihood.
-
-    Returns
-    -------
-    resolved_joint_post
-        One row per barcode and physical consensus segment.
-
-    resolution_log
-        Audit table describing every collapsed multi-state group.
-
-    Notes
-    -----
-    Coordinates are used without conversion.
-    """
-    if resolution not in {"joint", "consensus"}:
-        raise ValueError(
-            "resolution must be 'joint' or 'consensus'."
-        )
-
-    joint, state_column_map = _harmonize_cna_probability_columns(
-    joint_post,
-    state_cols,
-    table_name="joint_post",
-    )
-    
-    canonical_state_cols = list(CNA_STATE_COLS)
-    
-    joint_required = {
-        cell_col,
-        chrom_col,
-        start_col,
-        end_col,
-    }
-    
-    missing = joint_required.difference(joint.columns)
-    
-    if missing:
-        raise KeyError(f"Missing joint_post columns: {sorted(missing)}")
-    
-    consensus = segs_consensus.copy()
-
-    consensus_required = {chrom_col,
-                          start_col,
-                          end_col}
-
-    missing = consensus_required.difference(consensus.columns)
-
-    if missing:
-        raise KeyError(f"Missing segs_consensus columns: {sorted(missing)}")
-        
-    consensus_probability_map = _resolve_cna_state_columns(consensus_state_cols)
-    
-    joint[chrom_col] = _normalize_chromosome(joint[chrom_col])
-    consensus[chrom_col] = _normalize_chromosome(consensus[chrom_col])
-
-    for table in (joint, consensus):
-        for column in (start_col, end_col):
-            values = pd.to_numeric(table[column], errors="raise")
-
-            if not np.allclose(values, np.round(values)):
-                raise ValueError(f"{column!r} contains non-integer coordinates.")
-
-            table[column] = np.round(values).astype(np.int64)
-
-    for column in state_cols:
-        joint[column] = pd.to_numeric(joint[column], errors="raise")
-
-    probabilities = joint[state_cols].to_numpy(dtype=float)
-
-    if not np.isfinite(probabilities).all():
-        raise ValueError("joint_post contains non-finite posterior probabilities.")
-
-    row_sums = probabilities.sum(axis=1)
-
-    if not np.allclose(
-        row_sums,
-        1.0,
-        atol=1e-5,
-        rtol=0,
-    ):
-        raise ValueError(
-            "joint_post state probabilities do not sum to one. "
-            f"Observed range: {row_sums.min():.6g}–"
-            f"{row_sums.max():.6g}"
-        )
-
-    # Exact genomic interval used to match joint_post to consensus.
-    genomic_key = [
-        chrom_col,
-        start_col,
-        end_col,
-    ]
-
-    duplicated_consensus = consensus.duplicated(
-        genomic_key,
-        keep=False,
-    )
-
-    if duplicated_consensus.any():
-        examples = consensus.loc[duplicated_consensus, genomic_key,].head()
-
-        raise ValueError("segs_consensus must contain one row per physical "
-                         "genomic interval. Duplicates were found:\n"
-                         f"{examples}")
-
-    consensus_lookup = {
-        tuple(row[column] for column in genomic_key): row
-        for _, row in consensus.iterrows()
-    }
-
-    grouping_key = [
-        cell_col,
-        chrom_col,
-        start_col,
-        end_col,
-    ]
-
-    resolved_rows: list[pd.Series] = []
-    audit_rows: list[dict[str, object]] = []
-
-    grouped = joint.groupby(
-        grouping_key,
-        sort=False,
-        observed=True,
-        dropna=False,
-    )
-
-    for group_key, group in grouped:
-        # Non-duplicated segment: preserve the original row.
-        if len(group) == 1:
-            resolved_rows.append(group.iloc[0].copy())
-            continue
-
-        (
-            barcode,
-            chromosome,
-            segment_start,
-            segment_end,
-        ) = group_key
-
-        consensus_key = (
-            chromosome,
-            segment_start,
-            segment_end,
-        )
-
-        consensus_row = consensus_lookup.get(
-            consensus_key
-        )
-
-        if consensus_row is None:
-            raise ValueError(
-                "A duplicated joint_post interval could not be matched "
-                "exactly to segs_consensus:\n"
-                f"cell={barcode!r}, CHROM={chromosome!r}, "
-                f"seg_start={segment_start}, seg_end={segment_end}"
-            )
-
-        allowed_states = []
-
-        if consensus_states_col in consensus.columns:
-            allowed_states = _parse_consensus_states(
-                consensus_row[consensus_states_col]
-            )
-
-        if not allowed_states and (consensus_state_col in consensus.columns):
-            consensus_state = _canonical_cna_state(consensus_row[consensus_state_col])
-
-            if consensus_state is not None:
-                allowed_states = [consensus_state]
-
-        # Neutral is handled separately. Alternative duplicated rows
-        # normally represent altered states.
-        allowed_altered_states = [
-            state
-            for state in allowed_states
-            if state in ALTERED_STATES
-        ]
-
-        if not allowed_altered_states:
-            raise ValueError(
-                "The matching consensus segment does not define any "
-                "valid altered states:\n"
-                f"cell={barcode!r}, interval={consensus_key}, "
-                f"states={allowed_states}"
-            )
-
-        # Duplicate rows should describe the same probability of the
-        # segment being neutral. Small numerical differences are allowed.
-        neutral_values = group["p_neu"].to_numpy(
-            dtype=float
-        )
-
-        p_neu = float(neutral_values.mean())
-        altered_mass = 1.0 - p_neu
-
-        if resolution == "joint":
-            # Average the duplicated posterior rows.
-            altered_evidence = {
-                state: float(
-                    group[f"p_{state}"].mean()
-                )
-                for state in allowed_altered_states
-            }
-
-            evidence_sum = sum(
-                altered_evidence.values()
-            )
-
-            if evidence_sum > probability_tolerance:
-                state_weights = {
-                    state: value / evidence_sum
-                    for state, value
-                    in altered_evidence.items()
-                }
-
-            else:
-                state_weights = {}
-
-        else:
-            state_weights = {}
-
-        # Fallback, or requested consensus mode:
-        # use state proportions from segs_consensus.
-        if not state_weights:
-            consensus_evidence = {}
-
-            for state in allowed_altered_states:
-                probability_col = consensus_probability_map[state]
-                
-                if probability_col in consensus.columns:
-                    value = consensus_row[probability_col]
-
-                    if pd.notna(value):
-                        consensus_evidence[state] = float(value)
-
-            evidence_sum = sum(consensus_evidence.values())
-
-            if evidence_sum > probability_tolerance:
-                state_weights = {state: value / evidence_sum
-                                 for state, value
-                                 in consensus_evidence.items()}
-
-            else:
-                # Last-resort equal weighting over consensus states.
-                equal_weight = (
-                    1.0 / len(allowed_altered_states)
-                )
-
-                state_weights = {
-                    state: equal_weight
-                    for state in allowed_altered_states
-                }
-
-        resolved = group.iloc[0].copy()
-
-        for column in state_cols:
-            resolved[column] = 0.0
-
-        resolved["p_neu"] = p_neu
-
-        for state, weight in state_weights.items():
-            resolved[f"p_{state}"] = (
-                altered_mass * weight
-            )
-
-        # Replace alternative state-specific label, such as
-        # 9a_del/9a_bdel, with the physical consensus segment.
-        if (
-            consensus_segment_col
-            in consensus.columns
-            and pd.notna(
-                consensus_row[consensus_segment_col]
-            )
-        ):
-            resolved[segment_col] = consensus_row[
-                consensus_segment_col
-            ]
-
-        # Useful explicit annotation for auditing.
-        resolved["resolved_cnv_states"] = ",".join(
-            allowed_altered_states
-        )
-        resolved["n_joint_rows_collapsed"] = len(group)
-
-        # Recompute common derived fields when they exist.
-        if "p_cnv" in resolved.index:
-            resolved["p_cnv"] = 1.0 - p_neu
-
-        if "p_n" in resolved.index:
-            resolved["p_n"] = p_neu
-
-        if "cnv_state_map" in resolved.index:
-            resolved["cnv_state_map"] = max(
-                state_weights,
-                key=state_weights.get,
-            )
-
-        if "cnv_state_mle" in resolved.index:
-            resolved["cnv_state_mle"] = max(
-                state_weights,
-                key=state_weights.get,
-            )
-
-        resolved_rows.append(resolved)
-
-        audit_rows.append(
-            {
-                cell_col: barcode,
-                chrom_col: chromosome,
-                start_col: segment_start,
-                end_col: segment_end,
-                "input_rows": len(group),
-                "input_segment_labels": ",".join(
-                    group[segment_col]
-                    .astype(str)
-                    .drop_duplicates()
-                )
-                if segment_col in group.columns
-                else None,
-                "consensus_segment": (
-                    consensus_row[
-                        consensus_segment_col
-                    ]
-                    if consensus_segment_col
-                    in consensus.columns
-                    else None
-                ),
-                "allowed_states": ",".join(
-                    allowed_altered_states
-                ),
-                "p_neu_resolved": p_neu,
-                "altered_mass_resolved": altered_mass,
-                "state_weights": state_weights,
-                "resolution": resolution,
-            }
-        )
-
-    resolved_joint_post = pd.DataFrame(
-        resolved_rows
-    ).reset_index(drop=True)
-
-    resolution_log = pd.DataFrame(
-        audit_rows
-    )
-
-    # Final guarantee: one physical interval per barcode.
-    duplicated_after = resolved_joint_post.duplicated(
-        grouping_key,
-        keep=False,
-    )
-
-    if duplicated_after.any():
-        raise RuntimeError(
-            "Multi-state resolution did not produce unique "
-            "barcode–interval rows."
-        )
-
-    resolved_probabilities = resolved_joint_post[
-        state_cols
-    ].to_numpy(dtype=float)
-
-    if not np.allclose(
-        resolved_probabilities.sum(axis=1),
-        1.0,
-        atol=1e-6,
-        rtol=0,
-    ):
-        raise RuntimeError(
-            "Resolved state probabilities do not sum to one."
-        )
-
-    return resolved_joint_post, resolution_log
-
-
-
 def _prepare_clone_post_barcodes(
     clone_post: pd.DataFrame,
     output_cell_col: str,
@@ -890,14 +347,10 @@ def _prepare_clone_post_barcodes(
 
     else:
         if clone_post_barcode_col not in clone_post.columns:
-            raise KeyError(
-                "clone_post is missing barcode column "
-                f"{clone_post_barcode_col!r}."
-            )
+            raise KeyError("clone_post is missing barcode column "
+                           f"{clone_post_barcode_col!r}.")
 
-        barcode_values = clone_post[
-            clone_post_barcode_col
-        ].to_numpy(copy=True)
+        barcode_values = clone_post[clone_post_barcode_col].to_numpy(copy=True)
 
     if pd.isna(barcode_values).any():
         source = (
@@ -906,9 +359,7 @@ def _prepare_clone_post_barcodes(
             else f"clone_post[{clone_post_barcode_col!r}]"
         )
 
-        raise ValueError(
-            f"{source} contains missing barcode identifiers."
-        )
+        raise ValueError(f"{source} contains missing barcode identifiers.")
 
     duplicated = pd.Index(barcode_values).duplicated()
 
@@ -919,10 +370,8 @@ def _prepare_clone_post_barcodes(
             .tolist()
         )
 
-        raise ValueError(
-            "clone_post must contain one row per barcode. "
-            f"Duplicated barcodes include: {duplicated_barcodes[:10]}"
-        )
+        raise ValueError("clone_post must contain one row per barcode. "
+                         f"Duplicated barcodes include: {duplicated_barcodes[:10]}")
 
     # Reset the index without retaining it because barcode_values have
     # already been extracted explicitly.
@@ -945,7 +394,838 @@ def _prepare_clone_post_barcodes(
     return clone_table
 
 
-    
+def _arm_probability_column(
+    state: str,
+    posterior_name: str,
+    ) -> str:
+    """
+    Return the canonical output column for one posterior set.
+
+    Examples
+    --------
+    posterior_name=""       -> p_amp
+    posterior_name="local"  -> p_amp_local
+    """
+    return (
+        f"p_{state}"
+        if not posterior_name
+        else f"p_{state}_{posterior_name}"
+    )
+
+
+def _arm_derived_column(
+    name: str,
+    posterior_name: str,
+    ) -> str:
+    """
+    Return the output name for a derived posterior quantity.
+
+    Examples
+    --------
+    posterior_name=""       -> p_cnv
+    posterior_name="local"  -> p_cnv_local
+    """
+    return (
+        name
+        if not posterior_name
+        else f"{name}_{posterior_name}"
+    )
+
+
+def _resolve_probability_sets(
+    state_cols: Mapping[str, str] | Sequence[str] | None,
+    local_state_cols: Mapping[str, str] | Sequence[str] | None,
+    ) -> dict[str, dict[str, str]]:
+    """
+    Resolve primary and optional local CNA posterior columns.
+
+    The primary set is stored under the empty name ``""`` and produces
+    canonical output columns such as ``p_amp``.
+
+    The optional local set is stored under ``"local"`` and produces
+    columns such as ``p_amp_local``.
+    """
+    resolved = {
+        "": _resolve_cna_state_columns(state_cols),
+    }
+
+    if local_state_cols is not None:
+        resolved["local"] = _resolve_cna_state_columns(
+            local_state_cols
+        )
+
+    return resolved
+
+
+def _harmonize_probability_sets(
+    table: pd.DataFrame,
+    state_cols: Mapping[str, str] | Sequence[str] | None,
+    local_state_cols: Mapping[str, str] | Sequence[str] | None,
+    table_name: str,
+    ) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
+    """
+    Copy custom posterior columns to canonical internal/output names.
+
+    Source columns are retained.
+
+    For example:
+
+        posterior_gain       -> p_amp
+        posterior_gain_local -> p_amp_local
+    """
+    probability_sets = _resolve_probability_sets(
+        state_cols=state_cols,
+        local_state_cols=local_state_cols,
+    )
+
+    out = table.copy()
+
+    required_source_columns = {
+        source_column
+        for state_map in probability_sets.values()
+        for source_column in state_map.values()
+    }
+
+    missing = required_source_columns.difference(
+        out.columns
+    )
+
+    if missing:
+        raise KeyError(
+            f"{table_name} is missing CNA posterior columns: "
+            f"{sorted(missing)}"
+        )
+
+    for posterior_name, state_map in probability_sets.items():
+        for state in CNA_STATES:
+            source_column = state_map[state]
+
+            output_column = _arm_probability_column(
+                state,
+                posterior_name,
+            )
+
+            source_values = pd.to_numeric(
+                out[source_column],
+                errors="raise",
+            )
+
+            # Do not silently overwrite an existing canonical column
+            # that disagrees with the explicitly selected source.
+            if (
+                output_column in out.columns
+                and output_column != source_column
+            ):
+                existing_values = pd.to_numeric(
+                    out[output_column],
+                    errors="raise",
+                )
+
+                if not np.allclose(
+                    existing_values.to_numpy(dtype=float),
+                    source_values.to_numpy(dtype=float),
+                    atol=0.0,
+                    rtol=0.0,
+                    equal_nan=True,
+                ):
+                    raise ValueError(
+                        f"{table_name} already contains "
+                        f"{output_column!r}, but it disagrees with "
+                        f"the selected source column "
+                        f"{source_column!r}."
+                    )
+
+            out[output_column] = source_values
+
+    return out, probability_sets
+
+
+def _coerce_interval_columns(
+    table: pd.DataFrame,
+    start_col: str,
+    end_col: str,
+    *,
+    table_name: str,
+    ) -> pd.DataFrame:
+    """Validate and convert genomic interval coordinates."""
+    out = table.copy()
+
+    for column in (start_col, end_col):
+        values = pd.to_numeric(
+            out[column],
+            errors="raise",
+        )
+
+        numeric = values.to_numpy(dtype=float)
+
+        if not np.isfinite(numeric).all():
+            raise ValueError(
+                f"{table_name}[{column!r}] contains "
+                "non-finite coordinates."
+            )
+
+        rounded = np.round(numeric)
+
+        if not np.allclose(
+            numeric,
+            rounded,
+            atol=1e-8,
+            rtol=0,
+        ):
+            raise ValueError(
+                f"{table_name}[{column!r}] contains "
+                "non-integer coordinates."
+            )
+
+        out[column] = rounded.astype(np.int64)
+
+    if (out[start_col] < 0).any():
+        raise ValueError(
+            f"{table_name}[{start_col!r}] contains "
+            "negative coordinates."
+        )
+
+    if (out[end_col] <= out[start_col]).any():
+        raise ValueError(
+            f"Every interval in {table_name} must have "
+            f"{end_col} > {start_col}."
+        )
+
+    return out
+
+
+def _validate_probability_sets(
+    table: pd.DataFrame,
+    probability_sets: Mapping[str, Mapping[str, str]],
+    *,
+    probability_tolerance: float,
+    table_name: str,
+    ) -> pd.DataFrame:
+    """
+    Validate all primary/local posterior vectors.
+
+    Only negligible floating-point deviations are clipped and
+    renormalized.
+    """
+    out = table.copy()
+
+    for posterior_name in probability_sets:
+        columns = [
+            _arm_probability_column(
+                state,
+                posterior_name,
+            )
+            for state in CNA_STATES
+        ]
+
+        probabilities = out[
+            columns
+        ].to_numpy(dtype=float)
+
+        if not np.isfinite(probabilities).all():
+            raise ValueError(
+                f"{table_name} contains non-finite probabilities "
+                f"in posterior set "
+                f"{posterior_name or 'primary'!r}."
+            )
+
+        outside_range = (
+            (
+                probabilities
+                < -probability_tolerance
+            ).any()
+            or
+            (
+                probabilities
+                > 1.0 + probability_tolerance
+            ).any()
+        )
+
+        if outside_range:
+            raise ValueError(
+                f"{table_name} probabilities in posterior set "
+                f"{posterior_name or 'primary'!r} must lie "
+                "within [0, 1]."
+            )
+
+        row_sums = probabilities.sum(axis=1)
+
+        if not np.allclose(
+            row_sums,
+            1.0,
+            atol=probability_tolerance,
+            rtol=0,
+        ):
+            raise ValueError(
+                f"{table_name} probabilities in posterior set "
+                f"{posterior_name or 'primary'!r} do not sum "
+                "to one. Observed range: "
+                f"{row_sums.min():.6g}–"
+                f"{row_sums.max():.6g}"
+            )
+
+        clipped = np.clip(
+            probabilities,
+            0.0,
+            1.0,
+        )
+
+        clipped_sums = clipped.sum(
+            axis=1,
+            keepdims=True,
+        )
+
+        if (clipped_sums <= 0).any():
+            raise ValueError(
+                f"{table_name} contains a zero-mass posterior "
+                f"vector in set "
+                f"{posterior_name or 'primary'!r}."
+            )
+
+        out[columns] = clipped / clipped_sums
+
+    return out
+
+
+def _canonical_cna_state(value: object) -> str | None:
+    """Normalize a CNA-state label.""" 
+    if pd.isna(value): 
+        return None 
+    state = str(value).strip().lower() 
+    aliases = {"neutral": "neu", 
+               "normal": "neu",
+               "diploid": "neu", 
+               "gain": "amp", 
+               "loss": "del",
+               } 
+    return aliases.get(state, state)
+
+
+def _parse_consensus_states(
+    value: object,
+    ) -> list[str]:
+    """
+    Parse and deduplicate a SpaceNumbat consensus-state string.
+    """
+    if pd.isna(value):
+        return []
+
+    states = [
+        _canonical_cna_state(state)
+        for state in str(value).split(",")
+    ]
+
+    states = [
+        state
+        for state in states
+        if state in CNA_STATES
+    ]
+
+    return list(dict.fromkeys(states))
+
+
+
+def resolve_multistate_joint_segments(
+    joint_post: pd.DataFrame,
+    segs_consensus: pd.DataFrame,
+    cell_col: str = "cell",
+    chrom_col: str = "CHROM",
+    start_col: str = "seg_start",
+    end_col: str = "seg_end",
+    segment_col: str = "seg",
+    expanded_state_col: str = "cnv_state",
+    consensus_segment_col: str = "seg_cons",
+    consensus_states_col: str = "cnv_states",
+    state_cols: Mapping[str, str] | Sequence[str] | None = None,
+    local_state_cols: (
+        Mapping[str, str]
+        | Sequence[str]
+        | None
+    ) = None,
+    probability_tolerance: float = 1e-8,
+    validate_expanded_states: bool = True,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Collapse rows created by SpaceNumbat ``expand_states()``.
+
+    The complete primary and optional local posterior vectors are
+    preserved unchanged. Existing SpaceNumbat MAP and MLE calls are
+    retained rather than recalculated.
+
+    Parameters
+    ----------
+    joint_post
+        SpaceNumbat joint posterior table. It may be the expanded table
+        produced by ``operations.expand_states()``.
+
+    segs_consensus
+        SpaceNumbat consensus-segment table.
+
+    state_cols
+        Primary posterior columns.
+
+        For HMRF output, these are normally the spatially regularized
+        columns:
+
+            p_neu, p_loh, p_amp, p_del, p_bamp, p_bdel
+
+        Custom source names are accepted through a mapping.
+
+    local_state_cols
+        Optional non-spatial posterior columns. For native HMRF output:
+
+            p_neu_local
+            p_loh_local
+            p_amp_local
+            p_del_local
+            p_bamp_local
+            p_bdel_local
+
+        When supplied, the returned table contains canonical local
+        columns with these names.
+
+    Returns
+    -------
+    resolved_joint_post
+        One row per barcode and physical genomic interval.
+
+    resolution_log
+        One audit row per expanded group that was collapsed.
+
+    Notes
+    -----
+    ``p_cnv`` and ``p_n`` are recomputed because ``expand_states()``
+    replaces them with state-specific quantities.
+
+    ``cnv_state_map``, ``cnv_state_map_local``, and
+    ``cnv_state_mle`` are preserved.
+    """
+    if probability_tolerance < 0:
+        raise ValueError(
+            "probability_tolerance must be non-negative."
+        )
+
+    joint_required = {
+        cell_col,
+        chrom_col,
+        start_col,
+        end_col,
+        segment_col,
+    }
+
+    missing = joint_required.difference(
+        joint_post.columns
+    )
+
+    if missing:
+        raise KeyError(
+            f"Missing joint_post columns: {sorted(missing)}"
+        )
+
+    consensus_required = {
+        chrom_col,
+        start_col,
+        end_col,
+        consensus_segment_col,
+    }
+
+    missing = consensus_required.difference(
+        segs_consensus.columns
+    )
+
+    if missing:
+        raise KeyError(
+            f"Missing segs_consensus columns: "
+            f"{sorted(missing)}"
+        )
+
+    joint, probability_sets = (
+        _harmonize_probability_sets(
+            joint_post,
+            state_cols=state_cols,
+            local_state_cols=local_state_cols,
+            table_name="joint_post",
+        )
+    )
+
+    consensus = segs_consensus.copy()
+
+    joint[chrom_col] = _normalize_chromosome(
+        joint[chrom_col]
+    )
+
+    consensus[chrom_col] = _normalize_chromosome(
+        consensus[chrom_col]
+    )
+
+    if joint[chrom_col].isna().any():
+        raise ValueError(
+            f"joint_post[{chrom_col!r}] contains "
+            "missing chromosome labels."
+        )
+
+    if consensus[chrom_col].isna().any():
+        raise ValueError(
+            f"segs_consensus[{chrom_col!r}] contains "
+            "missing chromosome labels."
+        )
+
+    joint = _coerce_interval_columns(
+        joint,
+        start_col=start_col,
+        end_col=end_col,
+        table_name="joint_post",
+    )
+
+    consensus = _coerce_interval_columns(
+        consensus,
+        start_col=start_col,
+        end_col=end_col,
+        table_name="segs_consensus",
+    )
+
+    joint = _validate_probability_sets(
+        joint,
+        probability_sets,
+        probability_tolerance=probability_tolerance,
+        table_name="joint_post",
+    )
+
+    genomic_key = [
+        chrom_col,
+        start_col,
+        end_col,
+    ]
+
+    duplicated_consensus = consensus.duplicated(
+        genomic_key,
+        keep=False,
+    )
+
+    if duplicated_consensus.any():
+        examples = consensus.loc[
+            duplicated_consensus,
+            [
+                *genomic_key,
+                consensus_segment_col,
+            ],
+        ].head()
+
+        raise ValueError(
+            "segs_consensus must contain one row per "
+            "physical genomic interval. Duplicates were "
+            f"found:\n{examples}"
+        )
+
+    consensus_lookup = {
+        tuple(
+            row[column]
+            for column in genomic_key
+        ): row
+        for _, row in consensus.iterrows()
+    }
+
+    grouping_key = [
+        cell_col,
+        chrom_col,
+        start_col,
+        end_col,
+    ]
+
+    # These values are computed before expand_states() and should be
+    # identical across all expanded copies.
+    consistent_summary_columns = [
+        column
+        for column in (
+            "cnv_state_mle",
+            "cnv_state_map",
+            "cnv_state_map_local",
+            "hmrf_iterations",
+            "hmrf_converged",
+        )
+        if column in joint.columns
+    ]
+
+    resolved_rows: list[pd.Series] = []
+    audit_rows: list[dict[str, object]] = []
+
+    grouped = joint.groupby(
+        grouping_key,
+        sort=False,
+        observed=True,
+        dropna=False,
+    )
+
+    for group_key, group in grouped:
+        (
+            barcode,
+            chromosome,
+            segment_start,
+            segment_end,
+        ) = group_key
+
+        consensus_key = (
+            chromosome,
+            segment_start,
+            segment_end,
+        )
+
+        consensus_row = consensus_lookup.get(
+            consensus_key
+        )
+
+        if consensus_row is None and len(group) > 1:
+            raise ValueError(
+                "A duplicated joint_post interval could not "
+                "be matched to segs_consensus:\n"
+                f"cell={barcode!r}, "
+                f"interval={consensus_key}"
+            )
+
+        resolved = group.iloc[0].copy()
+
+        if len(group) == 1:
+            state = (
+                _canonical_cna_state(
+                    resolved[expanded_state_col]
+                )
+                if expanded_state_col in resolved.index
+                else None
+            )
+
+            resolved["resolved_cnv_states"] = (
+                state
+                if state in CNA_STATES
+                else ""
+            )
+
+            resolved["n_joint_rows_collapsed"] = 1
+            resolved_rows.append(resolved)
+            continue
+
+        allowed_states: list[str] = []
+
+        if (
+            consensus_row is not None
+            and consensus_states_col
+            in consensus.columns
+        ):
+            allowed_states = _parse_consensus_states(
+                consensus_row[
+                    consensus_states_col
+                ]
+            )
+
+        observed_states: list[str] = []
+
+        if expanded_state_col in group.columns:
+            observed_states = [
+                state
+                for state in (
+                    _canonical_cna_state(value)
+                    for value
+                    in group[expanded_state_col]
+                )
+                if state in CNA_STATES
+            ]
+
+            observed_states = list(
+                dict.fromkeys(observed_states)
+            )
+
+        if not allowed_states:
+            allowed_states = observed_states
+
+        if (
+            validate_expanded_states
+            and allowed_states
+            and set(observed_states)
+            != set(allowed_states)
+        ):
+            raise ValueError(
+                "Expanded SpaceNumbat rows do not match "
+                "the consensus state list:\n"
+                f"cell={barcode!r}, "
+                f"interval={consensus_key}, "
+                f"observed={observed_states}, "
+                f"consensus={allowed_states}"
+            )
+
+        # expand_states() copies the complete posterior vector.
+        # Verify that property and retain one copy unchanged.
+        for posterior_name in probability_sets:
+            probability_columns = [
+                _arm_probability_column(
+                    state,
+                    posterior_name,
+                )
+                for state in CNA_STATES
+            ]
+
+            probability_matrix = group[
+                probability_columns
+            ].to_numpy(dtype=float)
+
+            reference_vector = probability_matrix[0]
+
+            if not np.allclose(
+                probability_matrix,
+                reference_vector[None, :],
+                atol=probability_tolerance,
+                rtol=0,
+            ):
+                raise ValueError(
+                    "Rows representing the same physical "
+                    "segment contain different complete posterior "
+                    "vectors. This is not expected from "
+                    "SpaceNumbat expand_states():\n"
+                    f"cell={barcode!r}, "
+                    f"interval={consensus_key}, "
+                    f"posterior_set="
+                    f"{posterior_name or 'primary'!r}"
+                )
+
+            resolved[
+                probability_columns
+            ] = reference_vector
+
+        # Preserve existing MAP/MLE and HMRF diagnostics.
+        for column in consistent_summary_columns:
+            non_missing = group[column].dropna()
+            unique_values = pd.unique(non_missing)
+
+            if len(unique_values) > 1:
+                raise ValueError(
+                    f"Expanded rows disagree in {column!r} "
+                    f"for cell={barcode!r}, "
+                    f"interval={consensus_key}: "
+                    f"{unique_values.tolist()}"
+                )
+
+            resolved[column] = (
+                unique_values[0]
+                if len(unique_values) == 1
+                else pd.NA
+            )
+
+        physical_segment = (
+            consensus_row[consensus_segment_col]
+            if consensus_row is not None
+            else None
+        )
+
+        if pd.notna(physical_segment):
+            resolved[segment_col] = physical_segment
+
+        # These fields are state-specific after expand_states() and
+        # do not represent the collapsed physical segment.
+        if expanded_state_col in resolved.index:
+            resolved[expanded_state_col] = pd.NA
+
+        if "Z_cnv" in resolved.index:
+            resolved["Z_cnv"] = np.nan
+
+        if "seg_label" in resolved.index:
+            resolved["seg_label"] = str(
+                resolved[segment_col]
+            )
+
+        resolved["resolved_cnv_states"] = ",".join(
+            allowed_states
+        )
+
+        resolved["n_joint_rows_collapsed"] = len(
+            group
+        )
+
+        resolved_rows.append(resolved)
+
+        audit_rows.append(
+            {
+                cell_col: barcode,
+                chrom_col: chromosome,
+                start_col: segment_start,
+                end_col: segment_end,
+                "input_rows": len(group),
+                "input_segment_labels": ",".join(
+                    group[segment_col]
+                    .astype(str)
+                    .drop_duplicates()
+                ),
+                "input_states": ",".join(
+                    observed_states
+                ),
+                "consensus_segment": physical_segment,
+                "consensus_states": ",".join(
+                    allowed_states
+                ),
+                "primary_posterior_validated": True,
+                "local_posterior_validated": (
+                    "local" in probability_sets
+                ),
+            }
+        )
+
+    resolved_joint_post = pd.DataFrame(
+        resolved_rows
+    ).reset_index(drop=True)
+
+    duplicated_after = (
+        resolved_joint_post.duplicated(
+            grouping_key,
+            keep=False,
+        )
+    )
+
+    if duplicated_after.any():
+        raise RuntimeError(
+            "Multistate resolution did not produce "
+            "unique barcode–interval rows."
+        )
+
+    resolved_joint_post = _validate_probability_sets(
+        resolved_joint_post,
+        probability_sets,
+        probability_tolerance=probability_tolerance,
+        table_name="resolved_joint_post",
+    )
+
+    # Recompute only quantities that expand_states() converts into
+    # state-specific values.
+    for posterior_name in probability_sets:
+        neutral_column = _arm_probability_column(
+            "neu",
+            posterior_name,
+        )
+
+        p_n_column = _arm_derived_column(
+            "p_n",
+            posterior_name,
+        )
+
+        p_cnv_column = _arm_derived_column(
+            "p_cnv",
+            posterior_name,
+        )
+
+        resolved_joint_post[p_n_column] = (
+            resolved_joint_post[neutral_column]
+        )
+
+        resolved_joint_post[p_cnv_column] = (
+            1.0
+            - resolved_joint_post[neutral_column]
+        )
+
+    resolution_log = pd.DataFrame(
+        audit_rows
+    )
+
+    return resolved_joint_post, resolution_log
+
+
+
+
 def build_barcode_arm_posteriors(
     joint_post: pd.DataFrame,
     clone_post: pd.DataFrame,
@@ -956,120 +1236,69 @@ def build_barcode_arm_posteriors(
     start_col: str = "seg_start",
     end_col: str = "seg_end",
     state_cols: Mapping[str, str] | Sequence[str] | None = None,
+    local_state_cols: (
+        Mapping[str, str]
+        | Sequence[str]
+        | None
+    ) = None,
     probability_tolerance: float = 1e-5,
     validate_nonoverlap: bool = True,
+    clone_metadata_cols: Sequence[str] = (
+        "clone_opt",
+        "GT_opt",
+        "p_opt",
+        "p_cnv",
+        "compartment_opt",
+    ),
     ) -> pd.DataFrame:
     """
-    Build a complete barcode × chromosome-arm CNA representation.
+    Project SpaceNumbat segment posteriors onto chromosome arms.
 
-    Unreported genomic regions are treated as neutral.
+    Primary and optional local posterior vectors are projected
+    independently.
 
-    Parameters
-    ----------
-    joint_post
-        Per-barcode, per-segment CNA posterior table.
+    The primary set produces:
 
-    clone_post
-        Clone-assignment table. It defines the complete barcode universe
-        and provides optional clone metadata.
+        p_neu, p_loh, p_amp, p_del, p_bamp, p_bdel
+        p_gain, p_loss, p_cnv, signed_cna
+        expected_altered_bp
+        state_entropy
+        dominant_state
+        dominant_probability
 
-    arm_reference
-        Output from ``prepare_arm_reference()``.
-
-    cell_col
-        Barcode column in joint_post and barcode column name in the
-        returned table.
-
-    clone_post_barcode_col
-        Barcode column in clone_post. If None, clone_post.index is used.
-
-    chrom_col, start_col, end_col
-        Segment-coordinate columns in joint_post.
-
-    state_cols
-        Source columns containing the six required CNA-state posterior
-        probabilities.
-
-        A mapping is recommended:
-
-            {
-                "neu": "neutral_probability",
-                "loh": "loh_probability",
-                "amp": "gain_probability",
-                "del": "loss_probability",
-                "bamp": "biallelic_gain_probability",
-                "bdel": "biallelic_loss_probability",
-            }
-
-        Keys may also use canonical names such as ``"p_neu"``.
-
-        A sequence is accepted for backward compatibility and must follow
-        this order:
-
-            neu, loh, amp, del, bamp, bdel
-
-        If None, canonical column names are used.
-
-    probability_tolerance
-        Numerical tolerance used when validating probabilities.
-
-    validate_nonoverlap
-        If True, reject overlapping reported segments within the same
-        barcode and chromosome.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per barcode and chromosome arm.
-
-        Input posterior columns are harmonized internally. The returned
-        table always uses the canonical names:
-
-            p_neu, p_loh, p_amp, p_del, p_bamp, p_bdel
+    The local set produces the corresponding ``*_local`` columns.
 
     Notes
     -----
-    joint_post segments and arm_reference coordinates must use compatible
-    0-based coordinates. No coordinate conversion is performed.
+    These are length-weighted expected arm occupancies. They are not
+    posterior probabilities that the entire chromosome arm is in one
+    specific state.
+
+    Unreported genomic fractions are treated as neutral.
     """
-    state_column_map = _resolve_cna_state_columns(
-        state_cols
-    )
-
-    source_state_cols = [
-        state_column_map[state]
-        for state in CNA_STATES
-    ]
-
-    canonical_state_cols = list(
-        CNA_STATE_COLS
-    )
-
-    coordinate_columns = {
-        cell_col,
-        chrom_col,
-        start_col,
-        end_col,
-    }
-
-    conflicting_columns = coordinate_columns.intersection(
-        source_state_cols
-    )
-
-    if conflicting_columns:
+    if probability_tolerance < 0:
         raise ValueError(
-            "CNA probability columns cannot also be used as barcode "
-            "or coordinate columns. Conflicts: "
-            f"{sorted(conflicting_columns)}"
+            "probability_tolerance must be non-negative."
         )
 
-    required_joint_columns = {
+    coordinate_columns = [
         cell_col,
         chrom_col,
         start_col,
         end_col,
-        *source_state_cols,
-    }
+    ]
+
+    if len(set(coordinate_columns)) != len(
+        coordinate_columns
+    ):
+        raise ValueError(
+            "cell_col, chrom_col, start_col, and end_col "
+            "must be distinct."
+        )
+
+    required_joint_columns = set(
+        coordinate_columns
+    )
 
     missing = required_joint_columns.difference(
         joint_post.columns
@@ -1096,12 +1325,9 @@ def build_barcode_arm_posteriors(
 
     if missing:
         raise KeyError(
-            f"Missing arm-reference columns: {sorted(missing)}"
+            f"Missing arm-reference columns: "
+            f"{sorted(missing)}"
         )
-
-    # --------------------------------------------------------------
-    # Prepare clone_post barcodes
-    # --------------------------------------------------------------
 
     clone_table = _prepare_clone_post_barcodes(
         clone_post,
@@ -1113,23 +1339,32 @@ def build_barcode_arm_posteriors(
         [cell_col]
     ].copy()
 
-    # --------------------------------------------------------------
-    # Prepare and harmonize joint_post segments
-    # --------------------------------------------------------------
+    harmonized, probability_sets = (
+        _harmonize_probability_sets(
+            joint_post,
+            state_cols=state_cols,
+            local_state_cols=local_state_cols,
+            table_name="joint_post",
+        )
+    )
 
-    state_rename_map = {
-        state_column_map[state]: f"p_{state}"
+    probability_columns = [
+        _arm_probability_column(
+            state,
+            posterior_name,
+        )
+        for posterior_name in probability_sets
         for state in CNA_STATES
-    }
+    ]
 
     segments = (
-        joint_post[
+        harmonized[
             [
                 cell_col,
                 chrom_col,
                 start_col,
                 end_col,
-                *source_state_cols,
+                *probability_columns,
             ]
         ]
         .rename(
@@ -1137,7 +1372,6 @@ def build_barcode_arm_posteriors(
                 chrom_col: "CHROM",
                 start_col: "seg_start",
                 end_col: "seg_end",
-                **state_rename_map,
             }
         )
         .copy()
@@ -1145,24 +1379,21 @@ def build_barcode_arm_posteriors(
 
     if segments[cell_col].isna().any():
         raise ValueError(
-            f"joint_post[{cell_col!r}] contains missing barcodes."
+            f"joint_post[{cell_col!r}] contains "
+            "missing barcodes."
         )
 
     known_barcodes = pd.Index(
         barcodes[cell_col]
     )
 
-    segment_barcodes = pd.Index(
+    unknown_barcodes = pd.Index(
         segments[cell_col].drop_duplicates()
-    )
-
-    unknown_barcodes = segment_barcodes.difference(
-        known_barcodes
-    )
+    ).difference(known_barcodes)
 
     if len(unknown_barcodes) > 0:
         raise ValueError(
-            "joint_post contains barcodes that are absent from "
+            "joint_post contains barcodes absent from "
             "clone_post. Examples: "
             f"{unknown_barcodes[:10].tolist()}"
         )
@@ -1171,103 +1402,87 @@ def build_barcode_arm_posteriors(
         segments["CHROM"]
     )
 
-    for column in ("seg_start", "seg_end"):
-        values = pd.to_numeric(
-            segments[column],
-            errors="raise",
-        )
-
-        if not np.allclose(
-            values,
-            np.round(values),
-        ):
-            raise ValueError(
-                f"{column!r} contains non-integer coordinates."
-            )
-
-        segments[column] = np.round(
-            values
-        ).astype(np.int64)
-
-    if (segments["seg_start"] < 0).any():
+    if segments["CHROM"].isna().any():
         raise ValueError(
-            "CNA segment starts cannot be negative."
+            "joint_post contains missing chromosome labels."
         )
 
-    if (
-        segments["seg_end"]
-        <= segments["seg_start"]
-    ).any():
-        raise ValueError(
-            "Every CNA segment must have seg_end > seg_start."
-        )
-
-    # --------------------------------------------------------------
-    # Validate segment posterior probabilities
-    # --------------------------------------------------------------
-
-    for column in canonical_state_cols:
-        segments[column] = pd.to_numeric(
-            segments[column],
-            errors="raise",
-        )
-
-    probabilities = segments[
-        canonical_state_cols
-    ].to_numpy(dtype=float)
-
-    if not np.isfinite(probabilities).all():
-        raise ValueError(
-            "Non-finite CNA probabilities were found."
-        )
-
-    outside_probability_range = (
-        (probabilities < -probability_tolerance).any()
-        or
-        (probabilities > 1 + probability_tolerance).any()
+    segments = _coerce_interval_columns(
+        segments,
+        start_col="seg_start",
+        end_col="seg_end",
+        table_name="joint_post",
     )
 
-    if outside_probability_range:
-        raise ValueError(
-            "CNA-state probabilities must lie in [0, 1]."
-        )
-
-    probability_sum = probabilities.sum(
-        axis=1
+    segments = _validate_probability_sets(
+        segments,
+        probability_sets,
+        probability_tolerance=probability_tolerance,
+        table_name="joint_post",
     )
 
-    if not np.allclose(
-        probability_sum,
-        1.0,
-        atol=probability_tolerance,
-        rtol=0,
+    arms = arm_reference.copy()
+
+    arms["CHROM"] = _normalize_chromosome(
+        arms["CHROM"]
+    )
+
+    arms = _coerce_interval_columns(
+        arms,
+        start_col="arm_start",
+        end_col="arm_end",
+        table_name="arm_reference",
+    )
+
+    if arms["arm_id"].duplicated().any():
+        duplicates = (
+            arms.loc[
+                arms["arm_id"].duplicated(
+                    keep=False
+                ),
+                "arm_id",
+            ]
+            .drop_duplicates()
+            .tolist()
+        )
+
+        raise ValueError(
+            "arm_reference contains duplicated arm_id "
+            f"values: {duplicates}"
+        )
+
+    expected_arm_length = (
+        arms["arm_end"]
+        - arms["arm_start"]
+    )
+
+    supplied_arm_length = pd.to_numeric(
+        arms["arm_length"],
+        errors="raise",
+    ).to_numpy(dtype=np.int64)
+
+    if not np.array_equal(
+        expected_arm_length.to_numpy(
+            dtype=np.int64
+        ),
+        supplied_arm_length,
     ):
         raise ValueError(
-            "The CNA-state probabilities must sum to one. "
-            f"Observed range: {probability_sum.min():.6g}–"
-            f"{probability_sum.max():.6g}"
+            "arm_reference.arm_length must equal "
+            "arm_end - arm_start."
         )
 
-    # Correct only negligible floating-point deviations.
-    segments[canonical_state_cols] = (
-        np.clip(
-            probabilities,
-            0.0,
-            1.0,
-        )
-        / probability_sum[:, None]
+    arms["arm_length"] = expected_arm_length.astype(
+        np.int64
     )
 
-    # Remove chromosomes absent from the selected arm reference.
+    # Ignore chromosomes that were intentionally excluded from
+    # the selected arm reference.
     segments = segments.loc[
         segments["CHROM"].isin(
-            arm_reference["CHROM"]
+            arms["CHROM"]
         )
     ].copy()
-
-    # --------------------------------------------------------------
-    # Validate that source segments do not overlap
-    # --------------------------------------------------------------
 
     if validate_nonoverlap and not segments.empty:
         ordered = segments.sort_values(
@@ -1277,19 +1492,24 @@ def build_barcode_arm_posteriors(
                 "seg_start",
                 "seg_end",
             ],
-            key=natsort.natsort_keygen(),
+            kind="mergesort",
         )
 
         previous_end = (
             ordered.groupby(
-                [cell_col, "CHROM"],
+                [
+                    cell_col,
+                    "CHROM",
+                ],
                 sort=False,
+                observed=True,
             )["seg_end"]
             .shift()
         )
 
         overlaps_previous = (
-            ordered["seg_start"] < previous_end
+            ordered["seg_start"]
+            < previous_end
         )
 
         if overlaps_previous.any():
@@ -1304,8 +1524,8 @@ def build_barcode_arm_posteriors(
             ].head()
 
             raise ValueError(
-                "Overlapping CNA segments were found within a "
-                "barcode and chromosome:\n"
+                "Overlapping physical CNA segments were "
+                "found within a barcode and chromosome:\n"
                 f"{examples}"
             )
 
@@ -1319,37 +1539,30 @@ def build_barcode_arm_posteriors(
         "is_acrocentric_p",
     ]
 
-    # --------------------------------------------------------------
-    # Create the complete neutral barcode × arm background
-    # --------------------------------------------------------------
-
-    background = (
-        barcodes.assign(_join_key=1)
-        .merge(
-            arm_reference[
-                arm_columns
-            ].assign(_join_key=1),
-            on="_join_key",
-            how="inner",
-        )
-        .drop(columns="_join_key")
+    background = barcodes.merge(
+        arms[arm_columns],
+        how="cross",
     )
 
-    background["p_neu"] = 1.0
+    # Every unreported arm fraction starts as neutral.
+    for posterior_name in probability_sets:
+        for state in CNA_STATES:
+            column = _arm_probability_column(
+                state,
+                posterior_name,
+            )
 
-    for column in canonical_state_cols:
-        if column != "p_neu":
-            background[column] = 0.0
+            background[column] = (
+                1.0
+                if state == "neu"
+                else 0.0
+            )
 
     background["reported_segment_fraction"] = 0.0
 
-    # --------------------------------------------------------------
-    # Replace neutral arm fractions with segment posterior mass
-    # --------------------------------------------------------------
-
     if not segments.empty:
         overlaps = segments.merge(
-            arm_reference[arm_columns],
+            arms[arm_columns],
             on="CHROM",
             how="inner",
             validate="many_to_many",
@@ -1374,55 +1587,83 @@ def build_barcode_arm_posteriors(
             overlaps["overlap_bp"] > 0
         ].copy()
 
-        overlaps["overlap_fraction"] = (
+        overlaps["_overlap_fraction"] = (
             overlaps["overlap_bp"]
             / overlaps["arm_length"]
         )
 
-        # Each arm starts as fully neutral. For an overlap fraction f,
-        # the neutral mass changes from f to f * p_neu.
-        overlaps["_neutral_delta"] = (
-            overlaps["overlap_fraction"]
-            * (overlaps["p_neu"] - 1.0)
-        )
-
-        mass_columns: list[str] = []
-
-        for column in canonical_state_cols:
-            if column == "p_neu":
-                continue
-
-            mass_column = f"_{column}_mass"
-
-            overlaps[mass_column] = (
-                overlaps["overlap_fraction"]
-                * overlaps[column]
-            )
-
-            mass_columns.append(
-                mass_column
-            )
-
-        aggregations = {
-            "reported_segment_fraction": (
-                "overlap_fraction",
+        aggregation_spec: dict[
+            str,
+            tuple[str, str],
+        ] = {
+            "_reported_segment_fraction": (
+                "_overlap_fraction",
                 "sum",
-            ),
-            "_neutral_delta": (
-                "_neutral_delta",
-                "sum",
-            ),
+            )
         }
 
-        aggregations.update(
-            {
-                mass_column: (
+        temporary_columns: list[str] = []
+
+        for posterior_name in probability_sets:
+            tag = (
+                posterior_name
+                if posterior_name
+                else "primary"
+            )
+
+            neutral_column = _arm_probability_column(
+                "neu",
+                posterior_name,
+            )
+
+            neutral_delta_column = (
+                f"__neutral_delta_{tag}"
+            )
+
+            overlaps[neutral_delta_column] = (
+                overlaps["_overlap_fraction"]
+                * (
+                    overlaps[neutral_column]
+                    - 1.0
+                )
+            )
+
+            aggregation_spec[
+                neutral_delta_column
+            ] = (
+                neutral_delta_column,
+                "sum",
+            )
+
+            temporary_columns.append(
+                neutral_delta_column
+            )
+
+            for state in ALTERED_STATES:
+                source_column = (
+                    _arm_probability_column(
+                        state,
+                        posterior_name,
+                    )
+                )
+
+                mass_column = (
+                    f"__{state}_mass_{tag}"
+                )
+
+                overlaps[mass_column] = (
+                    overlaps["_overlap_fraction"]
+                    * overlaps[source_column]
+                )
+
+                aggregation_spec[mass_column] = (
                     mass_column,
                     "sum",
                 )
-                for mass_column in mass_columns
-            }
-        )
+
+                temporary_columns.append(
+                    mass_column
+                )
 
         arm_mass = (
             overlaps.groupby(
@@ -1433,7 +1674,7 @@ def build_barcode_arm_posteriors(
                 observed=True,
                 as_index=False,
             )
-            .agg(**aggregations)
+            .agg(**aggregation_spec)
         )
 
         background = background.merge(
@@ -1443,155 +1684,268 @@ def build_barcode_arm_posteriors(
                 "arm_id",
             ],
             how="left",
-            suffixes=("", "_projected"),
             validate="one_to_one",
         )
 
-        background["p_neu"] += (
-            background["_neutral_delta"]
+        background["reported_segment_fraction"] = (
+            background[
+                "_reported_segment_fraction"
+            ]
             .fillna(0.0)
         )
 
-        for column in canonical_state_cols:
-            if column == "p_neu":
-                continue
+        for posterior_name in probability_sets:
+            tag = (
+                posterior_name
+                if posterior_name
+                else "primary"
+            )
 
-            background[column] += (
-                background[f"_{column}_mass"]
+            neutral_column = _arm_probability_column(
+                "neu",
+                posterior_name,
+            )
+
+            background[neutral_column] += (
+                background[
+                    f"__neutral_delta_{tag}"
+                ]
                 .fillna(0.0)
             )
 
-        background["reported_segment_fraction"] = (
-            background[
-                "reported_segment_fraction_projected"
-            ]
-            .fillna(0.0)
-        )
+            for state in ALTERED_STATES:
+                output_column = (
+                    _arm_probability_column(
+                        state,
+                        posterior_name,
+                    )
+                )
+
+                background[output_column] += (
+                    background[
+                        f"__{state}_mass_{tag}"
+                    ]
+                    .fillna(0.0)
+                )
 
         background = background.drop(
             columns=[
-                "_neutral_delta",
-                "reported_segment_fraction_projected",
-                *mass_columns,
+                "_reported_segment_fraction",
+                *temporary_columns,
             ]
         )
 
-    # --------------------------------------------------------------
-    # Validate projected arm-state probabilities
-    # --------------------------------------------------------------
-
-    arm_probabilities = background[
-        canonical_state_cols
-    ].to_numpy(dtype=float)
-
     if (
         background["reported_segment_fraction"]
-        > 1 + 1e-8
+        > 1.0 + probability_tolerance
     ).any():
         raise ValueError(
-            "Reported segments cover an arm more than once for at "
-            "least one barcode."
+            "Reported segments cover an arm more than "
+            "once for at least one barcode."
         )
 
-    if (arm_probabilities < -1e-8).any():
-        raise ValueError(
-            "Projection produced negative arm probabilities."
+    # Validate each arm posterior set and derive arm summaries.
+    for posterior_name in probability_sets:
+        state_probability_columns = [
+            _arm_probability_column(
+                state,
+                posterior_name,
+            )
+            for state in CNA_STATES
+        ]
+
+        arm_probabilities = background[
+            state_probability_columns
+        ].to_numpy(dtype=float)
+
+        outside_range = (
+            (
+                arm_probabilities
+                < -probability_tolerance
+            ).any()
+            or
+            (
+                arm_probabilities
+                > 1.0 + probability_tolerance
+            ).any()
         )
 
-    if not np.allclose(
-        arm_probabilities.sum(axis=1),
-        1.0,
-        atol=1e-6,
-        rtol=0,
-    ):
-        raise ValueError(
-            "Projected chromosome-arm state probabilities do not "
-            "sum to one."
-        )
+        if outside_range:
+            raise ValueError(
+                "Arm projection produced probabilities "
+                "outside [0, 1] for posterior set "
+                f"{posterior_name or 'primary'!r}."
+            )
 
-    background[canonical_state_cols] = np.clip(
-        arm_probabilities,
-        0.0,
-        1.0,
-    )
+        if not np.allclose(
+            arm_probabilities.sum(axis=1),
+            1.0,
+            atol=probability_tolerance,
+            rtol=0,
+        ):
+            raise ValueError(
+                "Projected chromosome-arm probabilities "
+                "do not sum to one for posterior set "
+                f"{posterior_name or 'primary'!r}."
+            )
 
-    # --------------------------------------------------------------
-    # Add derived arm-level quantities
-    # --------------------------------------------------------------
-
-    background["p_gain"] = (
-        background["p_amp"]
-        + background["p_bamp"]
-    )
-
-    background["p_loss"] = (
-        background["p_del"]
-        + background["p_bdel"]
-    )
-
-    background["p_cnv"] = (
-        1.0 - background["p_neu"]
-    )
-
-    background["signed_cna"] = (
-        background["p_gain"]
-        - background["p_loss"]
-    )
-
-    background["expected_altered_bp"] = (
-        background["p_cnv"]
-        * background["arm_length"]
-    )
-
-    probabilities = background[
-        canonical_state_cols
-    ].to_numpy(dtype=float)
-
-    with np.errstate(
-        divide="ignore",
-        invalid="ignore",
-    ):
-        entropy = -np.where(
-            probabilities > 0,
-            probabilities * np.log(probabilities),
+        clipped = np.clip(
+            arm_probabilities,
             0.0,
-        ).sum(axis=1)
+            1.0,
+        )
 
-    background["state_entropy"] = (
-        entropy
-        / np.log(len(canonical_state_cols))
-    )
+        clipped = (
+            clipped
+            / clipped.sum(
+                axis=1,
+                keepdims=True,
+            )
+        )
 
-    dominant_index = probabilities.argmax(
-        axis=1
-    )
+        background[
+            state_probability_columns
+        ] = clipped
 
-    state_names = np.asarray(
-        CNA_STATES
-    )
+        p_neu = _arm_probability_column(
+            "neu",
+            posterior_name,
+        )
 
-    background["dominant_state"] = (
-        state_names[dominant_index]
-    )
+        p_amp = _arm_probability_column(
+            "amp",
+            posterior_name,
+        )
 
-    background["dominant_probability"] = probabilities[
-        np.arange(len(background)),
-        dominant_index,
-    ]
+        p_bamp = _arm_probability_column(
+            "bamp",
+            posterior_name,
+        )
 
-    # --------------------------------------------------------------
-    # Add optional clone metadata
-    # --------------------------------------------------------------
+        p_del = _arm_probability_column(
+            "del",
+            posterior_name,
+        )
+
+        p_bdel = _arm_probability_column(
+            "bdel",
+            posterior_name,
+        )
+
+        p_gain = _arm_derived_column(
+            "p_gain",
+            posterior_name,
+        )
+
+        p_loss = _arm_derived_column(
+            "p_loss",
+            posterior_name,
+        )
+
+        p_cnv = _arm_derived_column(
+            "p_cnv",
+            posterior_name,
+        )
+
+        signed_cna = _arm_derived_column(
+            "signed_cna",
+            posterior_name,
+        )
+
+        expected_altered_bp = (
+            _arm_derived_column(
+                "expected_altered_bp",
+                posterior_name,
+            )
+        )
+
+        entropy_column = _arm_derived_column(
+            "state_entropy",
+            posterior_name,
+        )
+
+        dominant_state_column = (
+            _arm_derived_column(
+                "dominant_state",
+                posterior_name,
+            )
+        )
+
+        dominant_probability_column = (
+            _arm_derived_column(
+                "dominant_probability",
+                posterior_name,
+            )
+        )
+
+        background[p_gain] = (
+            background[p_amp]
+            + background[p_bamp]
+        )
+
+        background[p_loss] = (
+            background[p_del]
+            + background[p_bdel]
+        )
+
+        background[p_cnv] = (
+            1.0
+            - background[p_neu]
+        )
+
+        background[signed_cna] = (
+            background[p_gain]
+            - background[p_loss]
+        )
+
+        background[expected_altered_bp] = (
+            background[p_cnv]
+            * background["arm_length"]
+        )
+
+        probabilities = background[
+            state_probability_columns
+        ].to_numpy(dtype=float)
+
+        with np.errstate(
+            divide="ignore",
+            invalid="ignore",
+        ):
+            entropy = -np.where(
+                probabilities > 0,
+                probabilities
+                * np.log(probabilities),
+                0.0,
+            ).sum(axis=1)
+
+        background[entropy_column] = (
+            entropy
+            / np.log(len(CNA_STATES))
+        )
+
+        dominant_index = probabilities.argmax(
+            axis=1
+        )
+
+        state_names = np.asarray(
+            CNA_STATES,
+            dtype=object,
+        )
+
+        background[dominant_state_column] = (
+            state_names[dominant_index]
+        )
+
+        background[
+            dominant_probability_column
+        ] = probabilities[
+            np.arange(len(background)),
+            dominant_index,
+        ]
 
     metadata_columns = [
         column
-        for column in (
-            "clone_opt",
-            "GT_opt",
-            "p_opt",
-            "p_cnv",
-            "compartment_opt",
-        )
+        for column in clone_metadata_cols
         if column in clone_table.columns
     ]
 
@@ -1602,10 +1956,18 @@ def build_barcode_arm_posteriors(
         ]
     ].copy()
 
+    # Avoid collision between clone-level and arm-level p_cnv.
     if "p_cnv" in metadata.columns:
         metadata = metadata.rename(
             columns={
                 "p_cnv": "clone_p_cnv",
+            }
+        )
+
+    if "p_cnv_local" in metadata.columns:
+        metadata = metadata.rename(
+            columns={
+                "p_cnv_local": "clone_p_cnv_local",
             }
         )
 
@@ -1616,11 +1978,16 @@ def build_barcode_arm_posteriors(
         validate="many_to_one",
     )
 
-    # Preserve chromosome-arm ordering from arm_reference.
     arm_order = {
         arm_id: position
         for position, arm_id
-        in enumerate(arm_reference["arm_id"])
+        in enumerate(arms["arm_id"])
+    }
+
+    barcode_order = {
+        barcode: position
+        for position, barcode
+        in enumerate(barcodes[cell_col])
     }
 
     background["_arm_order"] = (
@@ -1629,56 +1996,119 @@ def build_barcode_arm_posteriors(
         )
     )
 
+    background["_barcode_order"] = (
+        background[cell_col].map(
+            barcode_order
+        )
+    )
+
     return (
         background.sort_values(
             [
-                cell_col,
+                "_barcode_order",
+                "_arm_order",
+            ],
+            kind="mergesort",
+        )
+        .drop(
+            columns=[
+                "_barcode_order",
                 "_arm_order",
             ]
         )
-        .drop(columns="_arm_order")
         .reset_index(drop=True)
     )
 
 
 
-def arm_probability_matrices(
-    barcode_arm_posteriors: pd.DataFrame,
+def build_spacenumbat_arm_posteriors(
+    joint_post: pd.DataFrame,
+    segs_consensus: pd.DataFrame,
+    clone_post: pd.DataFrame,
+    arm_reference: pd.DataFrame,
+    state_cols: Mapping[str, str] | Sequence[str] | None = None,
+    local_state_cols: (
+        Mapping[str, str]
+        | Sequence[str]
+        | None
+    ) = None,
     cell_col: str = "cell",
-    arm_order: Sequence[str] | None = None,
-    value_cols: Sequence[str] = (
-        "p_neu",
-        "p_loh",
-        "p_amp",
-        "p_del",
-        "p_bamp",
-        "p_bdel",
-        "p_gain",
-        "p_loss",
+    clone_post_barcode_col: str | None = None,
+    chrom_col: str = "CHROM",
+    start_col: str = "seg_start",
+    end_col: str = "seg_end",
+    segment_col: str = "seg",
+    expanded_state_col: str = "cnv_state",
+    consensus_segment_col: str = "seg_cons",
+    consensus_states_col: str = "cnv_states",
+    probability_tolerance: float = 1e-8,
+    validate_expanded_states: bool = True,
+    validate_nonoverlap: bool = True,
+    clone_metadata_cols: Sequence[str] = (
+        "clone_opt",
+        "GT_opt",
+        "p_opt",
         "p_cnv",
-        "signed_cna",
+        "compartment_opt",
     ),
-    ) -> dict[str, pd.DataFrame]:
+    ) -> tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        pd.DataFrame,
+    ]:
     """
-    Create one barcode × arm matrix for each CNA-state quantity.
+    Collapse SpaceNumbat expanded rows and build arm posteriors.
+
+    Returns
+    -------
+    arm_posteriors
+        One row per barcode and chromosome arm.
+
+    resolved_joint_post
+        One row per barcode and physical consensus segment.
+
+    resolution_log
+        Audit log for collapsed multistate rows.
     """
-    if arm_order is None:
-        arm_order = (
-            barcode_arm_posteriors["arm_id"]
-            .drop_duplicates()
-            .tolist()
+    resolved_joint_post, resolution_log = (
+        resolve_multistate_joint_segments(
+            joint_post=joint_post,
+            segs_consensus=segs_consensus,
+            cell_col=cell_col,
+            chrom_col=chrom_col,
+            start_col=start_col,
+            end_col=end_col,
+            segment_col=segment_col,
+            expanded_state_col=expanded_state_col,
+            consensus_segment_col=consensus_segment_col,
+            consensus_states_col=consensus_states_col,
+            state_cols=state_cols,
+            local_state_cols=local_state_cols,
+            probability_tolerance=probability_tolerance,
+            validate_expanded_states=validate_expanded_states,
         )
+    )
 
-    matrices = {}
+    arm_posteriors = build_barcode_arm_posteriors(
+        joint_post=resolved_joint_post,
+        clone_post=clone_post,
+        arm_reference=arm_reference,
+        cell_col=cell_col,
+        clone_post_barcode_col=clone_post_barcode_col,
+        chrom_col=chrom_col,
+        start_col=start_col,
+        end_col=end_col,
+        state_cols=state_cols,
+        local_state_cols=local_state_cols,
+        probability_tolerance=probability_tolerance,
+        validate_nonoverlap=validate_nonoverlap,
+        clone_metadata_cols=clone_metadata_cols,
+    )
 
-    for value_col in value_cols:
-        matrices[value_col] = (
-            barcode_arm_posteriors.pivot(
-                index=cell_col,
-                columns="arm_id",
-                values=value_col,
-            )
-            .reindex(columns=arm_order)
-        )
+    return {
+        "arm_post":arm_posteriors,
+        "arm_joint_post":resolved_joint_post,
+        "log":resolution_log,
+    }
 
-    return matrices
+    
