@@ -772,7 +772,7 @@ def run_spacenumbat(
             "subtrees": subtrees, 
             "clones": clones, 
             "bulk_clones": bulk_clones,
-            "success":terminated_with_results},
+            "success":terminated_with_results}
     #return clone_post, G_m
 
     
