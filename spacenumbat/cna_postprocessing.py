@@ -534,9 +534,7 @@ def resolve_multistate_joint_segments(
                 if expanded_state_col in resolved.index
                 else None
             )
-            resolved["resolved_cnv_states"] = (
-                state if state in CNA_STATES else ""
-            )
+            resolved["resolved_cnv_states"] = (state if state in CNA_STATES else "")
             resolved["n_joint_rows_collapsed"] = 1
             resolved_rows.append(resolved)
             continue
@@ -572,37 +570,29 @@ def resolve_multistate_joint_segments(
             and allowed_states
             and set(observed_states) != set(allowed_states)
         ):
-            raise ValueError(
-                "Expanded SpaceNumbat rows do not match the consensus "
-                "state list:\n"
-                f"cell={barcode!r}, interval={consensus_key}, "
-                f"observed={observed_states}, consensus={allowed_states}"
-            )
+            raise ValueError("Expanded SpaceNumbat rows do not match the consensus "
+                             "state list:\n"
+                             f"cell={barcode!r}, interval={consensus_key}, "
+                             f"observed={observed_states}, consensus={allowed_states}")
 
         probability_matrix = group.loc[:, CNA_STATE_COLS].to_numpy(dtype=float)
         reference_vector = probability_matrix[0]
-        if not np.allclose(
-            probability_matrix,
-            reference_vector[None, :],
-            atol=probability_tolerance,
-            rtol=0,
-        ):
-            raise ValueError(
-                "Rows representing the same physical segment contain "
-                "different complete posterior vectors. This is not expected "
-                "from SpaceNumbat operations.expand_states():\n"
-                f"cell={barcode!r}, interval={consensus_key}"
-            )
+        if not np.allclose(probability_matrix,
+                           reference_vector[None, :],
+                           atol=probability_tolerance,
+                           rtol=0):
+            raise ValueError("Rows representing the same physical segment contain "
+                             "different complete posterior vectors. This is not expected "
+                             "from SpaceNumbat operations.expand_states():\n"
+                             f"cell={barcode!r}, interval={consensus_key}")
         resolved.loc[list(CNA_STATE_COLS)] = reference_vector
 
         for column in consistent_columns:
             values = pd.unique(group[column].dropna())
             if len(values) > 1:
-                raise ValueError(
-                    f"Expanded rows disagree in {column!r} for "
-                    f"cell={barcode!r}, interval={consensus_key}: "
-                    f"{values.tolist()}"
-                )
+                raise ValueError(f"Expanded rows disagree in {column!r} for "
+                                 f"cell={barcode!r}, interval={consensus_key}: "
+                                 f"{values.tolist()}")
             resolved[column] = values[0] if len(values) == 1 else pd.NA
 
         physical_segment = consensus_row[consensus_segment_col]
@@ -628,9 +618,7 @@ def resolve_multistate_joint_segments(
                 start_col: segment_start,
                 end_col: segment_end,
                 "input_rows": len(group),
-                "input_segment_labels": ",".join(
-                    group[segment_col].astype(str).drop_duplicates()
-                ),
+                "input_segment_labels": ",".join(group[segment_col].astype(str).drop_duplicates()),
                 "input_states": ",".join(observed_states),
                 "consensus_segment": physical_segment,
                 "consensus_states": ",".join(allowed_states),
@@ -641,16 +629,12 @@ def resolve_multistate_joint_segments(
     resolved_joint_post = pd.DataFrame(resolved_rows).reset_index(drop=True)
 
     if resolved_joint_post.duplicated(grouping_key, keep=False).any():
-        raise RuntimeError(
-            "Multistate resolution did not produce unique "
-            "barcode–interval rows."
-        )
+        raise RuntimeError("Multistate resolution did not produce unique "
+                           "barcode–interval rows.")
 
-    resolved_joint_post = _validate_state_probabilities(
-        resolved_joint_post,
-        probability_tolerance=probability_tolerance,
-        table_name="resolved_joint_post",
-    )
+    resolved_joint_post = _validate_state_probabilities(resolved_joint_post,
+                                                        probability_tolerance=probability_tolerance,
+                                                        table_name="resolved_joint_post")
 
     resolved_joint_post["p_n"] = resolved_joint_post["p_neu"]
     resolved_joint_post["p_cnv"] = 1.0 - resolved_joint_post["p_neu"]
@@ -688,9 +672,7 @@ def build_barcode_arm_posteriors(
     """
     coordinate_columns = [cell_col, chrom_col, start_col, end_col]
     if len(set(coordinate_columns)) != len(coordinate_columns):
-        raise ValueError(
-            "cell_col, chrom_col, start_col, and end_col must be distinct."
-        )
+        raise ValueError("cell_col, chrom_col, start_col, and end_col must be distinct.")
 
     missing = set(coordinate_columns).difference(joint_post.columns)
     if missing:
@@ -709,116 +691,77 @@ def build_barcode_arm_posteriors(
     if missing:
         raise KeyError(f"Missing arm-reference columns: {sorted(missing)}")
 
-    clone_table = _prepare_clone_post_barcodes(
-        clone_post,
-        output_cell_col=cell_col,
-        clone_post_barcode_col=clone_post_barcode_col,
-    )
+    clone_table = _prepare_clone_post_barcodes(clone_post,
+                                               output_cell_col=cell_col,
+                                               clone_post_barcode_col=clone_post_barcode_col)
     barcodes = clone_table.loc[:, [cell_col]].copy()
 
-    harmonized, _ = _harmonize_state_columns(
-        joint_post,
-        state_cols,
-        table_name="joint_post",
-    )
+    harmonized, _ = _harmonize_state_columns(joint_post,
+                                             state_cols,
+                                             table_name="joint_post")
 
-    segments = (
-        harmonized.loc[
-            :,
-            [cell_col, chrom_col, start_col, end_col, *CNA_STATE_COLS],
-        ]
-        .rename(
-            columns={
-                chrom_col: "CHROM",
-                start_col: "seg_start",
-                end_col: "seg_end",
-            }
-        )
-        .copy()
-    )
+    segments = (harmonized.loc[:,
+                               [cell_col,
+                                chrom_col,
+                                start_col,
+                                end_col, 
+                                *CNA_STATE_COLS],].rename(columns={chrom_col: "CHROM",
+                                                                   start_col: "seg_start",
+                                                                   end_col: "seg_end"}).copy())
 
     if segments[cell_col].isna().any():
-        raise ValueError(
-            f"joint_post[{cell_col!r}] contains missing barcodes."
-        )
+        raise ValueError(f"joint_post[{cell_col!r}] contains missing barcodes.")
 
     known_barcodes = pd.Index(barcodes[cell_col])
     unknown_barcodes = pd.Index(
         segments[cell_col].drop_duplicates()
     ).difference(known_barcodes)
     if len(unknown_barcodes) > 0:
-        raise ValueError(
-            "joint_post contains barcodes absent from clone_post. Examples: "
-            f"{unknown_barcodes[:10].tolist()}"
-        )
+        raise ValueError("joint_post contains barcodes absent from clone_post. Examples: "
+                         f"{unknown_barcodes[:10].tolist()}")
 
     segments["CHROM"] = _normalize_chromosome(segments["CHROM"])
     if segments["CHROM"].isna().any():
         raise ValueError("joint_post contains missing chromosome labels.")
 
-    segments = _coerce_interval_columns(
-        segments,
-        start_col="seg_start",
-        end_col="seg_end",
-        table_name="joint_post",
-    )
-    segments = _validate_state_probabilities(
-        segments,
-        probability_tolerance=probability_tolerance,
-        table_name="joint_post",
-    )
+    segments = _coerce_interval_columns(segments,
+                                        start_col="seg_start",
+                                        end_col="seg_end",
+                                        table_name="joint_post")
+    segments = _validate_state_probabilities(segments,
+                                             probability_tolerance=probability_tolerance,
+                                             table_name="joint_post")
 
     arms = arm_reference.copy()
     arms["CHROM"] = _normalize_chromosome(arms["CHROM"])
     if arms["CHROM"].isna().any():
         raise ValueError("arm_reference contains missing chromosome labels.")
 
-    arms = _coerce_interval_columns(
-        arms,
-        start_col="arm_start",
-        end_col="arm_end",
-        table_name="arm_reference",
-    )
+    arms = _coerce_interval_columns(arms,
+                                    start_col="arm_start",
+                                    end_col="arm_end",
+                                    table_name="arm_reference")
 
     if arms["arm_id"].duplicated().any():
-        duplicated = (
-            arms.loc[arms["arm_id"].duplicated(keep=False), "arm_id"]
-            .drop_duplicates()
-            .tolist()
-        )
-        raise ValueError(
-            f"arm_reference contains duplicated arm_id values: {duplicated}"
-        )
+        duplicated = arms.loc[arms["arm_id"].duplicated(keep=False), "arm_id"].drop_duplicates().tolist()
+        
+        raise ValueError(f"arm_reference contains duplicated arm_id values: {duplicated}")
 
     expected_arm_length = arms["arm_end"] - arms["arm_start"]
-    supplied_arm_length = pd.to_numeric(
-        arms["arm_length"],
-        errors="raise",
-    ).to_numpy(dtype=np.int64)
-    if not np.array_equal(
-        expected_arm_length.to_numpy(dtype=np.int64),
-        supplied_arm_length,
-    ):
-        raise ValueError(
-            "arm_reference.arm_length must equal arm_end - arm_start."
-        )
+    supplied_arm_length = pd.to_numeric(arms["arm_length"], errors="raise").to_numpy(dtype=np.int64)
+    if not np.array_equal(expected_arm_length.to_numpy(dtype=np.int64), supplied_arm_length):
+        raise ValueError("arm_reference.arm_length must equal arm_end - arm_start.")
     arms["arm_length"] = expected_arm_length.astype(np.int64)
 
     selected_chromosomes = set(arms["CHROM"])
-    segments = segments.loc[
-        segments["CHROM"].isin(selected_chromosomes)
-    ].copy()
+    segments = segments.loc[segments["CHROM"].isin(selected_chromosomes)].copy()
 
     if validate_nonoverlap and not segments.empty:
-        ordered = segments.sort_values(
-            [cell_col, "CHROM", "seg_start", "seg_end"],
-            kind="mergesort",
-        )
-        previous_end = ordered.groupby(
-            [cell_col, "CHROM"],
-            sort=False,
-            observed=True,
-        )["seg_end"].shift()
+        ordered = segments.sort_values([cell_col, "CHROM", "seg_start", "seg_end"],
+                                       kind="mergesort")
+        previous_end = ordered.groupby([cell_col, "CHROM"],
+                                       sort=False,
+                                       observed=True)["seg_end"].shift()
         overlaps_previous = ordered["seg_start"] < previous_end
 
         if overlaps_previous.any():
@@ -826,10 +769,8 @@ def build_barcode_arm_posteriors(
                 overlaps_previous,
                 [cell_col, "CHROM", "seg_start", "seg_end"],
             ].head(10)
-            raise ValueError(
-                "Overlapping physical CNA segments were found within a "
-                f"barcode and chromosome:\n{examples}"
-            )
+            raise ValueError("Overlapping physical CNA segments were found within a "
+                             f"barcode and chromosome:\n{examples}")
 
     arm_columns = [
         "CHROM",
@@ -848,114 +789,50 @@ def build_barcode_arm_posteriors(
     background["reported_segment_fraction"] = 0.0
 
     if not segments.empty:
-        overlaps = segments.merge(
-            arms.loc[:, arm_columns],
-            on="CHROM",
-            how="inner",
-            validate="many_to_many",
-        )
+        overlaps = segments.merge(arms.loc[:, arm_columns],
+                                  on="CHROM",
+                                  how="inner",
+                                  validate="many_to_many")
 
-        overlaps["overlap_start"] = np.maximum(
-            overlaps["seg_start"],
-            overlaps["arm_start"],
-        )
-        overlaps["overlap_end"] = np.minimum(
-            overlaps["seg_end"],
-            overlaps["arm_end"],
-        )
-        overlaps["overlap_bp"] = (
-            overlaps["overlap_end"] - overlaps["overlap_start"]
-        ).clip(lower=0)
+        overlaps["overlap_start"] = np.maximum(overlaps["seg_start"], overlaps["arm_start"],)
+        overlaps["overlap_end"] = np.minimum(overlaps["seg_end"], overlaps["arm_end"])
+        overlaps["overlap_bp"] = (overlaps["overlap_end"] - overlaps["overlap_start"]).clip(lower=0)
         overlaps = overlaps.loc[overlaps["overlap_bp"] > 0].copy()
-        overlaps["overlap_fraction"] = (
-            overlaps["overlap_bp"] / overlaps["arm_length"]
-        )
+        overlaps["overlap_fraction"] = overlaps["overlap_bp"] / overlaps["arm_length"]
 
-        overlaps["_neutral_delta"] = (
-            overlaps["overlap_fraction"] * (overlaps["p_neu"] - 1.0)
-        )
+        overlaps["_neutral_delta"] = overlaps["overlap_fraction"] * (overlaps["p_neu"] - 1.0)
 
         mass_columns: list[str] = []
         for state in ALTERED_STATES:
             mass_column = f"_p_{state}_mass"
-            overlaps[mass_column] = (
-                overlaps["overlap_fraction"] * overlaps[f"p_{state}"]
-            )
+            overlaps[mass_column] = overlaps["overlap_fraction"] * overlaps[f"p_{state}"]
             mass_columns.append(mass_column)
 
-        aggregation_spec: dict[str, tuple[str, str]] = {
-            "_reported_segment_fraction": ("overlap_fraction", "sum"),
-            "_neutral_delta": ("_neutral_delta", "sum"),
-        }
-        aggregation_spec.update(
-            {
-                mass_column: (mass_column, "sum")
-                for mass_column in mass_columns
-            }
-        )
+        aggregation_spec: dict[str, tuple[str, str]] = {"_reported_segment_fraction": ("overlap_fraction", "sum"),
+                                                        "_neutral_delta": ("_neutral_delta", "sum"),}
+        aggregation_spec.update({mass_column: (mass_column, "sum") for mass_column in mass_columns})
 
-        arm_mass = (
-            overlaps.groupby(
-                [cell_col, "arm_id"],
-                observed=True,
-                as_index=False,
-            )
-            .agg(**aggregation_spec)
-        )
+        arm_mass = overlaps.groupby([cell_col, "arm_id"], observed=True, as_index=False, sort=False).agg(**aggregation_spec)
 
-        background = background.merge(
-            arm_mass,
-            on=[cell_col, "arm_id"],
-            how="left",
-            validate="one_to_one",
-        )
-
-        background["reported_segment_fraction"] = background[
-            "_reported_segment_fraction"
-        ].fillna(0.0)
+        background = background.merge(arm_mass, on=[cell_col, "arm_id"], how="left", validate="one_to_one")
+        background["reported_segment_fraction"] = background["_reported_segment_fraction"].fillna(0.0)
         background["p_neu"] += background["_neutral_delta"].fillna(0.0)
 
-        for state, mass_column in zip(
-            ALTERED_STATES,
-            mass_columns,
-            strict=True,
-        ):
+        for state, mass_column in zip(ALTERED_STATES, mass_columns, strict=True):
             background[f"p_{state}"] += background[mass_column].fillna(0.0)
 
-        background = background.drop(
-            columns=[
-                "_reported_segment_fraction",
-                "_neutral_delta",
-                *mass_columns,
-            ]
-        )
+        background = background.drop(columns=["_reported_segment_fraction", "_neutral_delta", *mass_columns])
 
-    if (
-        background["reported_segment_fraction"]
-        > 1.0 + probability_tolerance
-    ).any():
-        raise ValueError(
-            "Reported segments cover an arm more than once for at least "
-            "one barcode."
-        )
+    if (background["reported_segment_fraction"] > 1.0 + probability_tolerance).any():
+        raise ValueError("Reported segments cover an arm more than once for at least "
+                         "one barcode.")
 
     arm_probabilities = background.loc[:, CNA_STATE_COLS].to_numpy(dtype=float)
-    if (
-        (arm_probabilities < -probability_tolerance).any()
-        or (arm_probabilities > 1.0 + probability_tolerance).any()
-    ):
-        raise ValueError(
-            "Arm projection produced CNA probabilities outside [0, 1]."
-        )
-    if not np.allclose(
-        arm_probabilities.sum(axis=1),
-        1.0,
-        atol=probability_tolerance,
-        rtol=0,
-    ):
-        raise ValueError(
-            "Projected chromosome-arm state probabilities do not sum to one."
-        )
+    if ((arm_probabilities < -probability_tolerance).any() or (arm_probabilities > 1.0 + probability_tolerance).any()):
+        raise ValueError("Arm projection produced CNA probabilities outside [0, 1].")
+        
+    if not np.allclose(arm_probabilities.sum(axis=1), 1.0, atol=probability_tolerance, rtol=0):
+        raise ValueError("Projected chromosome-arm state probabilities do not sum to one.")
 
     arm_probabilities = np.clip(arm_probabilities, 0.0, 1.0)
     arm_probabilities /= arm_probabilities.sum(axis=1, keepdims=True)
@@ -965,62 +842,33 @@ def build_barcode_arm_posteriors(
     background["p_loss"] = background["p_del"] + background["p_bdel"]
     background["p_cnv"] = 1.0 - background["p_neu"]
     background["signed_cna"] = background["p_gain"] - background["p_loss"]
-    background["expected_altered_bp"] = (
-        background["p_cnv"] * background["arm_length"]
-    )
+    background["expected_altered_bp"] = background["p_cnv"] * background["arm_length"]
 
     probabilities = background.loc[:, CNA_STATE_COLS].to_numpy(dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
-        entropy = -np.where(
-            probabilities > 0,
-            probabilities * np.log(probabilities),
-            0.0,
-        ).sum(axis=1)
+        entropy = -np.where(probabilities > 0, probabilities * np.log(probabilities), 0.0).sum(axis=1)
     background["state_entropy"] = entropy / np.log(len(CNA_STATES))
 
     dominant_index = probabilities.argmax(axis=1)
     state_names = np.asarray(CNA_STATES, dtype=object)
     background["dominant_state"] = state_names[dominant_index]
-    background["dominant_probability"] = probabilities[
-        np.arange(len(background)),
-        dominant_index,
-    ]
+    background["dominant_probability"] = probabilities[np.arange(len(background)), dominant_index]
 
-    metadata_columns = [
-        column
-        for column in clone_metadata_cols
-        if column in clone_table.columns and column != cell_col
-    ]
+    metadata_columns = [column for column in clone_metadata_cols if column in clone_table.columns and column != cell_col]
     metadata = clone_table.loc[:, [cell_col, *metadata_columns]].copy()
     if "p_cnv" in metadata.columns:
         metadata = metadata.rename(columns={"p_cnv": "clone_p_cnv"})
 
-    background = background.merge(
-        metadata,
-        on=cell_col,
-        how="left",
-        validate="many_to_one",
-    )
+    background = background.merge(metadata, on=cell_col, how="left", validate="many_to_one")
 
-    arm_order = {
-        arm_id: position
-        for position, arm_id in enumerate(arms["arm_id"])
-    }
-    barcode_order = {
-        barcode: position
-        for position, barcode in enumerate(barcodes[cell_col])
-    }
+    arm_order = {arm_id: position for position, arm_id in enumerate(arms["arm_id"])}
+    barcode_order = {barcode: position for position, barcode in enumerate(barcodes[cell_col])}
     background["_arm_order"] = background["arm_id"].map(arm_order)
     background["_barcode_order"] = background[cell_col].map(barcode_order)
 
-    return (
-        background.sort_values(
-            ["_barcode_order", "_arm_order"],
-            kind="mergesort",
-        )
-        .drop(columns=["_barcode_order", "_arm_order"])
-        .reset_index(drop=True)
-    )
+    return (background.sort_values(["_barcode_order","_arm_order"],
+                                   kind="mergesort").drop(columns=["_barcode_order", 
+                                                                   "_arm_order"]).reset_index(drop=True))
 
 
 def build_spacenumbat_arm_posteriors(
@@ -1098,7 +946,7 @@ def arm_probability_matrices(
     arm_order: Sequence[str] | None = None,
     value_cols: Sequence[str] | None = None,
     validate_complete: bool = True,
-) -> dict[str, pd.DataFrame]:
+    ) -> dict[str, pd.DataFrame]:
     """Create one barcode × chromosome-arm matrix per requested quantity."""
     required_identifiers = {cell_col, arm_col}
     missing = required_identifiers.difference(barcode_arm_posteriors.columns)
