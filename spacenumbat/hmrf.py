@@ -109,7 +109,7 @@ def _mean_field_potts(
                          f"{adjacency.shape} and {log_scores.shape}.")
 
     D = np.asarray(A.sum(0)).ravel()
-    D_inv_sqrt = np.diag(np.divide(1,
+    D_inv_sqrt = sp.diag(np.divide(1,
                                    np.sqrt(D),
                                    where=D>0, 
                                    out=np.zeros_like(D)))
