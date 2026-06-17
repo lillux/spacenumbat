@@ -685,7 +685,11 @@ def run_spacenumbat(
         
         log.info(f"Tree building completed, pass {i}")
         
-        clone_post = phylo.get_clone_post(gtree, exp_post, allele_post)
+        clone_post = phylo.get_clone_post(gtree=gtree,
+                                          exp_post=exp_post,
+                                          allele_post=allele_post,
+                                          joint_post=joint_post)
+        
         clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
     
         normal_cells = clone_post[clone_post.p_cnv <= 0.5].cell
