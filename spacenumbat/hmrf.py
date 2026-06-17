@@ -269,8 +269,8 @@ def hmrf_regularize_joint_post(
     result["Z"] = 0.0
     result["Z_cnv"] = np.log(np.clip(result["p_cnv"].to_numpy(dtype=float), eps, 1.0))
     result["Z_n"] = np.log(np.clip(result["p_n"].to_numpy(dtype=float), eps, 1.0,))
+    result["Z_neu"] = result["Z_n"]
 
-    # Canonical name: no spatial-method suffix.
     result["logBF"] = result["Z_cnv"] - result["Z_n"]
     
     return result

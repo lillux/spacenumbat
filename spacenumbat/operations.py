@@ -1173,50 +1173,21 @@ def _compute_posterior_numba(
 
     for i in prange(n):
         # Amplification combines two underlying likelihood configurations.
-        log_prior_amp = _safe_log_scaled_prior(
-            prior_amp[i],
-            4.0,
-        )
+        log_prior_amp = _safe_log_scaled_prior(prior_amp[i], 4.0)
 
-        amp_21 = numeric.safe_add(
-            l21[i],
-            log_prior_amp,
-        )
-        amp_31 = numeric.safe_add(
-            l31[i],
-            log_prior_amp,
-        )
+        amp_21 = numeric.safe_add(l21[i], log_prior_amp)
+        amp_31 = numeric.safe_add(l31[i], log_prior_amp)
 
         amp_values = np.empty(2, dtype=np.float64)
         amp_values[0] = amp_21
         amp_values[1] = amp_31
 
         z_amp = numeric.log_sum_exp(amp_values)
-
-        z_loh = numeric.safe_add(
-            l20[i],
-            _safe_log_scaled_prior(prior_loh[i], 2.0),
-        )
-
-        z_del = numeric.safe_add(
-            l10[i],
-            _safe_log_scaled_prior(prior_del[i], 2.0),
-        )
-
-        z_bamp = numeric.safe_add(
-            l22[i],
-            _safe_log_scaled_prior(prior_bamp[i], 2.0),
-        )
-
-        z_bdel = numeric.safe_add(
-            l00[i],
-            _safe_log_scaled_prior(prior_bdel[i], 2.0),
-        )
-
-        z_neu = numeric.safe_add(
-            l11[i],
-            log_half,
-        )
+        z_loh = numeric.safe_add(l20[i], _safe_log_scaled_prior(prior_loh[i], 2.0))
+        z_del = numeric.safe_add(l10[i], _safe_log_scaled_prior(prior_del[i], 2.0))
+        z_bamp = numeric.safe_add(l22[i], _safe_log_scaled_prior(prior_bamp[i], 2.0))
+        z_bdel = numeric.safe_add(l00[i], _safe_log_scaled_prior(prior_bdel[i], 2.0))
+        z_neu = numeric.safe_add(l11[i], log_half)
 
         Z_amp[i] = z_amp
         Z_loh[i] = z_loh
@@ -1255,16 +1226,8 @@ def _compute_posterior_numba(
         p_bamp[i] = numeric.safe_exp_difference(z_bamp, z_total)
         p_bdel[i] = numeric.safe_exp_difference(z_bdel, z_total)
 
-        logBF[i] = numeric.safe_subtract(
-            z_cnv,
-            z_neu,
-        )
-
-        p_cnv[i] = numeric.safe_exp_difference(
-            z_cnv,
-            z_total,
-        )
-
+        logBF[i] = numeric.safe_subtract(z_cnv, z_neu)
+        p_cnv[i] = numeric.safe_exp_difference(z_cnv, z_total)
         p_n[i] = p_neu[i]
 
     return (
@@ -1349,6 +1312,7 @@ def compute_posterior(PL: pd.DataFrame) -> pd.DataFrame:
     PL_out['Z_bamp'] = Z_bamp
     PL_out['Z_bdel'] = Z_bdel
     PL_out['Z_n'] = Z_n
+    PL_out["Z_neu"] = Z_n
 
     PL_out['Z'] = Z
     PL_out['Z_cnv'] = Z_cnv
@@ -1359,6 +1323,7 @@ def compute_posterior(PL: pd.DataFrame) -> pd.DataFrame:
     PL_out['p_bamp'] = p_bamp
     PL_out['p_bdel'] = p_bdel
     PL_out['logBF'] = logBF
+    #PL_out['log_odds'] = logBF
     PL_out['p_cnv'] = p_cnv
     PL_out['p_n'] = p_n
     
@@ -2150,6 +2115,16 @@ def expand_states(
         # Append the cnv_state to the seg identifier.
         sc_post_multi['seg'] = sc_post_multi['seg'].astype("string") + '_' + sc_post_multi['cnv_state'].astype("string")
         
+        state_score_columns = {
+          "neu": "Z_neu",
+          "loh": "Z_loh",
+          "del": "Z_del",
+          "amp": "Z_amp",
+          "bamp": "Z_bamp",
+          "bdel": "Z_bdel",
+          }
+        
+        
         # For each row, dynamically select the posterior values based on cnv_state.
         def select_posteriors(row):
             state = row["cnv_state"]
@@ -2175,6 +2150,38 @@ def expand_states(
                 row["logBF"] = np.log(p_alt) - np.log(p_ref)
             else:
                 row["logBF"] = np.nan
+
+            return row
+        
+        
+        def select_posteriors(row):
+            state = str(row["cnv_state"])
+
+            score_columns = list(state_score_columns.values())
+            state_names = list(state_score_columns)
+            scores = row.loc[score_columns].to_numpy(dtype=np.float64)
+            event_index = state_names.index(state)
+            z_event = float(scores[event_index])
+
+            complement_scores = np.ascontiguousarray(np.delete(scores, event_index),
+                                                     dtype=np.float64)
+            z_not_event = numeric.log_sum_exp(complement_scores)
+            binary_scores = np.ascontiguousarray(np.array([z_event, z_not_event],
+                                                          dtype=np.float64))
+            z_total = numeric.log_sum_exp(binary_scores)
+            p_event = numeric.safe_exp_difference(z_event,z_total,)
+            p_not_event = numeric.safe_exp_difference(z_not_event,z_total)
+
+            # Binary event-versus-complement representation used by the tree.
+            row["Z_cnv"] = z_event
+            row["Z_n"] = z_not_event
+            row["Z"] = z_total
+
+            row["p_cnv"] = p_event
+            row["p_n"] = p_not_event
+
+            row["logBF"] = numeric.safe_subtract(z_event,
+                                                 z_not_event)
 
             return row
 
