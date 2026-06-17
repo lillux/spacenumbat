@@ -147,9 +147,13 @@ def hmrf_regularize_joint_post(
     """
     Apply an independent Potts HMRF to each genomic segment.
 
-    The local likelihood and posterior columns are not modified. Local posterior
-    probabilities are preserved with a ``_local`` suffix, while the standard
-    ``p_*`` columns are replaced with HMRF approximate marginal probabilities.
+    The canonical posterior columns ``p_*``, ``p_cnv``, ``p_n``,
+    ``Z_*``, ``Z``, ``Z_cnv``, ``logBF``, and ``cnv_state_map``
+    are replaced by the spatially regularized HMRF values.
+    
+    Local posterior copies are not retained. Raw expression and allele
+    likelihood columns remain available in the joint table.
+
 
     Parameters
     ----------
@@ -193,24 +197,7 @@ def hmrf_regularize_joint_post(
         )
 
     result = joint_post.copy()
-
-    # Keep non-spatial posterior for diagnostics.
-    local_columns = (
-        *_HMRF_PROB_COLUMNS,
-        "p_cnv",
-        "p_n",
-        "logBF",
-    )
-    for column in local_columns:
-        if column in result.columns:
-            result[f"{column}_local"] = result[column]
-
     state_array = np.asarray(_HMRF_STATES)
-
-    local_probability_matrix = result.loc[:, _HMRF_PROB_COLUMNS].to_numpy(dtype=float)
-
-    result["cnv_state_map_local"] = state_array[np.argmax(local_probability_matrix, axis=1)]
-
     result["hmrf_iterations"] = 0
     result["hmrf_converged"] = False
 
@@ -270,13 +257,20 @@ def hmrf_regularize_joint_post(
     result["p_n"] = result["p_neu"]
 
     probability_matrix = result.loc[:, _HMRF_PROB_COLUMNS].to_numpy(dtype=float)
-
     result["cnv_state_map"] = state_array[np.argmax(probability_matrix, axis=1)]
 
     # HMRF posterior log odds.
     eps = 1e-12
-    result["logBF_hmrf"] = (np.log(result["p_cnv"].clip(eps, 1.0 - eps))
-                            - np.log(result["p_neu"].clip(eps, 1.0 - eps))
-                            )
+    
+    log_probability_matrix = np.log(np.clip(probability_matrix, eps, 1.0))
 
+    result.loc[:, list(_HMRF_SCORE_COLUMNS)] = log_probability_matrix
+
+    result["Z"] = 0.0
+    result["Z_cnv"] = np.log(np.clip(result["p_cnv"].to_numpy(dtype=float), eps, 1.0))
+    result["Z_n"] = np.log(np.clip(result["p_n"].to_numpy(dtype=float), eps, 1.0,))
+
+    # Canonical name: no spatial-method suffix.
+    result["logBF"] = result["Z_cnv"] - result["Z_n"]
+    
     return result

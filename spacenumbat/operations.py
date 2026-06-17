@@ -2152,13 +2152,30 @@ def expand_states(
         
         # For each row, dynamically select the posterior values based on cnv_state.
         def select_posteriors(row):
-            state = row['cnv_state']
-            # Retrieve the posterior value from the column 'p_{state}' if it exists; default to NaN otherwise.
+            state = row["cnv_state"]
             p_col = f"p_{state}"
             z_col = f"Z_{state}"
-            row['p_cnv'] = row.get(p_col, np.nan)
-            row['p_n'] = 1 - row['p_cnv'] if pd.notna(row['p_cnv']) else np.nan
-            row['Z_cnv'] = row.get(z_col, np.nan)
+
+            p_cnv = row.get(p_col, np.nan)
+
+            row["p_cnv"] = p_cnv
+            row["p_n"] = (
+                1.0 - p_cnv
+                if pd.notna(p_cnv)
+                else np.nan
+            )
+            row["Z_cnv"] = row.get(z_col, np.nan)
+
+            # logBF must describe the posterior values stored in this row.
+            if pd.notna(row["p_cnv"]) and pd.notna(row["p_n"]):
+                eps = 1e-12
+                p_alt = np.clip(float(row["p_cnv"]), eps, 1.0)
+                p_ref = np.clip(float(row["p_n"]), eps, 1.0)
+
+                row["logBF"] = np.log(p_alt) - np.log(p_ref)
+            else:
+                row["logBF"] = np.nan
+
             return row
 
         sc_post_multi = sc_post_multi.apply(select_posteriors, axis=1)

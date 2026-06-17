@@ -636,10 +636,6 @@ def run_spacenumbat(
             
         joint_post.loc[:, "avg_entropy"] = operations.joint_post_entropy(joint_post)
         
-        if "p_cnv_local" in joint_post.columns:
-            local_entropy_input = joint_post.assign(p_cnv=joint_post["p_cnv_local"])
-            joint_post.loc[:, "avg_entropy_local"] = (operations.joint_post_entropy(local_entropy_input))        
-            
         if multi_allelic:
             exp_post = operations.expand_states(exp_post, segs_consensus)
             allele_post = operations.expand_states(allele_post, segs_consensus)
