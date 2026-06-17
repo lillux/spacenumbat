@@ -191,29 +191,21 @@ def hmrf_regularize_joint_post(
     }
     missing = required_columns.difference(joint_post.columns)
     if missing:
-        raise KeyError(
-            "joint_post is missing HMRF input columns: "
-            f"{sorted(missing)}"
-        )
+        raise KeyError("joint_post is missing HMRF input columns: "
+                       f"{sorted(missing)}")
 
     result = joint_post.copy()
     state_array = np.asarray(_HMRF_STATES)
     result["hmrf_iterations"] = 0
     result["hmrf_converged"] = False
 
-    grouped = result.groupby(
-        "seg",
-        observed=True,
-        sort=False,
-    )
+    grouped = result.groupby("seg", observed=True, sort=False)
 
     for segment, group in grouped:
         cells = group["cell"].astype(str).tolist()
 
         if len(cells) != len(set(cells)):
-            raise ValueError(
-                f"Segment {segment!r} contains duplicated cell identifiers."
-            )
+            raise ValueError(f"Segment {segment!r} contains duplicated cell identifiers.")
 
         missing_cells = [cell for cell in cells if cell not in adata.obs_names]
         if missing_cells:
@@ -226,7 +218,7 @@ def hmrf_regularize_joint_post(
         adjacency = view.obsp[connectivity_key].tocsr()
 
         # Simple Potts graph: only presence/absence of an edge matters.
-        adjacency = (adjacency > 0).astype(float)
+        #adjacency = (adjacency > 0).astype(float)
         adjacency.setdiag(0)
         adjacency.eliminate_zeros()
 
@@ -244,10 +236,7 @@ def hmrf_regularize_joint_post(
             damping=damping,
         )
 
-        result.loc[
-            group.index,
-            list(_HMRF_PROB_COLUMNS),
-        ] = probabilities
+        result.loc[group.index, list(_HMRF_PROB_COLUMNS)] = probabilities
 
         result.loc[group.index, "hmrf_iterations"] = n_iter
         result.loc[group.index, "hmrf_converged"] = converged
@@ -260,7 +249,7 @@ def hmrf_regularize_joint_post(
     result["cnv_state_map"] = state_array[np.argmax(probability_matrix, axis=1)]
 
     # HMRF posterior log odds.
-    eps = 1e-12
+    eps = 1e-15
     
     log_probability_matrix = np.log(np.clip(probability_matrix, eps, 1.0))
 
