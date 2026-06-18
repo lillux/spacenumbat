@@ -64,11 +64,13 @@ def _get_unique_log_filename(base_name: str, log_dir: Union[str, Path]) -> Path:
         if not candidate.exists():
             return candidate
         i += 1
+    return
+
 
 def _build_default_config(
     log_dir: Optional[Union[str, Path]] = None,
     level: str = "INFO"
-) -> dict:
+    ) -> dict:
     """
     Constructs a default logging configuration dictionary.
 
@@ -112,7 +114,7 @@ def _build_default_config(
 def configure(
     level: str = "INFO",
     log_dir: Optional[Union[str, Path]] = None
-) -> None:
+    ) -> None:
     """
     Configures logging for the package.
 

@@ -121,7 +121,8 @@ def build_distance_weights(
         Symmetric CSR matrix W (n x n) with the same sparsity pattern as D and A, containing
         nonnegative edge weights derived from distances.
 
-    """    
+    """
+    eps = 1e-15
     # A: sparse adjacency.
     # D: sparse distances on the same edges.
     # Align distances to edges (zero elsewhere)
@@ -130,10 +131,10 @@ def build_distance_weights(
     # Choose decay kernel. Defaults is median neighbor distance
     if kind == "gaussian":
         sigma = float(np.median(d[d>0])) if sigma is None and np.any(d>0) else (sigma or 1.0)
-        w = np.exp(-(d**2) / (sigma**2 + 1e-12))
+        w = np.exp(-(d**2) / (sigma**2 + eps))
     elif kind == "exp":
         ell = float(np.median(d[d>0])) if ell is None and np.any(d>0) else (ell or 1.0)
-        w = np.exp(-d / (ell+1e-12))
+        w = np.exp(-d / (ell+eps))
     elif kind == "invdist":
         w = 1.0 / np.power(d + 1e-6, p)
     elif kind == "cauchy":
@@ -228,9 +229,10 @@ def _random_walk_diffuse(
     ndarray, shape (n_nodes, n_features)
         Diffused features after the specified number of steps.
     """
+    eps = 1e-15
     deg = np.asarray(A.sum(axis=1)).ravel()
     with np.errstate(divide='ignore'):
-        dinv = 1.0 / np.maximum(deg, 1e-12)
+        dinv = 1.0 / np.maximum(deg, eps)
     RW = sp.diags(dinv) @ A  # inverse distance * Adj
     Z = X.copy()
     for _ in range(steps):
@@ -291,7 +293,7 @@ def _pagerank_diffuse(
 
     # Coifman diffusion: W = D^{-cf} A D^{-cf}
     deg = np.asarray(A.sum(axis=1)).ravel()
-    eps = 1e-12
+    eps = 1e-15
     d_pow = np.power(np.maximum(deg, eps), -coifman_alpha)
     Dcf_inv = sp.diags(d_pow)
     W = Dcf_inv @ A @ Dcf_inv

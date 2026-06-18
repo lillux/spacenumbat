@@ -1528,7 +1528,7 @@ def get_exp_post(
    
     prior_cols = ['prior_loh','prior_amp','prior_del','prior_bamp','prior_bdel']
     for c in prior_cols:
-        exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-12
+        exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-15
     #log.info('Disabling system warnings...')
     #warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
@@ -2143,7 +2143,7 @@ def expand_states(
 
             # logBF must describe the posterior values stored in this row.
             if pd.notna(row["p_cnv"]) and pd.notna(row["p_n"]):
-                eps = 1e-12
+                eps = 1e-15
                 p_alt = np.clip(float(row["p_cnv"]), eps, 1.0)
                 p_ref = np.clip(float(row["p_n"]), eps, 1.0)
 

@@ -1050,7 +1050,7 @@ def get_clone_post(
     Z_cnv_col: str = "Z_cnv",
     Z_n_col: str = "Z_n",
     joint_post: Optional[pd.DataFrame] = None,
-    probability_eps: float = 1e-12,
+    probability_eps: float = 1e-15,
     ) -> pd.DataFrame:
     """
     Compute per-cell posterior probabilities over clone genotypes.
@@ -1097,7 +1097,7 @@ def get_clone_post(
         its ``p_cnv`` and ``p_n`` columns. When HMRF is enabled, these contain
         the spatially regularized probabilities.
 
-    probability_eps : float, default=1e-12
+    probability_eps : float, default=5
         Lower probability bound used before taking logarithms.
 
     Returns
