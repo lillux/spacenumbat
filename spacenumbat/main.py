@@ -232,14 +232,11 @@ def run_spacenumbat(
                            f"Available keys: {list(count_mat.obsp.keys())}")
     
         if spatial_method != "hmrf":
-            count_mat = spatial_utils.get_spatial_info(
-                counts_mat=count_mat,
-                ncores=ncores,
-                distance_key=distance_key,
-                kind=spatial_decay,
-                connectivity_key=connectivity_key,
-            )
-        
+            count_mat = spatial_utils.get_spatial_info(counts_mat=count_mat,
+                                                       ncores=ncores,
+                                                       distance_key=distance_key,
+                                                       kind=spatial_decay,
+                                                       connectivity_key=connectivity_key)
         
     count_mat = utils.check_anndata(count_mat, count_to_int=False)
     df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)

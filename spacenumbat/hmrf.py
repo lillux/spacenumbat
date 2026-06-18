@@ -46,10 +46,8 @@ def _row_softmax(logits: np.ndarray) -> np.ndarray:
     row_max = np.max(logits, axis=1, keepdims=True)
     if not np.all(np.isfinite(row_max)):
         bad_rows = np.flatnonzero(~np.isfinite(row_max.ravel()))
-        raise ValueError(
-            "At least one HMRF node has no finite state score. "
-            f"Invalid row indices: {bad_rows[:10].tolist()}"
-        )
+        raise ValueError("At least one HMRF node has no finite state score. "
+                         f"Invalid row indices: {bad_rows[:10].tolist()}")
 
     probabilities = np.exp(logits - row_max)
     denominator = probabilities.sum(axis=1, keepdims=True)
@@ -178,10 +176,8 @@ def hmrf_regularize_joint_post(
         Joint posterior table containing local and HMRF probabilities.
     """
     if connectivity_key not in adata.obsp:
-        raise KeyError(
-            f"{connectivity_key!r} is not present in adata.obsp. "
-            f"Available keys: {list(adata.obsp.keys())}"
-        )
+        raise KeyError(f"{connectivity_key!r} is not present in adata.obsp. "
+                       f"Available keys: {list(adata.obsp.keys())}")
 
     required_columns = {
         "cell",
@@ -227,17 +223,14 @@ def hmrf_regularize_joint_post(
 
         log_scores = group.loc[:, _HMRF_SCORE_COLUMNS].to_numpy(dtype=float)
 
-        probabilities, n_iter, converged = _mean_field_potts(
-            log_scores=log_scores,
-            adjacency=adjacency,
-            beta=beta,
-            max_iter=max_iter,
-            tol=tol,
-            damping=damping,
-        )
+        probabilities, n_iter, converged = _mean_field_potts(log_scores=log_scores,
+                                                             adjacency=adjacency,
+                                                             beta=beta,
+                                                             max_iter=max_iter,
+                                                             tol=tol,
+                                                             damping=damping)
 
         result.loc[group.index, list(_HMRF_PROB_COLUMNS)] = probabilities
-
         result.loc[group.index, "hmrf_iterations"] = n_iter
         result.loc[group.index, "hmrf_converged"] = converged
 
