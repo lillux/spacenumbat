@@ -17,9 +17,8 @@ from typing import Dict
 
 # A mapping between attribute names and the corresponding .tsv file names
 _DATA_FILES: Dict[str, str] = {
-    "hg38": "gtf_hg38.tsv",
-    "hg19": "gtf_hg19.tsv",
-    "mm10": "gtf_mm10.tsv",
+    "hg38": "hg38_10x_2024_gencode44_ensembl110_autosome_gtf.tsv",
+    "hg38_old": "gtf_hg38.tsv",
     "ref_hca" : "ref_hca.tsv",
 }
 
