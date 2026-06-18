@@ -63,8 +63,8 @@ def _row_softmax(logits: np.ndarray) -> np.ndarray:
 def _mean_field_potts(
     log_scores: np.ndarray,
     adjacency: sp.spmatrix,
-    beta: float = 0.5,
-    max_iter: int = 50,
+    beta: float = 0.25,
+    max_iter: int = 15,
     tol: float = 1e-5,
     damping: float = 0.5,
     ) -> tuple[np.ndarray, int, bool]:
@@ -139,8 +139,8 @@ def hmrf_regularize_joint_post(
     joint_post: pd.DataFrame,
     adata: ad.AnnData,
     connectivity_key: str = "spatial_connectivities",
-    beta: float = 0.5,
-    max_iter: int = 50,
+    beta: float = 0.25,
+    max_iter: int = 15,
     tol: float = 1e-5,
     damping: float = 0.5,
     ) -> pd.DataFrame:

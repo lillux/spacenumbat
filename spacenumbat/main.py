@@ -90,7 +90,7 @@ def run_spacenumbat(
     gtf : str or Path    
         dataframe Transcript GTF, if NULL will use the default GTF for the specified genome 
     genome : str, optional
-        Genome version (e.g., 'hg38', 'hg19', or 'mm10'). Default is 'hg38'.
+        Genome version (e.g., 'hg38', 'hg38_old'). Default is 'hg38'.
     out_dir : str, optional
         Output directory. Default is the system temporary directory.
     gamma : float, optional
@@ -204,20 +204,17 @@ def run_spacenumbat(
     if gtf is None:
         if genome == "hg38":
             gtf = spacenumbat.data.hg38
-        elif genome == "hg19":
-            gtf = spacenumbat.data.hg19
-        elif genome == "mm10":
-            gtf = spacenumbat.data.mm10
-            filter_hla_hg38=False
-            filter_chromosome_segments=None
+        elif genome == "hg38_old":
+            gtf = spacenumbat.data.hg38_old
         else:
-            msg = f"genome version must be hg38, hg19, or mm10, not {genome}"
+            msg = (f"genome version must be hg38 or hg38_old, not {genome}.\n"
+                   f"To supply custom genome reference use the 'gtf' argument.")
             raise ValueError(msg)
     else:
         msg=(f"You have passed a custom reference genome.\n"
              f"filter_hla_hg38 is: {filter_hla_hg38}.\n"
-             f"You can supply a pandas.DataFrame with genome segment to skip\n"
-             f"using the variable filter_chromosome_segments, that is currently:\n"
+             f"You can supply a pandas.DataFrame with genome segment to be skipped \n"
+             f"using the argument 'filter_chromosome_segments', that is currently:\n"
              f"{filter_chromosome_segments}.\n")
         log.info(msg)
         
@@ -231,10 +228,8 @@ def run_spacenumbat(
         
     if spatial:
         if connectivity_key not in count_mat.obsp:
-            raise KeyError(
-                f"{connectivity_key!r} is required when spatial=True. "
-                f"Available keys: {list(count_mat.obsp.keys())}"
-            )
+            raise KeyError(f"{connectivity_key!r} is required when spatial=True. "
+                           f"Available keys: {list(count_mat.obsp.keys())}")
     
         if spatial_method != "hmrf":
             count_mat = spatial_utils.get_spatial_info(
