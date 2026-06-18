@@ -19,6 +19,7 @@ from typing import Dict
 _DATA_FILES: Dict[str, str] = {
     "hg38": "hg38_10x_2024_gencode44_ensembl110_autosome_gtf.tsv",
     "hg38_old": "gtf_hg38.tsv",
+    "hg38_arms" : "cytoBand_arms.tsv",
     "ref_hca" : "ref_hca.tsv",
 }
 
