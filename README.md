@@ -59,7 +59,7 @@ At iteration $t$, the mean-field proposal and damped update are:
 
 $$
 \widetilde{q}_i^{(t+1)} =
-\operatorname{softmax}\left(
+\mathop{\text{softmax}}\left(
     s_i + \beta \sum_j \bar{A}_{ij} q_j^{(t)}
 \right),
 $$
