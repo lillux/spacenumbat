@@ -897,7 +897,10 @@ def build_spacenumbat_arm_posteriors(
         "compartment_opt",
     ),
     ) -> dict[str, pd.DataFrame]:
-    """Collapse expanded SpaceNumbat rows and build arm-level posteriors."""
+    """
+    Collapse expanded SpaceNumbat rows and build arm-level posteriors.
+    """
+    
     resolved_joint_post, resolution_log = resolve_multistate_joint_segments(
         joint_post=joint_post,
         segs_consensus=segs_consensus,
@@ -947,96 +950,59 @@ def arm_probability_matrices(
     value_cols: Sequence[str] | None = None,
     validate_complete: bool = True,
     ) -> dict[str, pd.DataFrame]:
-    """Create one barcode × chromosome-arm matrix per requested quantity."""
+    """
+    Create one barcode × chromosome-arm matrix per requested quantity.
+    """
+    
     required_identifiers = {cell_col, arm_col}
     missing = required_identifiers.difference(barcode_arm_posteriors.columns)
     if missing:
-        raise KeyError(
-            "barcode_arm_posteriors is missing identifier columns: "
-            f"{sorted(missing)}"
-        )
+        raise KeyError("barcode_arm_posteriors is missing identifier columns: "
+                       f"{sorted(missing)}")
 
     if barcode_arm_posteriors[cell_col].isna().any():
-        raise ValueError(
-            f"barcode_arm_posteriors[{cell_col!r}] contains missing barcodes."
-        )
+        raise ValueError(f"barcode_arm_posteriors[{cell_col!r}] contains missing barcodes.")
     if barcode_arm_posteriors[arm_col].isna().any():
-        raise ValueError(
-            f"barcode_arm_posteriors[{arm_col!r}] contains missing arms."
-        )
+        raise ValueError(f"barcode_arm_posteriors[{arm_col!r}] contains missing arms.")
 
-    duplicated_pairs = barcode_arm_posteriors.duplicated(
-        [cell_col, arm_col],
-        keep=False,
-    )
+    duplicated_pairs = barcode_arm_posteriors.duplicated([cell_col, arm_col], keep=False)
     if duplicated_pairs.any():
-        examples = (
-            barcode_arm_posteriors.loc[
-                duplicated_pairs,
-                [cell_col, arm_col],
-            ]
-            .drop_duplicates()
-            .head(10)
-        )
-        raise ValueError(
-            "barcode_arm_posteriors must contain one row per barcode "
-            f"and arm. Duplicated pairs include:\n{examples}"
-        )
+        examples = (barcode_arm_posteriors.loc[duplicated_pairs,
+                                               [cell_col, arm_col]].drop_duplicates().head(10))
+        raise ValueError("barcode_arm_posteriors must contain one row per barcode "
+                         f"and arm. Duplicated pairs include:\n{examples}")
 
     if value_cols is None:
         resolved_value_cols = list(DEFAULT_ARM_MATRIX_VALUE_COLS)
     else:
         if isinstance(value_cols, (str, bytes)):
-            raise TypeError(
-                "value_cols must be a sequence of column names, not a string."
-            )
+            raise TypeError("value_cols must be a sequence of column names, not a string.")
         resolved_value_cols = list(value_cols)
 
-    invalid_columns = [
-        column
-        for column in resolved_value_cols
-        if not isinstance(column, str) or not column.strip()
-    ]
+    invalid_columns = [column for column in resolved_value_cols if not isinstance(column, str) or not column.strip()]
     if invalid_columns:
-        raise TypeError(
-            "Every value_cols entry must be a non-empty string. "
-            f"Invalid entries: {invalid_columns}"
-        )
+        raise TypeError("Every value_cols entry must be a non-empty string. "
+                        f"Invalid entries: {invalid_columns}")
 
     duplicated_values = pd.Index(resolved_value_cols).duplicated(keep=False)
     if duplicated_values.any():
-        duplicates = (
-            pd.Index(resolved_value_cols)[duplicated_values]
-            .unique()
-            .tolist()
-        )
-        raise ValueError(
-            f"value_cols contains duplicated column names: {duplicates}"
-        )
+        duplicates = pd.Index(resolved_value_cols)[duplicated_values].unique().tolist()
+        
+        raise ValueError(f"value_cols contains duplicated column names: {duplicates}")
 
-    missing = set(resolved_value_cols).difference(
-        barcode_arm_posteriors.columns
-    )
+    missing = set(resolved_value_cols).difference(barcode_arm_posteriors.columns)
     if missing:
-        raise KeyError(
-            "barcode_arm_posteriors is missing requested arm quantities: "
-            f"{sorted(missing)}"
-        )
+        raise KeyError("barcode_arm_posteriors is missing requested arm quantities: "
+                       f"{sorted(missing)}")
 
-    cell_order = (
-        barcode_arm_posteriors[cell_col].drop_duplicates().tolist()
-    )
-    available_arm_order = (
-        barcode_arm_posteriors[arm_col].drop_duplicates().tolist()
-    )
+    cell_order = barcode_arm_posteriors[cell_col].drop_duplicates().tolist()
+    available_arm_order = barcode_arm_posteriors[arm_col].drop_duplicates().tolist()
 
     if arm_order is None:
         resolved_arm_order = available_arm_order
     else:
         if isinstance(arm_order, (str, bytes)):
-            raise TypeError(
-                "arm_order must be a sequence of arm identifiers, not a string."
-            )
+            raise TypeError("arm_order must be a sequence of arm identifiers, not a string.")
         resolved_arm_order = list(arm_order)
 
         if pd.isna(resolved_arm_order).any():
@@ -1044,28 +1010,16 @@ def arm_probability_matrices(
 
         duplicated_arms = pd.Index(resolved_arm_order).duplicated(keep=False)
         if duplicated_arms.any():
-            duplicates = (
-                pd.Index(resolved_arm_order)[duplicated_arms]
-                .unique()
-                .tolist()
-            )
-            raise ValueError(
-                f"arm_order contains duplicated arm identifiers: {duplicates}"
-            )
+            duplicates = pd.Index(resolved_arm_order)[duplicated_arms].unique().tolist()
+            
+            raise ValueError(f"arm_order contains duplicated arm identifiers: {duplicates}")
 
-        unknown_arms = pd.Index(resolved_arm_order).difference(
-            pd.Index(available_arm_order)
-        )
+        unknown_arms = pd.Index(resolved_arm_order).difference(pd.Index(available_arm_order))
         if len(unknown_arms) > 0:
-            raise ValueError(
-                "arm_order contains arms absent from the input table: "
-                f"{unknown_arms.tolist()}"
-            )
+            raise ValueError("arm_order contains arms absent from the input table: "
+                             f"{unknown_arms.tolist()}")
 
-    selected = barcode_arm_posteriors.loc[
-        :,
-        [cell_col, arm_col, *resolved_value_cols],
-    ].copy()
+    selected = barcode_arm_posteriors.loc[:,[cell_col, arm_col, *resolved_value_cols]].copy()
 
     for value_col in resolved_value_cols:
         selected[value_col] = pd.to_numeric(
@@ -1075,31 +1029,20 @@ def arm_probability_matrices(
         values = selected[value_col].to_numpy(dtype=float)
         if not np.isfinite(values).all():
             bad_rows = np.flatnonzero(~np.isfinite(values))[:10].tolist()
-            raise ValueError(
-                f"Arm quantity {value_col!r} contains non-finite values. "
-                f"Example row positions: {bad_rows}"
-            )
+            raise ValueError(f"Arm quantity {value_col!r} contains non-finite values. "
+                             f"Example row positions: {bad_rows}")
 
     matrices: dict[str, pd.DataFrame] = {}
     for value_col in resolved_value_cols:
-        matrix = (
-            selected.pivot(
-                index=cell_col,
-                columns=arm_col,
-                values=value_col,
-            )
-            .reindex(index=cell_order, columns=resolved_arm_order)
-        )
+        matrix = selected.pivot(index=cell_col, 
+                                columns=arm_col,
+                                values=value_col).reindex(index=cell_order, 
+                                                          columns=resolved_arm_order)
 
         if validate_complete and matrix.isna().any().any():
-            missing_positions = (
-                matrix.isna().stack().loc[lambda values: values]
-                .index.tolist()[:10]
-            )
-            raise ValueError(
-                f"The {value_col!r} arm matrix is incomplete. Missing "
-                f"barcode–arm combinations include: {missing_positions}"
-            )
+            missing_positions = matrix.isna().stack().loc[lambda values: values].index.tolist()[:10]
+            raise ValueError(f"The {value_col!r} arm matrix is incomplete. Missing "
+                             f"barcode–arm combinations include: {missing_positions}")
 
         matrices[value_col] = matrix
 
