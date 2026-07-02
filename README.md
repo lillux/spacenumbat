@@ -44,7 +44,7 @@ $$
 5. Mean-field probabilities are initialized deterministically from the local posterior:
 
 $$
-q_i^{(0)} = \operatorname{softmax}(s_i).
+q_i^{(0)} = \mathop{\text{softmax}}(s_i).
 $$
 
 Preliminary expression clustering influences the HMRF indirectly through the pseudobulk HMM calls, consensus segmentation, and segment-level priors.
