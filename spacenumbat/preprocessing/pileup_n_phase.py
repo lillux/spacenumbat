@@ -23,9 +23,104 @@ import scipy.sparse as sp
 import pyranges as pr
 
 import spacenumbat
+from spacenumbat import diagnostics
 
 
 # Utility functions
+
+VALID_UMI_TAGS = {"Auto", "UB", "None", "XM"}
+
+
+def _split_csv(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def _validate_10x_inputs(
+    samples: list[str],
+    bams: list[str],
+    barcodes: list[str],
+    umi_tags: list[str],
+    ) -> None:
+    n = len(samples)
+
+    if n == 0:
+        raise ValueError("At least one sample must be provided.")
+
+    if len(set(samples)) != n:
+        raise ValueError("Sample names must be unique.")
+
+    lengths = {
+        "samples": len(samples),
+        "bams": len(bams),
+        "barcodes": len(barcodes),
+        "UMItag": len(umi_tags),
+    }
+
+    if len(set(lengths.values())) != 1:
+        raise ValueError(
+            "For 10x/mixed-10x mode, --samples, --bams, --barcodes and "
+            "--UMItag must contain the same number of entries. "
+            f"Received: {lengths}"
+        )
+
+    invalid = sorted(set(umi_tags) - VALID_UMI_TAGS)
+    if invalid:
+        raise ValueError(
+            f"Invalid UMI tag(s): {invalid}. "
+            f"Allowed values are {sorted(VALID_UMI_TAGS)}."
+        )
+
+    for path in [*bams, *barcodes]:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+            
+    return
+
+
+def make_cell_manifest(
+    sample: str,
+    modality: str,
+    barcodes: list[str],
+    namespace: bool,
+    ) -> pd.DataFrame:
+    """Map raw barcodes to SpaceNumbat observation identifiers."""
+    cells = ([f"{sample}::{bc}" for bc in barcodes] if namespace else list(barcodes))
+
+    return pd.DataFrame({
+        "cell": cells,
+        "cell_id": cells,   # unpaired mode: one observation = one biological cell
+        "barcode": barcodes,
+        "library": sample,
+        "modality": modality,
+        })
+            
+
+def load_annotation(
+    gtf_path: str | None = None,
+    genome: str = "hg38",
+    ) -> pd.DataFrame:
+    """
+    Load the genomic feature annotation used to annotate phased SNPs.
+
+    A custom TSV supplied through `gtf_path` takes precedence over the
+    packaged genome annotation.
+    """
+    if gtf_path is not None:
+        return diagnostics.load_and_validate_annotation(gtf_path)
+
+    if genome == "hg38":
+        gtf = spacenumbat.data.hg38
+    elif genome == "hg38_old":
+        gtf = spacenumbat.data.hg38_old
+    else:
+        raise ValueError(f"Unsupported packaged genome {genome!r}. "
+                         "Supply a custom annotation with --gtf.")
+
+    return diagnostics.validate_annotation(gtf)
+
+
 def parse_info(info: str) -> dict:
     """Parse INFO field from cellsnp-lite VCF."""
     out = {}
@@ -426,25 +521,81 @@ def main():
     parser.add_argument("--snpvcf", required=True)
     parser.add_argument("--paneldir", required=True)
     parser.add_argument("--outdir", required=True)
+    parser.add_argument("--genome", choices=["hg38", "hg38_old"], default="hg38", help=(
+        "Packaged genome annotation to use when --gtf is not supplied. "
+        "Default: hg38."))
+    parser.add_argument("--gtf", default=None, help=(
+        "Custom genomic annotation TSV with columns CHROM, gene_start, "
+        "gene_end and gene. Overrides --genome. The annotation must use "
+        "the same genome build as --snpvcf, --gmap and --paneldir."))
     parser.add_argument("--ncores", type=int, default=1)
     parser.add_argument("--UMItag", default="Auto")
     parser.add_argument("--cellTAG", default="CB")
-    parser.add_argument("--smartseq", action="store_true")
-    parser.add_argument("--bulk", action="store_true")
+    
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--smartseq", action="store_true")
+    mode_group.add_argument("--bulk", action="store_true")
+    
+    parser.add_argument("--modalities", default=None, help=(
+        "Comma-separated modality labels, one per sample, "
+        "for example: rna,atac."),)
+    parser.add_argument("--cell-id-policy", choices=["auto", "raw", "library"], default="auto", help=(
+        "Cell identifier policy. 'auto' namespaces barcodes by sample "
+        "when multiple libraries are supplied; 'raw' preserves raw "
+        "barcodes; 'library' always uses sample::barcode."),)
 
     args = parser.parse_args()
-
-    samples = args.samples.split(",") if args.samples else []
-    bams = args.bams.split(",")
-    barcodes = args.barcodes.split(",") if args.barcodes else []
-    UMItag = args.UMItag.split(",") if "," in args.UMItag else [args.UMItag] * len(samples)
-
-    os.makedirs(args.outdir, exist_ok=True)
-    os.makedirs(os.path.join(args.outdir, "pileup"), exist_ok=True)
-    os.makedirs(os.path.join(args.outdir, "phasing"), exist_ok=True)
-    for s in samples:
-        os.makedirs(os.path.join(args.outdir, "pileup", s), exist_ok=True)
     
+    # Annotation
+    gtf = load_annotation(gtf_path=args.gtf, genome=args.genome)
+
+    # Parse inputs
+    samples = _split_csv(args.samples)
+    bams = _split_csv(args.bams)
+    barcodes = _split_csv(args.barcodes)
+    
+    umi_tags = _split_csv(args.UMItag)
+    if len(umi_tags) == 1:
+        umi_tags *= len(samples)
+    
+    if not args.bulk and not args.smartseq:
+        _validate_10x_inputs(samples=samples,
+                             bams=bams,
+                             barcodes=barcodes,
+                             umi_tags=umi_tags,
+                             )
+        
+    modalities = _split_csv(args.modalities)
+
+    if modalities and len(modalities) != len(samples):
+        raise ValueError(
+            "--modalities must contain one value per sample. "
+            f"Received {len(modalities)} modalities for "
+            f"{len(samples)} samples."
+        )
+    
+    if not modalities:
+        modalities = ["unknown"] * len(samples)
+        
+    # Validate reference inputs.
+    for path, name in [(args.snpvcf, "--snpvcf"), (args.gmap, "--gmap")]:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"{name} file not found: {path}")
+
+    if not os.path.isdir(args.paneldir):
+        raise FileNotFoundError(f"--paneldir directory not found: {args.paneldir}")
+
+    # Output directories
+    os.makedirs(args.outdir, exist_ok=True)
+
+    pileup_dir = os.path.join(args.outdir, "pileup")
+    phasing_dir = os.path.join(args.outdir, "phasing")
+
+    os.makedirs(pileup_dir, exist_ok=True)
+    os.makedirs(phasing_dir, exist_ok=True)
+
+    for sample in samples:
+        os.makedirs(os.path.join(pileup_dir, sample), exist_ok=True)
     
     ## Pileup
     cmds = []
@@ -460,7 +611,7 @@ def main():
                 "cellsnp-lite",
                 "-S", bam_file,
                 "-i", sample_file,
-                "-O", os.path.join(args.outdir, "pileup", sample),
+                "-O", os.path.join(pileup_dir, sample),
                 "-R", args.snpvcf,
                 "-p", str(args.ncores),
                 "--minMAF", "0",
@@ -474,7 +625,7 @@ def main():
             "cellsnp-lite",
             "-S", args.bams,
             "-i", args.barcodes,
-            "-O", os.path.join(args.outdir, "pileup", samples[0]),
+            "-O", os.path.join(pileup_dir, samples[0]),
             "-R", args.snpvcf,
             "-p", str(args.ncores),
             "--minMAF", "0",
@@ -484,12 +635,12 @@ def main():
         ]
         cmds.append(" ".join(cmd))
     else:
-        for sample, bam, bc, tag in zip(samples, bams, barcodes, UMItag):
+        for sample, bam, bc, tag in zip(samples, bams, barcodes, umi_tags):
             cmd = [
                 "cellsnp-lite",
                 "-s", bam,
                 "-b", bc,
-                "-O", os.path.join(args.outdir, "pileup", sample),
+                "-O", os.path.join(pileup_dir, sample),
                 "-R", args.snpvcf,
                 "-p", str(args.ncores),
                 "--minMAF", "0",
@@ -501,38 +652,94 @@ def main():
             
     print("Running pileup\n")
 
-    script = os.path.join(args.outdir, "run_pileup.sh")
-    with open(script, "w") as fh:
-        for c in cmds:
-            fh.write(c + "\n")
-    subprocess.run(["chmod", "+x", script])
-    subprocess.run(["sh", script], stdout=open(os.path.join(args.outdir, "pileup.log"), "w"))
+    pileup_script = os.path.join(args.outdir, "run_pileup.sh")
 
-    vcfs = [os.path.join(args.outdir, "pileup", s, "cellSNP.base.vcf") for s in samples]
-    genotype(args.label, vcfs, os.path.join(args.outdir, "phasing"), chr_prefix=True)
+    with open(pileup_script, "w") as fh:
+        # -e stops early at failure
+        fh.write("set -e\n")
 
+        for cmd in cmds:
+            fh.write(cmd + "\n")
+
+    pileup_log = os.path.join(args.outdir, "pileup.log")
+
+    try:
+        with open(pileup_log, "w") as log:
+            subprocess.run(
+                ["sh", pileup_script],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "cellSNP-lite pileup failed. "
+            f"See log file: {pileup_log}") from exc
+
+    # Validate pileup output
+    vcfs = []
+
+    for sample in samples:
+        vcf = os.path.join(pileup_dir, sample, "cellSNP.base.vcf")
+
+        if not os.path.isfile(vcf):
+            raise FileNotFoundError(
+                f"Pileup VCF not found for sample {sample!r}: "
+                f"{vcf}")
+
+        if os.path.getsize(vcf) == 0:
+            raise RuntimeError(
+                f"Pileup VCF is empty for sample {sample!r}: "
+                f"{vcf}")
+
+        vcfs.append(vcf)
+
+    # Joint genotyping
+    print("Creating joint genotype VCF")
+    genotype(args.label, vcfs, phasing_dir, chr_prefix=True)
 
     ## Phasing
     print("Running phasing\n")
     phasing_cmds = []
     for chr_num in range(1, 23):
+        target_vcf = os.path.join(phasing_dir, f"{args.label}_chr{chr_num}.vcf.gz")
+        reference_bcf = os.path.join(args.paneldir, f"chr{chr_num}.genotypes.bcf")
+        out_prefix = os.path.join(phasing_dir, f"{args.label}_chr{chr_num}.phased")
+
         phasing_cmds.append(
             " ".join([
                 args.eagle,
-                f"--numThreads {args.ncores}",
-                f"--vcfTarget {os.path.join(args.outdir, 'phasing', args.label)}_chr{chr_num}.vcf.gz",
-                f"--vcfRef {os.path.join(args.paneldir, f'chr{chr_num}.genotypes.bcf')}",
+                "--numThreads", str(args.ncores),
+                "--vcfTarget", target_vcf,
+                "--vcfRef", reference_bcf,
                 f"--geneticMapFile={args.gmap}",
-                f"--outPrefix {os.path.join(args.outdir, 'phasing', args.label)}_chr{chr_num}.phased",
-            ])
-        )
-    script = os.path.join(args.outdir, "run_phasing.sh")
-    with open(script, "w") as fh:
-        for c in phasing_cmds:
-            fh.write(c + "\n")
-    subprocess.run(["chmod", "+x", script])
-    subprocess.run(script, shell=True, stdout=open(os.path.join(args.outdir, "phasing.log"), "w"))
+                "--outPrefix", out_prefix]))
+        
+    phasing_script = os.path.join(args.outdir, "run_phasing.sh")
     
+    
+    with open(phasing_script, "w") as fh:
+        fh.write("set -e\n")
+
+        for cmd in phasing_cmds:
+            fh.write(cmd + "\n")
+
+    phasing_log = os.path.join(args.outdir, "phasing.log")
+
+    try:
+        with open(phasing_log, "w") as log:
+            subprocess.run(
+                ["sh", phasing_script],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=True)
+
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "Eagle phasing failed. "
+            f"See log file: {phasing_log}") from exc
+        
    # Generate allele-count dataframes
     print("Generating allele count dataframes...")
 
@@ -548,29 +755,74 @@ def main():
     vcf_phased_all = vcf_phased_all.rename(columns={8: "FORMAT", 9: args.label})
     vcf_phased_all = vcf_phased_all.loc[:, ["CHROM", "POS", "REF", "ALT", args.label]]
 
-    for sample in samples:
-        pu_dir = os.path.join(args.outdir, "pileup", sample)
-
-        # pileup VCF (strip 'chr' to match phased table)
-        vcf_pu = load_pileup_body(pu_dir)
-
-        # matrices and barcodes
-        AD, DP, barcodes = read_cellsnp_mtx(pu_dir)
-
-        # preprocess allele counts (filters to GT in {'1|0','0|1'} inside the function)
+    allele_tables = []
+    cell_manifests = []
+    
+    # Determine cell namespace policy once for the entire run.
+    if args.cell_id_policy == "auto":
+        namespace_cells = len(samples) > 1
+    elif args.cell_id_policy == "library":
+        namespace_cells = True
+    else:
+        namespace_cells = False
+    
+    for sample, modality in zip(samples, modalities):
+        sample_pileup_dir = os.path.join(pileup_dir, sample)    
+        vcf_pu = load_pileup_body(sample_pileup_dir)
+        AD, DP, raw_barcodes = read_cellsnp_mtx(sample_pileup_dir)
+    
+        cell_manifest = make_cell_manifest(
+            sample=sample,
+            modality=modality,
+            barcodes=raw_barcodes,
+            namespace=namespace_cells)
+    
         df_allele = preprocess_allele(
             sample=args.label,
             vcf_pu=vcf_pu.rename(columns={7: "INFO"}),
             vcf_phased=vcf_phased_all.copy(),
             AD=AD,
             DP=DP,
-            barcodes=barcodes,
-            gmap=args.gmap, 
-            gtf=spacenumbat.data.hg38 # TODO: Hardcoded hg38. Make it generic
+            barcodes=cell_manifest["cell"].tolist(),
+            gmap=args.gmap,
+            gtf=gtf,
         )
-
-        out_tsv_gz = os.path.join(args.outdir, f"{sample}_allele_counts.tsv.gz")
-        df_allele.to_csv(out_tsv_gz, sep="\t", index=False, compression="gzip", na_rep="nan")
+    
+        # Add provenance
+        metadata = cell_manifest.set_index("cell")
+    
+        df_allele["barcode"] = df_allele["cell"].map(metadata["barcode"])
+        df_allele["cell_id"] = df_allele["cell"].map(metadata["cell_id"])
+        df_allele["library"] = df_allele["cell"].map(metadata["library"])
+        df_allele["modality"] = df_allele["cell"].map(metadata["modality"])
+    
+        allele_file = os.path.join(args.outdir, f"{sample}_allele_counts.tsv.gz")
+        df_allele.to_csv(allele_file,
+                         sep="\t",
+                         index=False,
+                         compression="gzip",
+                         na_rep="nan")
+    
+        allele_tables.append(df_allele)
+        cell_manifests.append(cell_manifest)
+        
+    # Cell manifest
+    cell_manifest = pd.concat(cell_manifests, ignore_index=True)
+    cell_manifest.to_csv(os.path.join(args.outdir, f"{args.label}_cell_manifest.tsv.gz"),
+                         sep="\t",
+                         index=False,
+                         compression="gzip")
+    
+    # Combined multi-library allele table
+    if len(allele_tables) > 1:
+        df_allele_combined = pd.concat(allele_tables, ignore_index=True)
+    
+        df_allele_combined.to_csv(os.path.join(args.outdir, f"{args.label}_allele_counts.tsv.gz"),
+                                  sep="\t",
+                                  index=False,
+                                  compression="gzip",
+                                  na_rep="nan")
+    
     print("All done!")
 
 
