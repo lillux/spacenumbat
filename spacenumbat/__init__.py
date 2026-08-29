@@ -16,6 +16,7 @@ from . import spatial_utils
 from . import hmrf
 from . import numeric
 from . import cna_postprocessing
+from . import preprocessing
 
 from .main import run_spacenumbat
 
