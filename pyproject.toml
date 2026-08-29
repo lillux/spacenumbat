@@ -39,6 +39,11 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
+[project.optional-dependencies]
+atac = [
+    "snapatac2",
+]
+
 [project.urls]
 Homepage = "https://github.com/lillux/spacenumbat"
 

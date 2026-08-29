@@ -15,10 +15,10 @@ from pathlib import Path
 import natsort
 
 import anndata as ad
-import snapatac2 as snap
 from scipy.sparse import csr_matrix
 
 from spacenumbat import diagnostics
+
 
 def get_minimal_chrom_size_from_fasta_index(fasta_fai_path:str,
                                             chrom_accepted:List[str]="auto", 
@@ -139,6 +139,12 @@ def get_atac_binning(fragments_path:str,
                      barcodes:str,
                      counting_strategy:str="fragment",
                      min_num_fragments:int=0):
+    try:
+        import snapatac2 as snap
+
+    except ImportError as exc:
+        raise ImportError("ATAC preprocessing requires SnapATAC2. "
+                          "Install SpaceNumbat with ATAC dependencies.") from exc
 
     adata_atac = snap.pp.import_fragments(fragments_path,
                                           chrom_sizes=snap.genome.hg38,
