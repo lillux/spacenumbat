@@ -21,6 +21,8 @@ _DATA_FILES: Dict[str, str] = {
     "hg38_old": "gtf_hg38.tsv",
     "hg38_arms" : "cytoBand_arms.tsv",
     "ref_hca" : "ref_hca.tsv",
+    "numbat_bins": "numbat_bins.tsv",
+    "ref_atac_numbat": "ref_atac_numbat.tsv",
 }
 
 # Internal cache to hold loaded DataFrames
