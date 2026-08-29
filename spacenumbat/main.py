@@ -18,8 +18,6 @@ from spacenumbat import (utils, diagnostics, clustering,
                          operations, plot, spatial_utils,
                          tree, phylo)
 from spacenumbat.preprocessing import multiome_unpaired
-
-
 from spacenumbat._log import configure, get_logger
 
 def run_spacenumbat(
@@ -329,20 +327,27 @@ def run_spacenumbat(
 
         count_mat = prepared["count_mat"]
         lambdas_ref = prepared["lambdas_ref"]
-
-        # This is now the BIN-LEVEL annotation used
-        # throughout CNA inference.
+        # This may be the BIN-LEVEL annotation used in CNA inference.
         gtf = prepared["gtf"]
+        
+        if spatial and mode in {"rna_bin", "atac_bin"}:
+
+            if spatial_adata is None:
+                raise ValueError("spatial_adata must be provided when spatial=True "
+                                 f"and mode={mode!r}.")
+        
+            count_mat = multiome_unpaired.transfer_spatial_info(
+                count_adata=count_mat,
+                spatial_adata=spatial_adata,
+                connectivity_key=connectivity_key,
+                distance_key=distance_key)
 
         log.info(
             f"Prepared {mode} input using {binning} binning: "
             f"{count_mat.n_obs} cells × "
-            f"{count_mat.n_vars} genomic bins."
-        )
+            f"{count_mat.n_vars} genomic bins.")
     
-        
     gtf = diagnostics.validate_annotation(gtf)
-    
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
     if max_cost == None:
