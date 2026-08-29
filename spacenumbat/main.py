@@ -17,6 +17,8 @@ import spacenumbat
 from spacenumbat import (utils, diagnostics, clustering, 
                          operations, plot, spatial_utils,
                          tree, phylo)
+from spacenumbat.preprocessing import multiome_unpaired
+
 
 from spacenumbat._log import configure, get_logger
 
@@ -70,6 +72,21 @@ def run_spacenumbat(
     spatial_method_kwargs: Mapping = None,
     connectivity_key: str ="spatial_connectivities",
     distance_key: str = "weighted_adjacency",
+    mode: str = "rna",
+    binning: str = "numbat",
+    bin_size: int | None = None,
+    chrom_size_fai_path: str | None = None,
+    custom_binning=None,
+    rna_mtx_path: str | None = None,
+    rna_barcodes_path: str | None = None,
+    rna_features_path: str | None = None,
+    atac_fragments_path: str | None = None,
+    atac_barcodes_path: str | None = None,
+    atac_reference=None,
+    cell_manifest=None,
+    min_num_fragments: int = 0,
+    max_cells_per_modality: int | None = 100_000,
+    preprocessing_seed: int = 28,
     ):
     """
     Run workflow to decompose tumor subclones.
@@ -201,22 +218,163 @@ def run_spacenumbat(
     log = get_logger(__name__)
     log.info("Starting pipeline!")
     
-    if gtf is None:
-        if genome == "hg38":
-            gtf = spacenumbat.data.hg38
-        elif genome == "hg38_old":
-            gtf = spacenumbat.data.hg38_old
+    mode = {"atac": "atac_bin",}.get(mode, mode)
+
+    valid_modes = {
+        "rna",
+        "rna_bin",
+        "atac_bin",
+        "combined",
+        }
+
+    if mode not in valid_modes:
+        raise ValueError(f"mode must be one of {sorted(valid_modes)}, "
+                         f"not {mode!r}.")
+
+    if df_allele is None:
+        raise ValueError("df_allele is required for all SpaceNumbat modes.")
+    
+    
+    if mode == "rna":
+
+        # Existing SpaceNumbat behavior.
+        if count_mat is None:
+            raise ValueError(
+                "count_mat is required when mode='rna'."
+            )
+
+        if lambdas_ref is None:
+            raise ValueError(
+                "lambdas_ref is required when mode='rna'."
+            )
+
+        if gtf is None:
+
+            if genome == "hg38":
+                gtf = spacenumbat.data.hg38
+
+            elif genome == "hg38_old":
+                gtf = spacenumbat.data.hg38_old
+
+            else:
+                raise ValueError(
+                    f"Unsupported genome {genome!r}. "
+                    "Supply a custom GTF."
+                )
+
         else:
-            msg = (f"genome version must be hg38 or hg38_old, not {genome}.\n"
-                   f"To supply custom genome reference use the 'gtf' argument.")
-            raise ValueError(msg)
+            log.info(
+                "Using custom gene-level genome annotation."
+            )
+
     else:
-        msg=(f"You have passed a custom reference genome.\n"
-             f"filter_hla_hg38 is: {filter_hla_hg38}.\n"
-             f"You can supply a pandas.DataFrame with genome segment to be skipped \n"
-             f"using the argument 'filter_chromosome_segments', that is currently:\n"
-             f"{filter_chromosome_segments}.\n")
-        log.info(msg)
+
+        # The present implementation is specifically
+        # Numbat-style UNPAIRED RNA/ATAC integration.
+        if spatial:
+            raise ValueError(
+                "spatial=True is currently incompatible with "
+                "the unpaired multiome preprocessing modes. "
+                "RNA and ATAC observations represent different "
+                "cells and do not share one spatial graph."
+            )
+
+        # gtf has a different role before binning:
+        # it is the source gene annotation used to assign
+        # RNA genes to genomic bins.
+        source_gtf = gtf
+
+        if source_gtf is None and mode in {
+            "rna_bin",
+            "combined",
+        }:
+
+            if genome == "hg38":
+                source_gtf = spacenumbat.data.hg38
+
+            elif genome == "hg38_old":
+                source_gtf = spacenumbat.data.hg38_old
+
+            else:
+                raise ValueError(
+                    f"Unsupported genome {genome!r}. "
+                    "Supply a gene-level GTF."
+                )
+
+        # RNA reference is dynamically rebinned.
+        rna_reference = (
+            lambdas_ref
+            if lambdas_ref is not None
+            else spacenumbat.data.ref_hca
+        )
+
+        # Default Numbat binning/reference
+
+        if binning == "numbat":
+
+            numbat_binning = (
+                spacenumbat.data.numbat_bins
+            )
+
+            if (
+                mode in {"atac_bin", "combined"}
+                and atac_reference is None
+            ):
+                atac_reference = (
+                    spacenumbat.data.ref_atac_numbat
+                )
+
+        else:
+
+            numbat_binning = None
+
+            if (
+                mode in {"atac_bin", "combined"}
+                and atac_reference is None
+            ):
+                raise ValueError(
+                    "A custom ATAC reference must be supplied "
+                    "when using ATAC data with binning='fixed'. "
+                    "The reference must be generated using the "
+                    "same genomic bins as the analyzed sample."
+                )
+
+        prepared = (
+            multiome_unpaired.prepare_unpaired_multiome_inputs(
+                mode=mode,
+                binning=binning,
+                source_gtf=source_gtf,
+                rna_reference=rna_reference,
+                atac_reference=atac_reference,
+                numbat_binning=numbat_binning,
+                custom_binning=custom_binning,
+                chrom_size_fai_path=chrom_size_fai_path,
+                bin_size=bin_size,
+                rna_mtx_path=rna_mtx_path,
+                rna_barcodes_path=rna_barcodes_path,
+                rna_features_path=rna_features_path,
+                atac_fragments_path=atac_fragments_path,
+                atac_barcodes_path=atac_barcodes_path,
+                cell_manifest=cell_manifest,
+                min_num_fragments=min_num_fragments,
+                max_cells_per_modality=max_cells_per_modality,
+                seed=preprocessing_seed,
+            )
+        )
+
+        count_mat = prepared["count_mat"]
+        lambdas_ref = prepared["lambdas_ref"]
+
+        # This is now the BIN-LEVEL annotation used
+        # throughout CNA inference.
+        gtf = prepared["gtf"]
+
+        log.info(
+            f"Prepared {mode} input using {binning} binning: "
+            f"{count_mat.n_obs} cells × "
+            f"{count_mat.n_vars} genomic bins."
+        )
+    
         
     gtf = diagnostics.validate_annotation(gtf)
     
@@ -513,7 +671,7 @@ def run_spacenumbat(
                 log.info(msg)
                 return msg
         
-        else: # if seg_consensus_fix #TODO
+        else:
         
             log.info('Using fixed consensus CNVs')
             segs_consensus = segs_consensus_fix
