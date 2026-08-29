@@ -7,10 +7,12 @@ Created on Wed Aug 26 19:47:14 2026
 """
 
 from typing import List
+from collections import OrderedDict
+from itertools import chain
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
-
-from pathlib import Path
 
 import natsort
 
@@ -28,7 +30,8 @@ def get_minimal_chrom_size_from_fasta_index(fasta_fai_path:str,
         chrom_accepted = [str(i) for i in range(1,23)]
 
     raw_chrom_size_df = pd.read_table(fasta_fai_path, header=None)
-    raw_chrom_size_df = raw_chrom_size_df[[i[3:] in chrom_accepted for i in raw_chrom_size_df.loc[:,0]]]
+    chrom = raw_chrom_size_df[0].astype(str).str.replace(r"^chr", "", regex=True)
+    raw_chrom_size_df = raw_chrom_size_df[chrom.isin(chrom_accepted)].copy()
     raw_chrom_size_df = raw_chrom_size_df.iloc[:,:2]
     raw_chrom_size_df.columns = ["CHROM", "length"]
     raw_chrom_size_df = raw_chrom_size_df.sort_values("CHROM", key=natsort.natsort_keygen()).reset_index(drop=True)
@@ -195,15 +198,26 @@ def get_binned_gtf(binning: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_table(x, index_col=None):
+
     if isinstance(x, pd.DataFrame):
-        return x.copy()
+
+        out = x.copy()
+
+        if index_col is not None:
+
+            if isinstance(index_col, int):
+                index_name = out.columns[index_col]
+            else:
+                index_name = index_col
+
+            out = out.set_index(index_name)
+
+        return out
 
     if isinstance(x, (str, Path)):
         return pd.read_table(x, index_col=index_col)
 
-    raise TypeError(
-        "Expected a pandas.DataFrame or path to a TSV file."
-    )
+    raise TypeError("Expected a pandas.DataFrame or path to a TSV file.")
 
 
 def apply_cell_manifest(
@@ -217,9 +231,7 @@ def apply_cell_manifest(
     missing = required.difference(manifest.columns)
 
     if missing:
-        raise ValueError(
-            f"Cell manifest is missing columns: {sorted(missing)}"
-        )
+        raise ValueError(f"Cell manifest is missing columns: {sorted(missing)}")
 
     key_cols = ["modality", "barcode"]
 
@@ -236,45 +248,24 @@ def apply_cell_manifest(
     obs = adata.obs.copy()
 
     if "modality" not in obs.columns:
-        raise ValueError(
-            "adata.obs must contain a 'modality' column."
-        )
+        raise ValueError("adata.obs must contain a 'modality' column.")
 
     obs["barcode"] = adata.obs_names.astype(str)
-
-    mapping = (
-        manifest
-        .set_index(key_cols)["cell_id"]
-        .astype(str)
-    )
-
-    keys = pd.MultiIndex.from_frame(
-        obs[key_cols].astype(str)
-    )
-
+    mapping = manifest.set_index(key_cols)["cell_id"].astype(str)
+    keys = pd.MultiIndex.from_frame(obs[key_cols].astype(str))
     cell_ids = mapping.reindex(keys)
 
     if cell_ids.isna().any():
-        missing_rows = obs.loc[
-            cell_ids.isna().to_numpy(),
-            key_cols,
-        ].head()
+        missing_rows = obs.loc[cell_ids.isna().to_numpy(), key_cols].head()
 
-        raise ValueError(
-            "Some count-matrix cells could not be matched "
-            "to the allele cell manifest. Examples:\n"
-            f"{missing_rows}"
-        )
+        raise ValueError("Some count-matrix cells could not be matched "
+                         "to the allele cell manifest. Examples:\n"
+                         f"{missing_rows}")
 
-    obs.index = pd.Index(
-        cell_ids.to_numpy(),
-        name="cell_id",
-    )
+    obs.index = pd.Index(cell_ids.to_numpy(), name="cell_id",)
 
     if obs.index.has_duplicates:
-        raise ValueError(
-            "Cell IDs are not unique after applying the manifest."
-        )
+        raise ValueError("Cell IDs are not unique after applying the manifest.")
 
     adata = adata.copy()
     adata.obs = obs
@@ -303,33 +294,22 @@ def prepare_unpaired_multiome_inputs(
     seed: int = 28,
     ):
 
-    aliases = {
-        "atac": "atac_bin",
-    }
-
+    aliases = {"atac": "atac_bin",}
     mode = aliases.get(mode, mode)
-
     valid_modes = {"rna_bin", "atac_bin", "combined"}
 
     if mode not in valid_modes:
-        raise ValueError(
-            f"Unsupported multiome mode {mode!r}. "
-            f"Expected one of {sorted(valid_modes)}."
-        )
+        raise ValueError(f"Unsupported multiome mode {mode!r}. "
+                         f"Expected one of {sorted(valid_modes)}.")
 
     has_rna = mode in {"rna_bin", "combined"}
     has_atac = mode in {"atac_bin", "combined"}
 
-    # ---------------------------------------------------------
     # Binning
-    # ---------------------------------------------------------
-
     if binning == "numbat":
 
         if numbat_binning is None:
-            raise ValueError(
-                "Numbat binning table was not provided."
-            )
+            raise ValueError("Numbat binning table was not provided.")
 
         current_binning = _load_table(numbat_binning)
 
@@ -342,66 +322,37 @@ def prepare_unpaired_multiome_inputs(
         else:
 
             if chrom_size_fai_path is None:
-                raise ValueError(
-                    "chrom_size_fai_path is required for "
-                    "fixed binning unless custom_binning is supplied."
-                )
+                raise ValueError("chrom_size_fai_path is required for "
+                                 "fixed binning unless custom_binning is supplied.")
 
             if not isinstance(bin_size, int):
-                raise ValueError(
-                    "bin_size must be an integer when "
-                    "binning='fixed'."
-                )
+                raise ValueError("bin_size must be an integer when "
+                                 "binning='fixed'.")
 
-            chrom_sizes = (
-                get_minimal_chrom_size_from_fasta_index(
-                    chrom_size_fai_path
-                )
-            )
-
-            current_binning = get_custom_gtf_binning(
-                chrom_sizes,
-                bin_size=bin_size,
-            )
+            chrom_sizes = get_minimal_chrom_size_from_fasta_index(chrom_size_fai_path)
+            current_binning = get_custom_gtf_binning(chrom_sizes, bin_size=bin_size,)
 
     else:
-        raise ValueError(
-            "binning must be 'numbat' or 'fixed'."
-        )
+        raise ValueError("binning must be 'numbat' or 'fixed'.")
 
     required_binning = {
         "bin_id",
         "CHROM",
         "start",
         "end",
-    }
+        }
 
-    missing = required_binning.difference(
-        current_binning.columns
-    )
+    missing = required_binning.difference(current_binning.columns)
 
     if missing:
-        raise ValueError(
-            f"Binning table is missing columns: {sorted(missing)}"
-        )
+        raise ValueError(f"Binning table is missing columns: {sorted(missing)}")
 
     current_binning = current_binning.copy()
-
-    current_binning["bin_id"] = (
-        current_binning["bin_id"].astype(str)
-    )
-
+    current_binning["bin_id"] = current_binning["bin_id"].astype(str)
     current_binning.index = current_binning["bin_id"]
+    expected_bins = pd.Index(current_binning["bin_id"], name="bin_id")
 
-    expected_bins = pd.Index(
-        current_binning["bin_id"],
-        name="bin_id",
-    )
-
-    # ---------------------------------------------------------
     # RNA
-    # ---------------------------------------------------------
-
     if has_rna:
 
         required_rna = {
@@ -410,31 +361,18 @@ def prepare_unpaired_multiome_inputs(
             "rna_features_path": rna_features_path,
         }
 
-        missing = [
-            name
-            for name, value in required_rna.items()
-            if value is None
-        ]
+        missing = [name for name, value in required_rna.items() if value is None]
 
         if missing:
-            raise ValueError(
-                f"Missing RNA inputs: {missing}"
-            )
+            raise ValueError(f"Missing RNA inputs: {missing}")
 
         if source_gtf is None:
-            raise ValueError(
-                "source_gtf is required for RNA binning."
-            )
+            raise ValueError("source_gtf is required for RNA binning.")
 
         if rna_reference is None:
-            raise ValueError(
-                "rna_reference is required for RNA binning."
-            )
+            raise ValueError("rna_reference is required for RNA binning.")
 
-        gene_intersect = get_gene_bin_intersection(
-            source_gtf,
-            current_binning,
-        )
+        gene_intersect = get_gene_bin_intersection(source_gtf, current_binning)
 
         adata_rna = get_rna_binning(
             mtx_path=rna_mtx_path,
@@ -448,26 +386,17 @@ def prepare_unpaired_multiome_inputs(
             gene_bin_intersection=gene_intersect,
         )
 
-    # ---------------------------------------------------------
     # ATAC
-    # ---------------------------------------------------------
-
     if has_atac:
 
         if atac_fragments_path is None:
-            raise ValueError(
-                "atac_fragments_path is required."
-            )
+            raise ValueError("atac_fragments_path is required.")
 
         if atac_barcodes_path is None:
-            raise ValueError(
-                "atac_barcodes_path is required."
-            )
+            raise ValueError("atac_barcodes_path is required.")
 
         if atac_reference is None:
-            raise ValueError(
-                "An ATAC reference is required."
-            )
+            raise ValueError("An ATAC reference is required.")
 
         genomic_regions = expected_bins.tolist()
 
@@ -479,20 +408,14 @@ def prepare_unpaired_multiome_inputs(
             min_num_fragments=min_num_fragments,
         )
 
-        atac_ref = _load_table(
-            atac_reference,
-            index_col=0,
-        )
-
+        atac_ref = _load_table(atac_reference, index_col=0)
         atac_ref.index = atac_ref.index.astype(str)
 
         # IMPORTANT:
         # every reference feature must belong to the selected
         # genomic binning. Missing bins are allowed because
         # later we take the shared feature space.
-        unexpected = atac_ref.index.difference(
-            expected_bins
-        )
+        unexpected = atac_ref.index.difference(expected_bins)
 
         if len(unexpected) > 0:
             raise ValueError(
@@ -502,26 +425,14 @@ def prepare_unpaired_multiome_inputs(
                 f"{unexpected[:5].tolist()}"
             )
 
-    # ---------------------------------------------------------
     # Optional Numbat-compatible cell subsampling
-    # ---------------------------------------------------------
-
     rng = np.random.default_rng(seed)
 
     def subsample(adata):
-        if (
-            max_cells_per_modality is None
-            or adata.n_obs <= max_cells_per_modality
-        ):
+        if (max_cells_per_modality is None or adata.n_obs <= max_cells_per_modality):
             return adata
 
-        idx = np.sort(
-            rng.choice(
-                adata.n_obs,
-                size=max_cells_per_modality,
-                replace=False,
-            )
-        )
+        idx = np.sort(rng.choice(adata.n_obs, size=max_cells_per_modality, replace=False))
 
         return adata[idx].copy()
 
@@ -531,10 +442,7 @@ def prepare_unpaired_multiome_inputs(
     if has_atac:
         adata_atac = subsample(adata_atac)
 
-    # ---------------------------------------------------------
     # Combine observations
-    # ---------------------------------------------------------
-
     if mode == "rna_bin":
 
         count_mat = adata_rna
@@ -551,80 +459,61 @@ def prepare_unpaired_multiome_inputs(
 
     else:
 
-        count_mat = ad.concat(
-            {
-                "rna": adata_rna,
-                "atac": adata_atac,
-            },
-            label="modality",
-            axis="obs",
-            join="inner",
-        )
+        count_mat = ad.concat({"rna": adata_rna,
+                               "atac": adata_atac},
+                              label="modality",
+                              axis="obs",
+                              join="inner")
 
         # Avoid ambiguous reference column names.
         rna_ref = rna_ref.copy()
         atac_ref = atac_ref.copy()
 
-        rna_ref.columns = [
-            f"rna::{x}" for x in rna_ref.columns
-        ]
-        atac_ref.columns = [
-            f"atac::{x}" for x in atac_ref.columns
-        ]
+        rna_ref.columns = [f"rna::{x}" for x in rna_ref.columns]
+        atac_ref.columns = [f"atac::{x}" for x in atac_ref.columns]
+        reference = pd.concat([rna_ref, atac_ref], axis=1, join="inner")
 
-        reference = pd.concat(
-            [rna_ref, atac_ref],
-            axis=1,
-            join="inner",
-        )
-
-    # ---------------------------------------------------------
     # Align count/reference feature space
-    # ---------------------------------------------------------
-
-    common_bins = expected_bins[
-        expected_bins.isin(count_mat.var_names)
-        & expected_bins.isin(reference.index)
-    ]
+    common_bins = expected_bins[expected_bins.isin(count_mat.var_names)
+                                & expected_bins.isin(reference.index)]
 
     if len(common_bins) == 0:
-        raise ValueError(
-            "No common genomic bins remain between "
-            "count matrix and reference."
-        )
+        raise ValueError("No common genomic bins remain between "
+                         "count matrix and reference.")
 
     count_mat = count_mat[:, common_bins].copy()
     reference = reference.reindex(common_bins).copy()
 
-    # ---------------------------------------------------------
     # Canonical cell identifiers
-    # ---------------------------------------------------------
-
     if mode == "combined" and cell_manifest is None:
-        raise ValueError(
-            "cell_manifest is required for combined unpaired "
-            "RNA/ATAC analysis."
-        )
+        raise ValueError("cell_manifest is required for combined unpaired "
+                         "RNA/ATAC analysis.")
 
     if cell_manifest is not None:
-        count_mat = apply_cell_manifest(
-            count_mat,
-            cell_manifest,
-        )
+        count_mat = apply_cell_manifest(count_mat, cell_manifest)
 
-    # ---------------------------------------------------------
     # Inference annotation
-    # ---------------------------------------------------------
-
-    bin_gtf = get_binned_gtf(
-        current_binning
-    )
+    bin_gtf = get_binned_gtf(current_binning)
 
     return {
         "count_mat": count_mat,
         "lambdas_ref": reference,
         "gtf": bin_gtf,
         "binning": current_binning,
-    }
+        }
+
+
+def transfer_spatial_info(atac_adata, spatial_adata):
+    atac_adata = atac_adata.copy()
+    atac_adata = atac_adata[spatial_adata.obs.index,:]
+    atac_adata.obs = pd.merge(spatial_adata.obs,
+                              atac_adata.obs,
+                              left_index=True, 
+                              right_index=True)
+    atac_adata.uns = OrderedDict(chain(atac_adata.uns.items(), spatial_adata.uns.items()))
+    atac_adata.obsm["spatial"] = spatial_adata.obsm["spatial"].copy()
+
+    return atac_adata
+
 
 

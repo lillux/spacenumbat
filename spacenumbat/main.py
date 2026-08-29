@@ -23,9 +23,9 @@ from spacenumbat.preprocessing import multiome_unpaired
 from spacenumbat._log import configure, get_logger
 
 def run_spacenumbat(
-    count_mat,
-    lambdas_ref,
-    df_allele,
+    count_mat=None,
+    lambdas_ref=None,
+    df_allele=None,
     gtf=None,
     genome='hg38',
     out_dir=None,
@@ -67,6 +67,7 @@ def run_spacenumbat(
     filter_hla_hg38=True,
     filter_chromosome_segments=None,
     spatial=False,
+    spatial_adata=None,
     spatial_method="hmrf",
     spatial_decay="gaussian",
     spatial_method_kwargs: Mapping = None,
@@ -234,60 +235,44 @@ def run_spacenumbat(
     if df_allele is None:
         raise ValueError("df_allele is required for all SpaceNumbat modes.")
     
-    
     if mode == "rna":
 
         # Existing SpaceNumbat behavior.
         if count_mat is None:
-            raise ValueError(
-                "count_mat is required when mode='rna'."
-            )
-
+            raise ValueError("count_mat is required when mode='rna'.")
         if lambdas_ref is None:
-            raise ValueError(
-                "lambdas_ref is required when mode='rna'."
-            )
+            raise ValueError("lambdas_ref is required when mode='rna'.")
 
         if gtf is None:
-
             if genome == "hg38":
                 gtf = spacenumbat.data.hg38
-
             elif genome == "hg38_old":
                 gtf = spacenumbat.data.hg38_old
-
             else:
-                raise ValueError(
-                    f"Unsupported genome {genome!r}. "
-                    "Supply a custom GTF."
-                )
-
+                raise ValueError(f"Unsupported genome {genome!r}. "
+                                 "Supply a custom GTF.")
         else:
-            log.info(
-                "Using custom gene-level genome annotation."
-            )
+            log.info("Using custom gene-level genome annotation.")
 
     else:
 
-        # The present implementation is specifically
-        # Numbat-style UNPAIRED RNA/ATAC integration.
-        if spatial:
-            raise ValueError(
-                "spatial=True is currently incompatible with "
-                "the unpaired multiome preprocessing modes. "
-                "RNA and ATAC observations represent different "
-                "cells and do not share one spatial graph."
-            )
+        # UNPAIRED RNA/ATAC integration.
+        if spatial and mode == "combined":
+           raise ValueError(
+               "spatial=True is currently unsupported for "
+               "mode='combined'. RNA and ATAC observations "
+               "represent distinct cells and currently do not "
+               "share a common spatial graph.")
+ 
+        if spatial and mode in {"rna_bin", "atac_bin"}:
+            max_cells_per_modality = None
 
         # gtf has a different role before binning:
         # it is the source gene annotation used to assign
         # RNA genes to genomic bins.
         source_gtf = gtf
 
-        if source_gtf is None and mode in {
-            "rna_bin",
-            "combined",
-        }:
+        if source_gtf is None and mode in {"rna_bin", "combined"}:
 
             if genome == "hg38":
                 source_gtf = spacenumbat.data.hg38
@@ -296,42 +281,22 @@ def run_spacenumbat(
                 source_gtf = spacenumbat.data.hg38_old
 
             else:
-                raise ValueError(
-                    f"Unsupported genome {genome!r}. "
-                    "Supply a gene-level GTF."
-                )
+                raise ValueError(f"Unsupported genome {genome!r}. "
+                                 "Supply a gene-level GTF.")
 
         # RNA reference is dynamically rebinned.
-        rna_reference = (
-            lambdas_ref
-            if lambdas_ref is not None
-            else spacenumbat.data.ref_hca
-        )
+        rna_reference = lambdas_ref if lambdas_ref is not None else spacenumbat.data.ref_hca
 
         # Default Numbat binning/reference
-
         if binning == "numbat":
+            numbat_binning = spacenumbat.data.numbat_bins
 
-            numbat_binning = (
-                spacenumbat.data.numbat_bins
-            )
-
-            if (
-                mode in {"atac_bin", "combined"}
-                and atac_reference is None
-            ):
-                atac_reference = (
-                    spacenumbat.data.ref_atac_numbat
-                )
-
+            if (mode in {"atac_bin", "combined"} and atac_reference is None):
+                atac_reference = spacenumbat.data.ref_atac_numbat
         else:
-
             numbat_binning = None
 
-            if (
-                mode in {"atac_bin", "combined"}
-                and atac_reference is None
-            ):
+            if (mode in {"atac_bin", "combined"} and atac_reference is None):
                 raise ValueError(
                     "A custom ATAC reference must be supplied "
                     "when using ATAC data with binning='fixed'. "
@@ -382,7 +347,6 @@ def run_spacenumbat(
     
     if max_cost == None:
         max_cost = count_mat.shape[0]*tau
-        
         
     if spatial:
         if connectivity_key not in count_mat.obsp:
