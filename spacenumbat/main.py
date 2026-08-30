@@ -256,6 +256,22 @@ def run_spacenumbat(
                 "The ATAC reference must match both the genome build "
                 "and genomic binning used for the sample."
             )
+            
+    if has_atac and snap_chrom_sizes is None:
+
+        if binning == "numbat" and genome in PACKAGED_NUMBAT_GENOMES:
+    
+            try:
+                import snapatac2 as snap
+            except ImportError as exc:
+                raise ImportError("ATAC preprocessing requires SnapATAC2. "
+                                  "Install SpaceNumbat with ATAC dependencies.") from exc
+    
+            snap_chrom_sizes = snap.genome.hg38
+    
+        else:
+            raise ValueError("snap_chrom_sizes must be supplied for ATAC analysis "
+                             "with custom/fixed genomic binning.")
     
     if mode == "rna":
 
@@ -432,9 +448,8 @@ def run_spacenumbat(
         raise ValueError(msg)
 
     # check if conficts on given genomic information
-    if (not (segs_loh is None) and (segs_loh.shape[0]>0)) and segs_consensus_fix:
-        msg = "Cannot specify both segs_loh and segs_consensus_fix. Breaking pipeline!"
-        raise ValueError(msg)
+    if (segs_loh is not None and not segs_loh.empty and segs_consensus_fix is not None):
+        raise ValueError("Cannot specify both segs_loh and segs_consensus_fix.")
     
     # check provided consensus CNVs
     segs_consensus_fix = diagnostics.check_segs_fix(segs_consensus_fix)
@@ -656,11 +671,12 @@ def run_spacenumbat(
             
             # retest segments
             bulk_subtrees = operations.retest_bulks(bulk_subtrees,
-                                                  segs_consensus,
-                                                  diploid_chroms=diploid_chroms,
-                                                  gamma=gamma,
-                                                  min_LLR=min_LLR,
-                                                  ncores=ncores)
+                                                    segs_consensus,
+                                                    diploid_chroms=diploid_chroms,
+                                                    exclude_neu=exclude_neu,
+                                                    gamma=gamma,
+                                                    min_LLR=min_LLR,
+                                                    ncores=ncores)
             bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
             
             ## define consensus CNVs again
@@ -715,12 +731,14 @@ def run_spacenumbat(
                                                 min_genes = min_genes,
                                                 common_diploid = common_diploid,
                                                 diploid_chroms = diploid_chroms,
+                                                exclude_neu=exclude_neu,
                                                 ncores = ncores,
                                                 verbose = verbose,
                                                 retest = False)
         
         bulk_clones = operations.retest_bulks(bulks = bulk_clones,
                                               segs_consensus = segs_consensus,
+                                              exclude_neu=exclude_neu,
                                               gamma = gamma,
                                               use_loh = use_loh,
                                               min_LLR = min_LLR,
