@@ -77,6 +77,7 @@ def run_spacenumbat(
     binning: str = "numbat",
     bin_size: int | None = None,
     chrom_size_fai_path: str | None = None,
+    chrom_sizes: pd.DataFrame | None = None,
     custom_binning=None,
     rna_mtx_path: str | None = None,
     rna_barcodes_path: str | None = None,
