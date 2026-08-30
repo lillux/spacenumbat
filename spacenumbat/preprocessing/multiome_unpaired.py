@@ -141,6 +141,7 @@ def get_rna_binning(mtx_path:str, barcodes_path:str, features_path:str, gene_bin
 def get_atac_binning(fragments_path:str,
                      genomic_regions:List,
                      barcodes:str,
+                     snap_chrome_sizes,
                      counting_strategy:str="fragment",
                      min_num_fragments:int=0):
     try:
@@ -151,7 +152,7 @@ def get_atac_binning(fragments_path:str,
                           "Install SpaceNumbat with ATAC dependencies.") from exc
 
     adata_atac = snap.pp.import_fragments(fragments_path,
-                                          chrom_sizes=snap.genome.hg38,
+                                          chrom_sizes=snap_chrome_sizes,
                                           sorted_by_barcode=False,
                                           whitelist=barcodes, 
                                           min_num_fragments=min_num_fragments)
@@ -299,6 +300,7 @@ def validate_chrom_sizes(chrom_sizes):
 def prepare_unpaired_multiome_inputs(
     mode: str,
     binning: str,
+    snap_chrome_sizes,
     source_gtf: pd.DataFrame | None,
     rna_reference: pd.DataFrame | None,
     atac_reference=None,
@@ -458,6 +460,7 @@ def prepare_unpaired_multiome_inputs(
             fragments_path=atac_fragments_path,
             genomic_regions=genomic_regions,
             barcodes=atac_barcodes_path,
+            snap_chrome_sizes=snap_chrome_sizes,
             counting_strategy="fragment",
             min_num_fragments=min_num_fragments,
         )

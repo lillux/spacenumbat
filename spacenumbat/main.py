@@ -23,8 +23,8 @@ from spacenumbat._log import configure, get_logger
 PACKAGED_NUMBAT_GENOMES = {"hg38", "hg38_old"}
 
 def run_spacenumbat(
-    count_mat,
-    lambdas_ref,
+    count_mat=None,
+    lambdas_ref=None,
     df_allele=None,
     gtf=None,
     genome='hg38',
@@ -78,6 +78,7 @@ def run_spacenumbat(
     bin_size: int | None = None,
     chrom_size_fai_path: str | None = None,
     chrom_sizes: pd.DataFrame | None = None,
+    snap_chrom_sizes=None,
     custom_binning=None,
     rna_mtx_path: str | None = None,
     rna_barcodes_path: str | None = None,
@@ -247,11 +248,14 @@ def run_spacenumbat(
         )
     
     if has_atac and atac_reference is None:
-        raise ValueError(
-            f"atac_reference must be supplied when mode={mode!r}. "
-            "The ATAC reference must match both the genome build "
-            "and genomic binning used for the sample."
-        )
+        if binning == "numbat" and genome in PACKAGED_NUMBAT_GENOMES:
+            atac_reference = spacenumbat.data.ref_atac_numbat
+        else:
+            raise ValueError(
+                f"atac_reference must be supplied when mode={mode!r}. "
+                "The ATAC reference must match both the genome build "
+                "and genomic binning used for the sample."
+            )
     
     if mode == "rna":
 
@@ -335,12 +339,14 @@ def run_spacenumbat(
             multiome_unpaired.prepare_unpaired_multiome_inputs(
                 mode=mode,
                 binning=binning,
+                snap_chrome_sizes=snap_chrom_sizes,
                 source_gtf=source_gtf,
                 rna_reference=rna_reference,
                 atac_reference=atac_reference,
                 numbat_binning=numbat_binning,
                 custom_binning=custom_binning,
                 chrom_size_fai_path=chrom_size_fai_path,
+                chrom_sizes=chrom_sizes,
                 bin_size=bin_size,
                 rna_mtx_path=rna_mtx_path,
                 rna_barcodes_path=rna_barcodes_path,
@@ -821,7 +827,10 @@ def run_spacenumbat(
         
         # construct initial tree
         treeML = tree.P_to_candidate_tree(P_df=P,
-                                          n_jobs=ncores)
+                                          n_jobs=ncores,
+                                          skip_nj=skip_nj,
+                                          eps_nni=eps,
+                                          max_nni=max_nni)
         
         # construct mutation graph
         gtree = phylo.get_gtree(treeML,
@@ -880,12 +889,14 @@ def run_spacenumbat(
                                             min_genes=min_genes, 
                                             common_diploid=False, 
                                             diploid_chroms=diploid_chroms,
+                                            exclude_neu=exclude_neu,
                                             ncores=ncores, 
                                             verbose=verbose, 
                                             retest=False)
     
     bulk_clones = operations.retest_bulks(bulks=bulk_clones, 
                                           segs_consensus=segs_consensus, 
+                                          exclude_neu=exclude_neu,
                                           gamma=gamma, 
                                           use_loh=use_loh,
                                           min_LLR=min_LLR, 
