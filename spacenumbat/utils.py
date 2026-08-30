@@ -288,33 +288,33 @@ def check_exp_ref(lambdas_ref: Union[pd.DataFrame, Sequence, np.ndarray]) -> pd.
         When any of the data-quality checks fail.
     """
     
-    # check it is a 2-D DataFrame
     if not isinstance(lambdas_ref, pd.DataFrame):
         lambdas_ref = pd.DataFrame(lambdas_ref)
-        lambdas_ref.columns = ['ref']
+        lambdas_ref.columns = ["ref"]
 
-    # remove NA
     if lambdas_ref.isna().any(axis=None):
-        msg = ("The reference expression matrix 'lambdas_ref' "
-               "should not contain any NA values.")
-        raise ValueError(msg)
+        raise ValueError("The reference expression matrix 'lambdas_ref' "
+                         "should not contain any NA values.")
+    try:
+        lambdas_ref = lambdas_ref.apply(pd.to_numeric, errors="raise").astype(np.float64)
 
-    # Reject integer-only matrices (raw counts)
-    arr = lambdas_ref.to_numpy(copy=False)
-    if np.all(arr == arr.astype(int)):
-        msg = ("The reference expression matrix 'lambdas_ref' appears to "
-               "contain only integer values. Please normalise raw counts "
-               "with aggregate_counts() before calling this routine.")
-        raise ValueError(msg)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("The reference matrix must contain only numeric values.") from exc
 
-    # check that Gene IDs (row index) are unique
+    arr = lambdas_ref.to_numpy(dtype=np.float64, copy=False)
+
+    if not np.isfinite(arr).all():
+        raise ValueError("The reference matrix contains non-finite values.")
+    if (arr < 0).any():
+        raise ValueError("The reference matrix must contain non-negative values.")
+    if np.all(arr == arr.astype(np.int64)):
+        raise ValueError("The reference expression matrix appears to contain "
+                         "only integer values. Please normalize raw counts "
+                         "before using it as a reference.")
     if lambdas_ref.index.has_duplicates:
-        msg = "Please remove duplicated genes in reference profile."
-        #log.error(msg)
-        raise ValueError(msg)
+        raise ValueError("Please remove duplicated features in reference profile.")
 
-
-    return lambdas_ref.copy()
+    return lambdas_ref
 
 
 def fit_ref_sse_ad(

@@ -107,8 +107,9 @@ def choose_ref_cor(
 
     # homemade vectorized correlation
     c_mat = np.log1p(count_mat.layers['X_norm'].toarray() * 1e6)
-    ref_mat = np.log1p(lambdas_ref_annot * 1e6).loc[count_mat.var_names, :].values
-
+    ref_values = lambdas_ref_annot.loc[count_mat.var_names, :].to_numpy(dtype=np.float64)
+    ref_mat = np.log1p(ref_values * 1e6)
+    
     c_mat_centered = c_mat - c_mat.mean(axis=1, keepdims=True)
     c_mat_std = c_mat_centered / c_mat.std(axis=1, ddof=0, keepdims=True)
 

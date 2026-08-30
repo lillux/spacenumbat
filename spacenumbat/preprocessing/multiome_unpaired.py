@@ -168,20 +168,22 @@ def get_atac_binning(fragments_path:str,
     return adata_atac
     
 
-def get_binned_ref(ref_df, gene_bin_intersection, gene_id="gene", bin_id="bin_id"):
+def get_binned_ref(ref_df, gene_bin_intersection, gene_id="gene", bin_id="bin_id",):
     
-    ref = pd.merge(ref_df,
-                   gene_bin_intersection,
-                   left_index=True, 
-                   right_on=gene_id).drop(gene_id, axis=1)
-    bin_dict = {}
-    for idx, group in ref.groupby(bin_id, sort=False):
-        bin_dict[idx] = group.sum(0)
+    ref_df = ref_df.apply(pd.to_numeric, errors="raise").astype(np.float64)
+    ref_cols = ref_df.columns
+    ref = pd.merge(ref_df, gene_bin_intersection, left_index=True, right_on=gene_id)
+    ref_bin_df = ref.groupby(bin_id, sort=False)[ref_cols].sum().sort_index(key=natsort.natsort_keygen())
+    col_sums = ref_bin_df.sum(axis=0)
 
-    ref_bin_df = pd.DataFrame(bin_dict).T.drop(bin_id, axis=1).sort_index(key=natsort.natsort_keygen())
-    ref_bin_df = ref_bin_df.div(ref_bin_df.sum(axis=0),axis=1)
-    
-    return ref_bin_df
+    if (col_sums <= 0).any():
+        bad = col_sums.index[col_sums <= 0].tolist()
+        raise ValueError("RNA reference profiles with zero total signal "
+                         f"after genomic binning: {bad}")
+
+    ref_bin_df = ref_bin_df.div(col_sums, axis=1)
+
+    return ref_bin_df.astype(np.float64)
 
 
 def get_binned_gtf(binning: pd.DataFrame) -> pd.DataFrame:
