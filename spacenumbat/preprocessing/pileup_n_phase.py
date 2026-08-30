@@ -539,10 +539,6 @@ def main():
     parser.add_argument("--modalities", default=None, help=(
         "Comma-separated modality labels, one per sample, "
         "for example: rna,atac."),)
-    parser.add_argument("--cell-id-policy", choices=["auto", "raw", "library"], default="auto", help=(
-        "Cell identifier policy. 'auto' namespaces barcodes by sample "
-        "when multiple libraries are supplied; 'raw' preserves raw "
-        "barcodes; 'library' always uses sample::barcode."),)
 
     args = parser.parse_args()
     
@@ -564,18 +560,30 @@ def main():
                              barcodes=barcodes,
                              umi_tags=umi_tags,
                              )
-        
-    modalities = _split_csv(args.modalities)
-
-    if modalities and len(modalities) != len(samples):
-        raise ValueError(
-            "--modalities must contain one value per sample. "
-            f"Received {len(modalities)} modalities for "
-            f"{len(samples)} samples."
-        )
     
-    if not modalities:
-        modalities = ["unknown"] * len(samples)
+    modalities = _split_csv(args.modalities)
+    multi_sample = len(samples) > 1
+    
+    if multi_sample:
+    
+        if not modalities:
+            raise ValueError("--modalities is required when multiple samples are supplied. "
+                             "Provide one modality per sample, for example: "
+                             "--modalities rna,atac.")
+        if len(modalities) != len(samples):
+            raise ValueError("--modalities must contain one value per sample. "
+                             f"Received {len(modalities)} modalities for "
+                             f"{len(samples)} samples.")
+    
+        modalities = [modality.strip().lower() for modality in modalities]
+        invalid = set(modalities) - {"rna", "atac"}
+    
+        if invalid:
+            raise ValueError(f"Invalid modality labels: {sorted(invalid)}. "
+                             "Allowed values are 'rna' and 'atac'.")
+    else:
+        # In single-library behavior no modality namespace is required.
+        modalities = [None]
         
     # Validate reference inputs.
     for path, name in [(args.snpvcf, "--snpvcf"), (args.gmap, "--gmap")]:
@@ -757,25 +765,28 @@ def main():
 
     allele_tables = []
     cell_manifests = []
-    
-    # Determine cell namespace policy once for the entire run.
-    if args.cell_id_policy == "auto":
-        namespace_cells = len(samples) > 1
-    elif args.cell_id_policy == "library":
-        namespace_cells = True
-    else:
-        namespace_cells = False
+    namespace_cells = multi_sample
     
     for sample, modality in zip(samples, modalities):
-        sample_pileup_dir = os.path.join(pileup_dir, sample)    
+    
+        sample_pileup_dir = os.path.join(pileup_dir, sample)
         vcf_pu = load_pileup_body(sample_pileup_dir)
         AD, DP, raw_barcodes = read_cellsnp_mtx(sample_pileup_dir)
     
-        cell_manifest = make_cell_manifest(
-            sample=sample,
-            modality=modality,
-            barcodes=raw_barcodes,
-            namespace=namespace_cells)
+        # Multiple libraries require a namespace because identical
+        # 10x barcodes can occur in different experiments.
+        if multi_sample:
+    
+            cell_manifest = make_cell_manifest(sample=sample,
+                                               modality=modality,
+                                               barcodes=raw_barcodes,
+                                               namespace=namespace_cells)
+            allele_barcodes = cell_manifest["cell"].tolist()
+    
+        else:
+            # single-library behavior preserve the original barcode exactly.
+            cell_manifest = None
+            allele_barcodes = raw_barcodes
     
         df_allele = preprocess_allele(
             sample=args.label,
@@ -783,41 +794,41 @@ def main():
             vcf_phased=vcf_phased_all.copy(),
             AD=AD,
             DP=DP,
-            barcodes=cell_manifest["cell"].tolist(),
+            barcodes=allele_barcodes,
             gmap=args.gmap,
             gtf=gtf,
-        )
+            )
     
-        # Add provenance
-        metadata = cell_manifest.set_index("cell")
+        # namespace metadata are necessary only when
+        # multiple libraries must be distinguished.
+        if multi_sample:
     
-        df_allele["barcode"] = df_allele["cell"].map(metadata["barcode"])
-        df_allele["cell_id"] = df_allele["cell"].map(metadata["cell_id"])
-        df_allele["library"] = df_allele["cell"].map(metadata["library"])
-        df_allele["modality"] = df_allele["cell"].map(metadata["modality"])
+            metadata = cell_manifest.set_index("cell")
     
-        allele_file = os.path.join(args.outdir, f"{sample}_allele_counts.tsv.gz")
-        df_allele.to_csv(allele_file,
-                         sep="\t",
-                         index=False,
-                         compression="gzip",
-                         na_rep="nan")
+            df_allele["barcode"] = df_allele["cell"].map(metadata["barcode"])
+            df_allele["cell_id"] = df_allele["cell"].map(metadata["cell_id"])
+            df_allele["library"] = df_allele["cell"].map(metadata["library"])
+            df_allele["modality"] = df_allele["cell"].map(metadata["modality"])
+            cell_manifests.append(cell_manifest)
     
+        allele_file = os.path.join(args.outdir,f"{sample}_allele_counts.tsv.gz")
+        df_allele.to_csv(allele_file, sep="\t", index=False, compression="gzip", na_rep="nan")
         allele_tables.append(df_allele)
+        
         cell_manifests.append(cell_manifest)
         
     # Cell manifest
-    cell_manifest = pd.concat(cell_manifests, ignore_index=True)
-    cell_manifest.to_csv(os.path.join(args.outdir, f"{args.label}_cell_manifest.tsv.gz"),
-                         sep="\t",
-                         index=False,
-                         compression="gzip")
+    if multi_sample:
+
+        cell_manifest = pd.concat(cell_manifests, ignore_index=True)
+        cell_manifest.to_csv(os.path.join(args.outdir, f"{args.label}_cell_manifest.tsv.gz"),
+                             sep="\t",
+                             index=False,
+                             compression="gzip")
     
-    # Combined multi-library allele table
-    if len(allele_tables) > 1:
         df_allele_combined = pd.concat(allele_tables, ignore_index=True)
     
-        df_allele_combined.to_csv(os.path.join(args.outdir, f"{args.label}_allele_counts.tsv.gz"),
+        df_allele_combined.to_csv(os.path.join(args.outdir,f"{args.label}_allele_counts.tsv.gz"),
                                   sep="\t",
                                   index=False,
                                   compression="gzip",

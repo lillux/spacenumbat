@@ -222,49 +222,70 @@ def _load_table(x, index_col=None):
     raise TypeError("Expected a pandas.DataFrame or path to a TSV file.")
 
 
-def apply_cell_manifest(
-    adata: ad.AnnData,
-    cell_manifest,
-    ) -> ad.AnnData:
+def apply_cell_manifest(adata: ad.AnnData, cell_manifest) -> ad.AnnData:
 
-    manifest = _load_table(cell_manifest)
-
-    required = {"barcode", "cell_id", "modality"}
+    manifest = _load_table(cell_manifest).copy()
+    required = {"barcode", "cell_id"}
     missing = required.difference(manifest.columns)
 
     if missing:
         raise ValueError(f"Cell manifest is missing columns: {sorted(missing)}")
-
-    key_cols = ["modality", "barcode"]
-
-    duplicated = manifest.duplicated(key_cols, keep=False)
-
-    if duplicated.any():
-        raise ValueError(
-            "The cell manifest contains duplicated "
-            "(modality, barcode) combinations. "
-            "The current unpaired API expects one RNA and "
-            "one ATAC library per analysis."
-        )
-
     obs = adata.obs.copy()
 
-    if "modality" not in obs.columns:
-        raise ValueError("adata.obs must contain a 'modality' column.")
+    obs["barcode"] = pd.Index(adata.obs_names).astype(str).str.strip()
+    manifest["barcode"] = manifest["barcode"].astype(str).str.strip()
+    manifest["cell_id"] = manifest["cell_id"].astype(str).str.strip()
 
-    obs["barcode"] = adata.obs_names.astype(str)
-    mapping = manifest.set_index(key_cols)["cell_id"].astype(str)
-    keys = pd.MultiIndex.from_frame(obs[key_cols].astype(str))
+    has_modality = "modality" in manifest.columns
+    # Multiple modalities cannot safely be matched using barcode alone.
+    n_modalities = obs["modality"].nunique() if "modality" in obs.columns else 1
+
+    if n_modalities > 1 and not has_modality:
+        raise ValueError("A 'modality' column is required in the cell manifest "
+                         "when the count matrix contains multiple modalities.")
+
+    if has_modality:
+
+        if "modality" not in obs.columns:
+            raise ValueError("Cell manifest contains modality information but "
+                             "adata.obs does not contain a 'modality' column.")
+
+        manifest["modality"] = manifest["modality"].astype(str).str.strip().str.lower()
+        obs["modality"] = obs["modality"].astype(str).str.strip().str.lower()
+        key_cols = ["modality", "barcode"]
+        duplicated = manifest.duplicated(key_cols, keep=False)
+
+        if duplicated.any():
+            raise ValueError("The cell manifest contains duplicated "
+                             "(modality, barcode) combinations.")
+
+        mapping = manifest.set_index(key_cols)["cell_id"].astype(str)
+        keys = pd.MultiIndex.from_frame(obs[key_cols])
+
+    else:
+        key_cols = ["barcode"]
+        duplicated = manifest["barcode"].duplicated(keep=False)
+
+        if duplicated.any():
+            raise ValueError("The cell manifest contains duplicated barcodes. "
+                             "A modality-aware manifest is required when "
+                             "barcodes are not unique.")
+
+        mapping = manifest.set_index("barcode")["cell_id"].astype(str)
+        keys = pd.Index(obs["barcode"], name="barcode")
+
     cell_ids = mapping.reindex(keys)
 
     if cell_ids.isna().any():
-        missing_rows = obs.loc[cell_ids.isna().to_numpy(), key_cols].head()
+
+        missing_mask = cell_ids.isna().to_numpy()
+        missing_rows = obs.loc[missing_mask, key_cols].head()
 
         raise ValueError("Some count-matrix cells could not be matched "
-                         "to the allele cell manifest. Examples:\n"
+                         f"using {key_cols}. Examples:\n"
                          f"{missing_rows}")
 
-    obs.index = pd.Index(cell_ids.to_numpy(), name="cell_id",)
+    obs.index = pd.Index(cell_ids.to_numpy(), name="cell_id")
 
     if obs.index.has_duplicates:
         raise ValueError("Cell IDs are not unique after applying the manifest.")
