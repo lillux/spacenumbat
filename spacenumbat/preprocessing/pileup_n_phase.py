@@ -814,13 +814,12 @@ def main():
         allele_file = os.path.join(args.outdir,f"{sample}_allele_counts.tsv.gz")
         df_allele.to_csv(allele_file, sep="\t", index=False, compression="gzip", na_rep="nan")
         allele_tables.append(df_allele)
-        
-        cell_manifests.append(cell_manifest)
-        
+                
     # Cell manifest
     if multi_sample:
 
         cell_manifest = pd.concat(cell_manifests, ignore_index=True)
+        
         cell_manifest.to_csv(os.path.join(args.outdir, f"{args.label}_cell_manifest.tsv.gz"),
                              sep="\t",
                              index=False,
