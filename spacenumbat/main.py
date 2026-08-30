@@ -355,7 +355,7 @@ def run_spacenumbat(
             multiome_unpaired.prepare_unpaired_multiome_inputs(
                 mode=mode,
                 binning=binning,
-                snap_chrome_sizes=snap_chrom_sizes,
+                snap_chrom_sizes=snap_chrom_sizes,
                 source_gtf=source_gtf,
                 rna_reference=rna_reference,
                 atac_reference=atac_reference,
