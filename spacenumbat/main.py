@@ -20,9 +20,11 @@ from spacenumbat import (utils, diagnostics, clustering,
 from spacenumbat.preprocessing import multiome_unpaired
 from spacenumbat._log import configure, get_logger
 
+PACKAGED_NUMBAT_GENOMES = {"hg38", "hg38_old"}
+
 def run_spacenumbat(
-    count_mat=None,
-    lambdas_ref=None,
+    count_mat,
+    lambdas_ref,
     df_allele=None,
     gtf=None,
     genome='hg38',
@@ -232,6 +234,23 @@ def run_spacenumbat(
 
     if df_allele is None:
         raise ValueError("df_allele is required for all SpaceNumbat modes.")
+        
+    has_rna = mode in {"rna", "rna_bin", "combined"}
+    has_atac = mode in {"atac_bin", "combined"}
+    
+    if has_rna and lambdas_ref is None:
+        raise ValueError(
+            f"lambdas_ref must be supplied when mode={mode!r}. "
+            "SpaceNumbat does not infer an RNA reference because "
+            "the reference must match the analyzed genome."
+        )
+    
+    if has_atac and atac_reference is None:
+        raise ValueError(
+            f"atac_reference must be supplied when mode={mode!r}. "
+            "The ATAC reference must match both the genome build "
+            "and genomic binning used for the sample."
+        )
     
     if mode == "rna":
 
@@ -282,17 +301,26 @@ def run_spacenumbat(
                 raise ValueError(f"Unsupported genome {genome!r}. "
                                  "Supply a gene-level GTF.")
 
-        # RNA reference is dynamically rebinned.
-        rna_reference = lambdas_ref if lambdas_ref is not None else spacenumbat.data.ref_hca
+        # RNA reference.
+        rna_reference = lambdas_ref
 
         # Default Numbat binning/reference
         if binning == "numbat":
+        
+            if genome not in PACKAGED_NUMBAT_GENOMES:
+                raise ValueError(
+                    "binning='numbat' uses the packaged Numbat "
+                    "hg38 genomic bins and is only valid for "
+                    "'hg38' and 'hg38_old'. "
+                    "Use binning='fixed' or custom_binning for "
+                    f"genome={genome!r}."
+                )
+        
             numbat_binning = spacenumbat.data.numbat_bins
-
-            if (mode in {"atac_bin", "combined"} and atac_reference is None):
-                atac_reference = spacenumbat.data.ref_atac_numbat
+        
         else:
             numbat_binning = None
+
 
             if (mode in {"atac_bin", "combined"} and atac_reference is None):
                 raise ValueError(

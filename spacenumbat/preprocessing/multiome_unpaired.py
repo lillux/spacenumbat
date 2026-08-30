@@ -274,6 +274,28 @@ def apply_cell_manifest(
     return adata
 
 
+def validate_chrom_sizes(chrom_sizes):
+    chrom_sizes = chrom_sizes.copy()
+
+    required = {"CHROM", "length"}
+    missing = required.difference(chrom_sizes.columns)
+
+    if missing:
+        raise ValueError(f"chrom_sizes is missing columns: {sorted(missing)}")
+
+    chrom_sizes["CHROM"] = chrom_sizes["CHROM"].astype(str).str.strip()
+
+    chrom_sizes["length"] = pd.to_numeric(chrom_sizes["length"],errors="raise",).astype(np.int64)
+
+    if (chrom_sizes["length"] <= 0).any():
+        raise ValueError("All chromosome lengths must be positive.")
+
+    if chrom_sizes["CHROM"].duplicated().any():
+        raise ValueError("chrom_sizes contains duplicated chromosomes.")
+
+    return chrom_sizes
+
+
 def prepare_unpaired_multiome_inputs(
     mode: str,
     binning: str,
@@ -283,6 +305,7 @@ def prepare_unpaired_multiome_inputs(
     numbat_binning=None,
     custom_binning=None,
     chrom_size_fai_path: str | None = None,
+    chrom_sizes: pd.DataFrame | None = None,
     bin_size: int | None = None,
     rna_mtx_path: str | None = None,
     rna_barcodes_path: str | None = None,
@@ -317,21 +340,51 @@ def prepare_unpaired_multiome_inputs(
     elif binning == "fixed":
 
         if custom_binning is not None:
-
+    
             current_binning = _load_table(custom_binning)
-
+    
         else:
-
-            if chrom_size_fai_path is None:
-                raise ValueError("chrom_size_fai_path is required for "
-                                 "fixed binning unless custom_binning is supplied.")
-
+    
             if not isinstance(bin_size, int):
-                raise ValueError("bin_size must be an integer when "
-                                 "binning='fixed'.")
-
-            chrom_sizes = get_minimal_chrom_size_from_fasta_index(chrom_size_fai_path)
-            current_binning = get_custom_gtf_binning(chrom_sizes, bin_size=bin_size,)
+                raise ValueError(
+                    "bin_size must be an integer when "
+                    "binning='fixed' and custom_binning is not supplied."
+                )
+    
+            if (
+                chrom_sizes is not None
+                and chrom_size_fai_path is not None
+            ):
+                raise ValueError(
+                    "Supply either chrom_sizes or "
+                    "chrom_size_fai_path, not both."
+                )
+    
+            if chrom_sizes is not None:
+    
+                chrom_size_df = validate_chrom_sizes(
+                    chrom_sizes
+                )
+    
+            elif chrom_size_fai_path is not None:
+    
+                chrom_size_df = (
+                    get_minimal_chrom_size_from_fasta_index(
+                        chrom_size_fai_path
+                    )
+                )
+    
+            else:
+                raise ValueError(
+                    "Fixed binning requires one of: "
+                    "custom_binning, chrom_sizes, or "
+                    "chrom_size_fai_path."
+                )
+    
+            current_binning = get_custom_gtf_binning(
+                chrom_size_df,
+                bin_size=bin_size,
+            )
 
     else:
         raise ValueError("binning must be 'numbat' or 'fixed'.")
