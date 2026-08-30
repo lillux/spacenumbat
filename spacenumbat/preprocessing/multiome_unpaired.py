@@ -291,7 +291,7 @@ def prepare_unpaired_multiome_inputs(
     atac_barcodes_path: str | None = None,
     cell_manifest=None,
     min_num_fragments: int = 0,
-    max_cells_per_modality: int | None = 100_000,
+    max_cells_per_modality: int | None = None,
     seed: int = 28,
     ):
 
@@ -426,7 +426,7 @@ def prepare_unpaired_multiome_inputs(
                 f"{unexpected[:5].tolist()}"
             )
 
-    # Optional Numbat-compatible cell subsampling
+    # Optional cell subsampling
     rng = np.random.default_rng(seed)
 
     def subsample(adata):

@@ -84,7 +84,7 @@ def run_spacenumbat(
     atac_reference=None,
     cell_manifest=None,
     min_num_fragments: int = 0,
-    max_cells_per_modality: int | None = 100_000,
+    max_cells_per_modality: int | None = None,
     preprocessing_seed: int = 28,
     ):
     """
