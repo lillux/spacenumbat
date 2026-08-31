@@ -199,7 +199,6 @@ def _generalized_js(P, weights=None):
 
     P = np.asarray(P, dtype=float)
     P /= P.sum(axis=1, keepdims=True,)
-
     n = P.shape[0]
 
     if weights is None:
@@ -207,7 +206,6 @@ def _generalized_js(P, weights=None):
 
     weights = np.asarray(weights, dtype=float)
     weights /= weights.sum()
-
     mean_profile = np.sum(weights[:, None] * P, axis=0)
 
     return float(sum(w * _kl_divergence(p, mean_profile) for w, p in zip(weights, P)))
@@ -267,7 +265,6 @@ def _global_donor_noise(
     for _, idx in groups.items():
 
         idx = np.asarray(idx)
-
         P, _ = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col)
         values.extend(_pairwise_js(P))
 
@@ -331,23 +328,11 @@ def _subtype_pair_score(
         if not np.any(a) or not np.any(b):
             continue
 
-        Pa, _ = _donor_profiles(
-            X[a],
-            obs.loc[a].reset_index(drop=True),
-            donor_col,
-        )
-
-        Pb, _ = _donor_profiles(
-            X[b],
-            obs.loc[b].reset_index(drop=True),
-            donor_col,
-        )
-
+        Pa, _ = _donor_profiles(X[a], obs.loc[a].reset_index(drop=True), donor_col)
+        Pb, _ = _donor_profiles(X[b], obs.loc[b].reset_index(drop=True), donor_col)
         ref_a = Pa.mean(axis=0)
         ref_b = Pb.mean(axis=0)
-
         w = Pa.shape[0] / (Pa.shape[0] + Pb.shape[0])
-
         between.append(_js_divergence(ref_a, ref_b, weight=w))
 
         # Give more importance to comparisons supported by more donors.
@@ -437,11 +422,7 @@ def _agglomerate_family(
                 noise_floor=noise_floor,
             )
 
-            candidates.append(
-                (score["ratio"],
-                 i,
-                 j,
-                 score))
+            candidates.append((score["ratio"], i, j, score))
 
         ratio, i, j, score = min(candidates, key=lambda x: x[0])
 
@@ -452,7 +433,6 @@ def _agglomerate_family(
 
         left = clusters[i]
         right = clusters[j]
-
         merged = left | right
 
         history.append(
@@ -501,13 +481,7 @@ def _test_tissue_information(
     for tissue, idx in groups.items():
 
         idx = np.asarray(idx)
-
-        P, donor_obs = _donor_profiles(
-            X[idx],
-            obs.iloc[idx].reset_index(drop=True),
-            donor_col,
-        )
-
+        P, donor_obs = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col)
         n_donors = len(donor_obs)
 
         if n_donors < min_tissue_donors:
@@ -515,13 +489,9 @@ def _test_tissue_information(
 
         consensus = P.mean(axis=0)
         consensus /= consensus.sum()
-
         tissue_profiles.append(consensus)
-
         tissue_weights.append(n_donors)
-
         eligible_tissues.append(str(tissue))
-
         donor_noise.extend(_pairwise_js(P))
 
     if len(eligible_tissues) < 2:
@@ -533,10 +503,7 @@ def _test_tissue_information(
             "eligible_tissues": eligible_tissues,
         }
 
-    tissue_js = _generalized_js(
-        np.vstack(tissue_profiles),
-        weights=tissue_weights,
-    )
+    tissue_js = _generalized_js(np.vstack(tissue_profiles), weights=tissue_weights)
 
     if donor_noise:
         local_noise = float(np.median(donor_noise))
@@ -812,14 +779,11 @@ def build_atac_reference(
                 for original in cluster:
                     original_to_merged[original] = name
 
-    # 4. Reaggregate using the compressed cell-type assignments
+    # Reaggregate using the compressed cell-type assignments
 
     pb_obs = pb_obs.copy()
-
     pb_obs["merged_type"] = pb_obs["original_type"].map(original_to_merged)
-
     valid = pb_obs["merged_type"].notna().to_numpy()
-
     merged_X, merged_obs = _aggregate_rows(pb_X[valid],
                                            pb_obs.loc[valid].reset_index(drop=True),
                                            [donor_col,tissue_col,"merged_type"])

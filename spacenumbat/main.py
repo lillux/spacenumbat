@@ -233,7 +233,10 @@ def run_spacenumbat(
     if mode not in valid_modes:
         raise ValueError(f"mode must be one of {sorted(valid_modes)}, "
                          f"not {mode!r}.")
-
+        
+    log.info(f"Pipeline configuration | mode={mode} | genome={genome} | binning={binning} | "
+             f"spatial={spatial} | ncores={ncores}")
+    
     if df_allele is None:
         raise ValueError("df_allele is required for all SpaceNumbat modes.")
         
@@ -241,21 +244,17 @@ def run_spacenumbat(
     has_atac = mode in {"atac_bin", "combined"}
     
     if has_rna and lambdas_ref is None:
-        raise ValueError(
-            f"lambdas_ref must be supplied when mode={mode!r}. "
-            "SpaceNumbat does not infer an RNA reference because "
-            "the reference must match the analyzed genome."
-        )
+        raise ValueError(f"lambdas_ref must be supplied when mode={mode!r}. "
+                         "SpaceNumbat does not infer an RNA reference because "
+                         "the reference must match the analyzed genome.")
     
     if has_atac and atac_reference is None:
         if binning == "numbat" and genome in PACKAGED_NUMBAT_GENOMES:
             atac_reference = spacenumbat.data.ref_atac_numbat
         else:
-            raise ValueError(
-                f"atac_reference must be supplied when mode={mode!r}. "
-                "The ATAC reference must match both the genome build "
-                "and genomic binning used for the sample."
-            )
+            raise ValueError(f"atac_reference must be supplied when mode={mode!r}. "
+                             "The ATAC reference must match both the genome build "
+                             "and genomic binning used for the sample.")
             
     if has_atac and snap_chrom_sizes is None:
 
@@ -350,6 +349,7 @@ def run_spacenumbat(
                     "The reference must be generated using the "
                     "same genomic bins as the analyzed sample."
                 )
+                
 
         prepared = (
             multiome_unpaired.prepare_unpaired_multiome_inputs(

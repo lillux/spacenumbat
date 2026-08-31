@@ -7,8 +7,6 @@ Created on Wed Aug 26 19:47:14 2026
 """
 
 from typing import List
-from collections import OrderedDict
-from itertools import chain
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +20,8 @@ from scipy.sparse import csr_matrix
 import copy
 from spacenumbat import diagnostics
 
+from spacenumbat._log import get_logger
+log = get_logger(__name__)
 
 def get_minimal_chrom_size_from_fasta_index(fasta_fai_path:str,
                                             chrom_accepted:List[str]="auto", 
@@ -134,7 +134,7 @@ def get_rna_binning(mtx_path:str, barcodes_path:str, features_path:str, gene_bin
     adata_bin = ad.AnnData(X=csr_matrix(binned_rna_df.values), obs=adata.obs, var=pd.DataFrame([pd.Series(binned_rna_df.columns)]).T)
     adata_bin.var = adata_bin.var.rename({0:"bin_id"}, axis=1).set_index("bin_id", drop=True)
     adata_bin = adata_bin[:,adata_bin.var.sort_index(key=natsort.natsort_keygen()).index]
-
+    log.info(f"RNA binning completed | cells={adata_bin.n_obs} | bins={adata_bin.n_vars}")
     return adata_bin
 
 
@@ -299,8 +299,8 @@ def apply_cell_manifest(adata: ad.AnnData, cell_manifest) -> ad.AnnData:
 
 
 def validate_chrom_sizes(chrom_sizes):
+    
     chrom_sizes = chrom_sizes.copy()
-
     required = {"CHROM", "length"}
     missing = required.difference(chrom_sizes.columns)
 
@@ -308,12 +308,10 @@ def validate_chrom_sizes(chrom_sizes):
         raise ValueError(f"chrom_sizes is missing columns: {sorted(missing)}")
 
     chrom_sizes["CHROM"] = chrom_sizes["CHROM"].astype(str).str.strip()
-
     chrom_sizes["length"] = pd.to_numeric(chrom_sizes["length"],errors="raise",).astype(np.int64)
 
     if (chrom_sizes["length"] <= 0).any():
         raise ValueError("All chromosome lengths must be positive.")
-
     if chrom_sizes["CHROM"].duplicated().any():
         raise ValueError("chrom_sizes contains duplicated chromosomes.")
 
@@ -353,6 +351,9 @@ def prepare_unpaired_multiome_inputs(
 
     has_rna = mode in {"rna_bin", "combined"}
     has_atac = mode in {"atac_bin", "combined"}
+    
+    log.info(f"Preparing binned input | mode={mode} | binning={binning} | "
+             f"RNA={has_rna} | ATAC={has_atac}")
 
     # Binning
     if binning == "numbat":
@@ -361,56 +362,41 @@ def prepare_unpaired_multiome_inputs(
             raise ValueError("Numbat binning table was not provided.")
 
         current_binning = _load_table(numbat_binning)
+        
+        log.info(f"Genomic binning prepared | bins={len(current_binning)} | "
+                 f"chromosomes={current_binning['CHROM'].nunique()}")
 
     elif binning == "fixed":
 
         if custom_binning is not None:
     
             current_binning = _load_table(custom_binning)
-    
+        
         else:
     
             if not isinstance(bin_size, int):
-                raise ValueError(
-                    "bin_size must be an integer when "
-                    "binning='fixed' and custom_binning is not supplied."
-                )
+                raise ValueError("bin_size must be an integer when "
+                                 "binning='fixed' and custom_binning is not supplied.")
     
-            if (
-                chrom_sizes is not None
-                and chrom_size_fai_path is not None
-            ):
-                raise ValueError(
-                    "Supply either chrom_sizes or "
-                    "chrom_size_fai_path, not both."
-                )
+            if (chrom_sizes is not None and chrom_size_fai_path is not None):
+                raise ValueError("Supply either chrom_sizes or "
+                                 "chrom_size_fai_path, not both.")
     
             if chrom_sizes is not None:
-    
-                chrom_size_df = validate_chrom_sizes(
-                    chrom_sizes
-                )
+                chrom_size_df = validate_chrom_sizes(chrom_sizes)
     
             elif chrom_size_fai_path is not None:
-    
-                chrom_size_df = (
-                    get_minimal_chrom_size_from_fasta_index(
-                        chrom_size_fai_path
-                    )
-                )
+                chrom_size_df = get_minimal_chrom_size_from_fasta_index(chrom_size_fai_path)
     
             else:
-                raise ValueError(
-                    "Fixed binning requires one of: "
-                    "custom_binning, chrom_sizes, or "
-                    "chrom_size_fai_path."
-                )
+                raise ValueError("Fixed binning requires one of: "
+                                 "custom_binning, chrom_sizes, or "
+                                 "chrom_size_fai_path.")
     
-            current_binning = get_custom_gtf_binning(
-                chrom_size_df,
-                bin_size=bin_size,
-            )
+            current_binning = get_custom_gtf_binning(chrom_size_df, bin_size=bin_size,)
 
+        log.info(f'Using fixed genomic bins | bin_size={bin_size} | '
+                 f'source={"custom_binning" if custom_binning is not None else "chromosome_sizes"}')
     else:
         raise ValueError("binning must be 'numbat' or 'fixed'.")
 
@@ -434,11 +420,9 @@ def prepare_unpaired_multiome_inputs(
     # RNA
     if has_rna:
 
-        required_rna = {
-            "rna_mtx_path": rna_mtx_path,
-            "rna_barcodes_path": rna_barcodes_path,
-            "rna_features_path": rna_features_path,
-        }
+        required_rna = {"rna_mtx_path": rna_mtx_path,
+                        "rna_barcodes_path": rna_barcodes_path,
+                        "rna_features_path": rna_features_path}
 
         missing = [name for name, value in required_rna.items() if value is None]
 
@@ -452,28 +436,30 @@ def prepare_unpaired_multiome_inputs(
             raise ValueError("rna_reference is required for RNA binning.")
 
         gene_intersect = get_gene_bin_intersection(source_gtf, current_binning)
+        
+        log.info(f'RNA gene-to-bin mapping | input_genes={source_gtf["gene"].nunique()} | '
+                 f'mapped_genes={gene_intersect["gene"].nunique()} | '
+                 f'populated_bins={gene_intersect["bin_id"].nunique()}')
+        
+        mapped_fraction = (gene_intersect["gene"].nunique() / source_gtf["gene"].nunique())
+        if mapped_fraction < 0.8:
+            log.warning(f"Only {100 * mapped_fraction}% of annotated genes mapped to genomic bins")
+        
+        adata_rna = get_rna_binning(mtx_path=rna_mtx_path,
+                                    barcodes_path=rna_barcodes_path,
+                                    features_path=rna_features_path,
+                                    gene_binned=gene_intersect)
 
-        adata_rna = get_rna_binning(
-            mtx_path=rna_mtx_path,
-            barcodes_path=rna_barcodes_path,
-            features_path=rna_features_path,
-            gene_binned=gene_intersect,
-        )
-
-        rna_ref = get_binned_ref(
-            rna_reference,
-            gene_bin_intersection=gene_intersect,
-        )
-
+        rna_ref = get_binned_ref(rna_reference, gene_bin_intersection=gene_intersect)
+        log.info(f"RNA reference binned | bins={rna_ref.shape[0]} | reference_profiles={rna_ref.shape[1]}")
+        
     # ATAC
     if has_atac:
 
         if atac_fragments_path is None:
             raise ValueError("atac_fragments_path is required.")
-
         if atac_barcodes_path is None:
             raise ValueError("atac_barcodes_path is required.")
-
         if atac_reference is None:
             raise ValueError("An ATAC reference is required.")
 
@@ -498,12 +484,10 @@ def prepare_unpaired_multiome_inputs(
         unexpected = atac_ref.index.difference(expected_bins)
 
         if len(unexpected) > 0:
-            raise ValueError(
-                "The ATAC reference was generated using an "
-                "incompatible genomic binning. "
-                f"Examples of incompatible bins: "
-                f"{unexpected[:5].tolist()}"
-            )
+            raise ValueError("The ATAC reference was generated using an "
+                             "incompatible genomic binning. "
+                             f"Examples of incompatible bins: "
+                             f"{unexpected[:5].tolist()}")
 
     # Optional cell subsampling
     rng = np.random.default_rng(seed)
@@ -518,7 +502,6 @@ def prepare_unpaired_multiome_inputs(
 
     if has_rna:
         adata_rna = subsample(adata_rna)
-
     if has_atac:
         adata_atac = subsample(adata_atac)
 
@@ -527,14 +510,12 @@ def prepare_unpaired_multiome_inputs(
 
         count_mat = adata_rna
         count_mat.obs["modality"] = "rna"
-
         reference = rna_ref
 
     elif mode == "atac_bin":
 
         count_mat = adata_atac
         count_mat.obs["modality"] = "atac"
-
         reference = atac_ref
 
     else:
