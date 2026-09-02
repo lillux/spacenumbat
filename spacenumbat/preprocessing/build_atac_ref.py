@@ -16,7 +16,7 @@ import scipy.sparse as sp
 # Biological merge families
 #
 # These define which atlas labels are ALLOWED to merge.
-# This does not force the merge: JSD + donor variability decide.
+# This does NOT force the merge, JSD + donor variability decide.
 
 FAMILY_MAPPING = {
 
@@ -113,8 +113,7 @@ def _aggregate_rows(X, obs, by):
 
     codes, groups = pd.factorize(keys, sort=False,)
 
-    G = sp.csr_matrix((np.ones(len(codes), dtype=np.float64),
-                       (codes, np.arange(len(codes)))),
+    G = sp.csr_matrix((np.ones(len(codes), dtype=np.float64), (codes, np.arange(len(codes)))),
                       shape=(len(groups), len(codes)))
 
     X_agg = (G @ X).tocsr()
