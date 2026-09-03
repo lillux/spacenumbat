@@ -6,7 +6,6 @@ Created on Wed Aug 26 19:47:14 2026
 @author: carlino.calogero
 """
 
-from typing import List
 from pathlib import Path
 
 import pandas as pd
@@ -394,7 +393,7 @@ def prepare_unpaired_multiome_inputs(
                 chrom_size_df = validate_chrom_sizes(chrom_sizes)
     
             elif chrom_size_fai_path is not None:
-                chrom_size_df = get_minimal_chrom_size_from_fasta_index(chrom_size_fai_path)
+                chrom_size_df = get_chrom_sizes_from_fasta_index(chrom_size_fai_path)
     
             else:
                 raise ValueError("Fixed binning requires one of: "
