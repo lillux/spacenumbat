@@ -110,9 +110,7 @@ def _aggregate_rows(X, obs, by):
     """Sum rows of a sparse matrix according to metadata groups."""
 
     keys = pd.MultiIndex.from_frame(obs[by].astype("string"))
-
     codes, groups = pd.factorize(keys, sort=False,)
-
     G = sp.csr_matrix((np.ones(len(codes), dtype=np.float64), (codes, np.arange(len(codes)))),
                       shape=(len(groups), len(codes)))
 
@@ -235,7 +233,7 @@ def _within_tissue_donor_noise(
     for _, idx in obs.groupby(tissue_col, sort=False).indices.items():
 
         idx = np.asarray(idx)
-        P, _ = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col,)
+        P, _ = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col)
         values.extend(_pairwise_js(P))
 
     if not values:
@@ -303,17 +301,14 @@ def _subtype_pair_score(
     tissues_b = set(obs.loc[mask_b, tissue_col])
     shared_tissues = sorted(tissues_a & tissues_b)
 
-    # No shared tissue -> subtype effect cannot be separated from tissue.
-    # Because the labels were placed in the same curated biological family,
-    # collapse them and allow the tissue test to decide later.
+    # When there are no shared tissue subtype effect cannot be separated from tissue.
+    # In this case collapse cell labels and allow the tissue test to decide later.
     if not shared_tissues:
-        return {
-            "between_js": 0.0,
-            "donor_noise": fallback_noise,
-            "ratio": 0.0,
-            "shared_tissues": 0,
-            "reason": "no_shared_tissue",
-        }
+        return {"between_js": 0.0,
+                "donor_noise": fallback_noise,
+                "ratio": 0.0,
+                "shared_tissues": 0,
+                "reason": "no_shared_tissue"}
 
     between = []
     weights = []
@@ -340,13 +335,11 @@ def _subtype_pair_score(
         donor_noise.extend(_pairwise_js(Pb))
 
     if not between:
-        return {
-            "between_js": 0.0,
-            "donor_noise": fallback_noise,
-            "ratio": 0.0,
-            "shared_tissues": 0,
-            "reason": "insufficient_overlap",
-        }
+        return {"between_js": 0.0,
+                "donor_noise": fallback_noise,
+                "ratio": 0.0,
+                "shared_tissues": 0,
+                "reason": "insufficient_overlap"}
 
     between_js = np.average(between, weights=weights)
 
@@ -357,13 +350,11 @@ def _subtype_pair_score(
 
     noise = max(noise, noise_floor)
 
-    return {
-        "between_js": float(between_js),
-        "donor_noise": float(noise),
-        "ratio": float(between_js / noise),
-        "shared_tissues": len(shared_tissues),
-        "reason": "observed",
-    }
+    return {"between_js": float(between_js),
+            "donor_noise": float(noise),
+            "ratio": float(between_js / noise),
+            "shared_tissues": len(shared_tissues),
+            "reason": "observed"}
 
 
 def _agglomerate_family(
@@ -434,15 +425,11 @@ def _agglomerate_family(
         right = clusters[j]
         merged = left | right
 
-        history.append(
-            {
-                "family": family,
-                "left": ";".join(sorted(left)),
-                "right": ";".join(sorted(right)),
-                "merged": ";".join(sorted(merged)),
-                **score,
-            }
-        )
+        history.append({"family": family,
+                        "left": ";".join(sorted(left)),
+                        "right": ";".join(sorted(right)),
+                        "merged": ";".join(sorted(merged)),
+                        **score})
 
         clusters = [cluster for k, cluster in enumerate(clusters) if k not in (i, j)]
         clusters.append(merged)
@@ -494,13 +481,11 @@ def _test_tissue_information(
         donor_noise.extend(_pairwise_js(P))
 
     if len(eligible_tissues) < 2:
-        return {
-            "split": False,
-            "tissue_js": np.nan,
-            "donor_noise": np.nan,
-            "ratio": np.nan,
-            "eligible_tissues": eligible_tissues,
-        }
+        return {"split": False,
+                "tissue_js": np.nan,
+                "donor_noise": np.nan,
+                "ratio": np.nan,
+                "eligible_tissues": eligible_tissues}
 
     tissue_js = _generalized_js(np.vstack(tissue_profiles), weights=tissue_weights)
 
@@ -514,13 +499,11 @@ def _test_tissue_information(
     noise = max(local_noise, global_noise, noise_floor)
     ratio = tissue_js / noise
 
-    return {
-        "split": bool(ratio > ratio_threshold),
-        "tissue_js": float(tissue_js),
-        "donor_noise": float(noise),
-        "ratio": float(ratio),
-        "eligible_tissues": eligible_tissues,
-    }
+    return {"split": bool(ratio > ratio_threshold),
+            "tissue_js": float(tissue_js),
+            "donor_noise": float(noise),
+            "ratio": float(ratio),
+            "eligible_tissues": eligible_tissues}
 
 
 # Final reference estimator
@@ -725,7 +708,6 @@ def build_atac_reference(
 
         all_labels = sorted(pb_obs.loc[pb_obs["family"].eq(family),
                                        "original_type"].unique())
-
         family_test = test_obs["family"].eq(family).to_numpy()
         family_X = test_X[family_test]
         family_obs = test_obs.loc[family_test].reset_index(drop=True)
@@ -779,7 +761,6 @@ def build_atac_reference(
                     original_to_merged[original] = name
 
     # Reaggregate using the compressed cell-type assignments
-
     pb_obs = pb_obs.copy()
     pb_obs["merged_type"] = pb_obs["original_type"].map(original_to_merged)
     valid = pb_obs["merged_type"].notna().to_numpy()
@@ -787,8 +768,8 @@ def build_atac_reference(
                                            pb_obs.loc[valid].reset_index(drop=True),
                                            [donor_col,tissue_col,"merged_type"])
 
-    # QC AFTER merging as well. This lets several sparse original
-    # subtypes collectively form a reliable broad pseudobulk.
+    # QC AFTER merging. This lets several sparse original
+    # subtypes form a general subtype pseudobulk.
     good = ((merged_obs["n_cells"] >= min_cells)
             & (merged_obs["n_fragments"] >= min_fragments)).to_numpy()
 
@@ -796,7 +777,6 @@ def build_atac_reference(
     merged_obs = (merged_obs.loc[good].reset_index(drop=True))
 
     # Test whether tissue adds information after cell-type merging
-
     references = {}
     manifest = []
     tissue_tests = []
@@ -847,8 +827,7 @@ def build_atac_reference(
                     X=type_X[mask],
                     obs=type_obs.loc[mask].reset_index(drop=True),
                     donor_col=donor_col,
-                    eps=eps,
-                )
+                    eps=eps)
 
                 if n_donors < min_donors:
                     continue
@@ -872,7 +851,6 @@ def build_atac_reference(
                         "tissue_ratio": tissue_result["ratio"]})
 
         # Tissue does NOT add meaningful information
-
         else:
 
             ref, n_donors = _robust_donor_consensus(
@@ -903,8 +881,7 @@ def build_atac_reference(
     if not references:
         raise ValueError("No final ATAC references were generated.")
 
-    # Final SpaceNumbat-compatible matrix
-
+    # Final reference matrix
     reference = pd.DataFrame(references, index=features)
     manifest = pd.DataFrame(manifest)
     bin_gtf = _make_bin_gtf(features)
