@@ -23,26 +23,32 @@ from spacenumbat import diagnostics
 from spacenumbat._log import get_logger
 log = get_logger(__name__)
 
-def get_minimal_chrom_size_from_fasta_index(fasta_fai_path:str,
-                                            chrom_accepted:List[str]="auto", 
-                                            out_path:str=None):
 
-    if chrom_accepted == "auto":
-        chrom_accepted = [str(i) for i in range(1,23)]
+def get_chrom_sizes_from_fasta_index(fasta_fai_path: str,
+                                     contigs=None,
+                                     out_path: str | None = None):
+    
+    chrom_sizes = pd.read_table(fasta_fai_path, 
+                                header=None, 
+                                usecols=[0, 1], 
+                                names=["CHROM", "length"])
 
-    raw_chrom_size_df = pd.read_table(fasta_fai_path, header=None)
-    chrom = raw_chrom_size_df[0].astype(str).str.replace(r"^chr", "", regex=True)
-    raw_chrom_size_df = raw_chrom_size_df[chrom.isin(chrom_accepted)].copy()
-    raw_chrom_size_df = raw_chrom_size_df.iloc[:,:2]
-    raw_chrom_size_df.columns = ["CHROM", "length"]
-    raw_chrom_size_df = raw_chrom_size_df.sort_values("CHROM", key=natsort.natsort_keygen()).reset_index(drop=True)
+    chrom_sizes["CHROM"] = chrom_sizes["CHROM"].astype(str).str.strip()
+    chrom_sizes["length"] = pd.to_numeric(chrom_sizes["length"], errors="raise").astype(np.int64)
+
+    if contigs is not None:
+        contigs = [str(x) for x in contigs]
+        missing = pd.Index(contigs).difference(chrom_sizes["CHROM"])
+
+        if len(missing):
+            raise ValueError(f"Contigs absent from FAI: {missing.tolist()}")
+
+        chrom_sizes = chrom_sizes.set_index("CHROM").loc[contigs].reset_index()
 
     if out_path is not None:
-    
-        raw_chrom_size_df.to_csv(out_path, 
-                                 sep="\t", 
-                                 index=False)
-    return raw_chrom_size_df
+        chrom_sizes.to_csv(out_path, sep="\t", index=False)
+
+    return chrom_sizes
 
 
 def get_custom_gtf_binning(chrom_size_df:pd.DataFrame, bin_size:int=220_000):
@@ -138,34 +144,36 @@ def get_rna_binning(mtx_path:str, barcodes_path:str, features_path:str, gene_bin
     return adata_bin
 
 
-def get_atac_binning(fragments_path:str,
-                     genomic_regions:List,
-                     barcodes:str,
-                     snap_chrom_sizes,
-                     counting_strategy:str="fragment",
-                     min_num_fragments:int=0):
+def get_atac_binning(fragments_path: str,
+                     genomic_regions: list[str],
+                     barcodes,
+                     chrom_sizes,
+                     counting_strategy: str = "fragment",
+                     min_num_fragments: int = 0):
     try:
         import snapatac2 as snap
-
     except ImportError as exc:
-        raise ImportError("ATAC preprocessing requires SnapATAC2. "
-                          "Install SpaceNumbat with ATAC dependencies.") from exc
+        raise ImportError("ATAC preprocessing requires SnapATAC2.") from exc
+
+    if isinstance(chrom_sizes, pd.DataFrame):
+        chrom_sizes = dict(zip(chrom_sizes["CHROM"].astype(str),
+                               chrom_sizes["length"].astype(int)))
+    else:
+        chrom_sizes = {str(k): int(v) for k, v in chrom_sizes.items()}
 
     adata_atac = snap.pp.import_fragments(fragments_path,
-                                          chrom_sizes=snap_chrom_sizes,
+                                          chrom_sizes=chrom_sizes,
                                           sorted_by_barcode=False,
-                                          whitelist=barcodes, 
+                                          whitelist=barcodes,
                                           min_num_fragments=min_num_fragments)
-    
+
     adata_atac = snap.pp.make_peak_matrix(adata_atac,
-                                          inplace=False, 
+                                          inplace=False,
                                           chunk_size=500,
                                           counting_strategy=counting_strategy,
                                           use_rep=genomic_regions)
 
-    adata_atac = adata_atac[:,adata_atac.var.sort_index(key=natsort.natsort_keygen()).index]
-
-    return adata_atac
+    return adata_atac[:,adata_atac.var.sort_index(key=natsort.natsort_keygen()).index,]
     
 
 def get_binned_ref(ref_df, gene_bin_intersection, gene_id="gene", bin_id="bin_id",):

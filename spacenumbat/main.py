@@ -271,6 +271,10 @@ def run_spacenumbat(
         else:
             raise ValueError("snap_chrom_sizes must be supplied for ATAC analysis "
                              "with custom/fixed genomic binning.")
+            
+    if gtf is not None:
+        gtf = diagnostics.load_annotation(gtf)
+    
     
     if mode == "rna":
 

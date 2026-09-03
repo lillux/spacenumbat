@@ -9,7 +9,6 @@ Created on Sun Jul 13 17:43:20 2025
 import os
 import pandas as pd
 import numpy as np
-import warnings
 
 import natsort
 
@@ -94,6 +93,16 @@ def load_and_validate_annotation(
         raise FileNotFoundError(f"File not found: {file_path}")
 
     return validate_annotation(pd.read_csv(file_path, sep=sep))
+
+
+def load_annotation(annotation):
+    if isinstance(annotation, pd.DataFrame):
+        return validate_annotation(annotation)
+
+    if isinstance(annotation, (str, Path)):
+        return load_and_validate_annotation(str(annotation))
+
+    raise TypeError("annotation must be a DataFrame or TSV path")
 
 
 def check_segs_fix(segs_consensus_fix: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:

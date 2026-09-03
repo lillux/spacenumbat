@@ -214,56 +214,36 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
     return count_ad
 
 
-def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Validate and clean an allele-count DataFrame.
+def check_allele_df(df: pd.DataFrame, allowed_contigs=None, contig_aliases=None) -> pd.DataFrame:
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Allele dataframe expected to contain:
-        ['cell','snp_id','CHROM','POS','cM','REF','ALT','AD','DP','GT','gene']
-
-    Returns
-    -------
-    pandas.DataFrame
-        The same dataframe, filtered to autosomes 1-22.
-
-    Raises
-    ------
-    ValueError
-        If mandatory columns are missing or SNP genotypes are inconsistent.
-    """
     df = df.copy()
-    # check column
-    expected: List[str] = ["cell","snp_id","CHROM",
-                           "POS","cM","REF",
-                           "ALT","AD","DP",
-                           "GT","gene"]
+
+    expected = ["cell", "snp_id", "CHROM", "POS", "cM", "REF", "ALT", "AD", "DP", "GT", "gene"]
     missing = [c for c in expected if c not in df.columns]
     if missing:
-        raise ValueError(
-            "The allele count dataframe appears to be malformed; "
-            f"missing column(s): {', '.join(missing)}. Please fix.")
+        raise ValueError("Malformed allele count dataframe; missing: "
+                         + ", ".join(missing))
 
-    # genotype check
-    snp_n_unique = df.loc[df["GT"] != "", ["snp_id", "GT"]].groupby("snp_id", 
-                                                  sort=False)["GT"].nunique()
+    snp_n_unique = df.loc[df["GT"] != "", ["snp_id", "GT"]].groupby("snp_id", sort=False)["GT"].nunique()
+
     if (snp_n_unique > 1).any():
-        msg = ("Inconsistent SNP genotypes; "
-               "Are cells from two different individuals mixed together?")
-        #log.error(msg)
-        raise ValueError(msg)
+        raise ValueError("Inconsistent SNP genotypes; are cells from "
+                         "different individuals mixed together?")
 
-    # Strip 'chr' prefix
-    # Only check if the first entry starts with "chr"
-    if df["CHROM"].astype("string").str.contains(r"^chr").iloc[0]:
-        df = df.assign(CHROM=df["CHROM"].astype("string").str.replace(r"^chr", "", regex=True))
+    df["CHROM"] = df["CHROM"].astype("string").str.strip()
+    if contig_aliases is not None:
+        df["CHROM"] = df["CHROM"].replace(contig_aliases)
 
-    # Keep chr 1-22
-    autosomes = [str(i) for i in range(1, 23)]
-    df = df[df["CHROM"].astype('string').isin(autosomes)]    
-    df["CHROM"] = df["CHROM"].astype('string')
+    if allowed_contigs is not None:
+        allowed_contigs = pd.Index([str(x) for x in allowed_contigs], dtype="string")
+        unexpected = pd.Index(df["CHROM"].dropna().unique()).difference(allowed_contigs)
+
+        if len(unexpected):
+            raise ValueError("Allele table contains contigs absent from the "
+                             f"selected genome: {unexpected[:10].tolist()}")
+
+        df = df[df["CHROM"].isin(allowed_contigs)].copy()
+
     return df
 
 
