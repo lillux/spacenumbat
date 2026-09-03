@@ -76,9 +76,6 @@ def run_spacenumbat(
     mode: str = "rna",
     binning: str = "numbat",
     bin_size: int | None = None,
-    chrom_size_fai_path: str | None = None,
-    chrom_sizes: pd.DataFrame | None = None,
-    snap_chrom_sizes=None,
     custom_binning=None,
     rna_mtx_path: str | None = None,
     rna_barcodes_path: str | None = None,
@@ -365,8 +362,6 @@ def run_spacenumbat(
                 atac_reference=atac_reference,
                 numbat_binning=numbat_binning,
                 custom_binning=custom_binning,
-                chrom_size_fai_path=chrom_size_fai_path,
-                chrom_sizes=chrom_sizes,
                 bin_size=bin_size,
                 rna_mtx_path=rna_mtx_path,
                 rna_barcodes_path=rna_barcodes_path,
@@ -403,6 +398,13 @@ def run_spacenumbat(
             f"{count_mat.n_vars} genomic bins.")
     
     gtf = diagnostics.validate_annotation(gtf)
+    gtf = diagnostics.load_annotation(gtf)
+
+    gtf = genome_spec.normalize_table(gtf, table_name="GTF")
+    df_allele = genome_spec.normalize_table(df_allele, table_name="allele counts")
+    df_allele = utils.check_allele_df(df_allele)
+    df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
+    
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
     if max_cost == None:
@@ -421,8 +423,6 @@ def run_spacenumbat(
                                                        connectivity_key=connectivity_key)
         
     count_mat = utils.check_anndata(count_mat, count_to_int=False)
-    df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
-    df_allele = utils.check_allele_df(df_allele)
     lambdas_ref = utils.check_exp_ref(lambdas_ref)
     
     # filter for annotated genes

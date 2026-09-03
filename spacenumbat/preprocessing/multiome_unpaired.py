@@ -50,28 +50,37 @@ def get_chrom_sizes_from_fasta_index(fasta_fai_path: str,
     return chrom_sizes
 
 
-def get_custom_gtf_binning(chrom_size_df:pd.DataFrame, bin_size:int=220_000):
+def get_custom_gtf_binning(genome_spec, bin_size: int = 220_000):
 
-    binned_dict = {}
-    for _, row in chrom_size_df.iterrows():
-        current_n_bins = np.int64(np.ceil(row.length / bin_size))
-        current_cum_sum = 0
-    
-        for bin_running in range(current_n_bins):
-            proposed_bin_end = current_cum_sum + bin_size
-            current_bin_end = proposed_bin_end if (proposed_bin_end < row.length) else row.length
-            bin_id = f"{row.CHROM}:{current_cum_sum}-{current_bin_end}"
-    
-            binned_dict[bin_id] = {"bin_id":bin_id,
-                                   "CHROM":str(row.CHROM)[3:] if str(row.CHROM).startswith("chr") else str(row.CHROM), 
-                                   "start":current_cum_sum, 
-                                   "end":current_bin_end,
-                                   "width":current_bin_end-current_cum_sum}
-            current_cum_sum = proposed_bin_end
-    
-    bin_genome = pd.DataFrame(binned_dict).T
+    rows = []
 
-    return bin_genome
+    for row in genome_spec.chrom_sizes.itertuples():
+
+        chrom = str(row.CHROM)
+        source_chrom = str(row.source_chrom)
+        chrom_length = int(row.length)
+
+        for start in range(0, chrom_length, bin_size):
+
+            end = min(start + bin_size, chrom_length)
+
+            # Internal representation.
+            bin_id = (f"{chrom}:{start}-{end}")
+
+            # Representation used for files whose contigs
+            # follow the original FASTA naming.
+            source_bin_id = (f"{source_chrom}:{start}-{end}")
+
+            rows.append({
+                "bin_id": bin_id,
+                "source_bin_id": source_bin_id,
+                "CHROM": chrom,
+                "start": start,
+                "end": end,
+                "width": end - start,
+            })
+
+    return pd.DataFrame(rows)
 
 
 def get_gene_bin_intersection(gtf: pd.DataFrame, gtf_binned: pd.DataFrame) -> pd.DataFrame:
@@ -79,11 +88,7 @@ def get_gene_bin_intersection(gtf: pd.DataFrame, gtf_binned: pd.DataFrame) -> pd
     gtf = gtf.copy()
     bins = gtf_binned.copy()
 
-    gtf["CHROM"] = gtf["CHROM"].astype("string").str.replace(r"^chr", "", regex=True)
-    bins["CHROM"] = bins["CHROM"].astype("string").str.replace(r"^chr", "", regex=True)
-
     out = []
-
     bins_by_chrom = {chrom: x for chrom, x in bins.groupby("CHROM", sort=False)}
 
     for chrom, genes in gtf.groupby("CHROM", sort=False):
@@ -193,19 +198,13 @@ def get_binned_ref(ref_df, gene_bin_intersection, gene_id="gene", bin_id="bin_id
     return ref_bin_df.astype(np.float64)
 
 
-def get_binned_gtf(binning: pd.DataFrame) -> pd.DataFrame:
+def get_binned_gtf(binning):
 
-    gtf = binning.copy()
-
-    if "bin_id" not in gtf.columns:
-        gtf["bin_id"] = gtf.index.astype(str)
-
-    gtf = pd.DataFrame({"CHROM": (gtf["CHROM"].astype(str).str.replace(r"^chr", "", regex=True)),
-                        "gene_start": gtf["start"].astype(np.int64),
-                        "gene_end": gtf["end"].astype(np.int64),
-                        "gene": gtf["bin_id"].astype(str)})
-
-    return diagnostics.validate_annotation(gtf)
+    return diagnostics.validate_annotation(
+        pd.DataFrame({"CHROM": binning["CHROM"].astype("string"),
+                      "gene_start": binning["start"].astype(np.int64),
+                      "gene_end": binning["end"].astype(np.int64),
+                      "gene": binning["bin_id"].astype(str)}))
 
 
 def _load_table(x, index_col=None):
@@ -474,9 +473,9 @@ def prepare_unpaired_multiome_inputs(
 
         adata_atac = get_atac_binning(
             fragments_path=atac_fragments_path,
-            genomic_regions=genomic_regions,
+            genomic_regions=current_binning["source_bin_id"].tolist(),
             barcodes=atac_barcodes_path,
-            snap_chrom_sizes=snap_chrom_sizes,
+            chrom_sizes=genome_spec.source_chromosome_lengths,
             counting_strategy="fragment",
             min_num_fragments=min_num_fragments,
         )

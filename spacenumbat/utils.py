@@ -214,12 +214,15 @@ def check_anndata(count_ad:ad.AnnData, count_to_int:bool=True, fix_names:bool=Tr
     return count_ad
 
 
-def check_allele_df(df: pd.DataFrame, allowed_contigs=None, contig_aliases=None) -> pd.DataFrame:
+def check_allele_df(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
 
-    expected = ["cell", "snp_id", "CHROM", "POS", "cM", "REF", "ALT", "AD", "DP", "GT", "gene"]
+    expected = ["cell","snp_id","CHROM","POS","cM",
+                "REF","ALT","AD","DP","GT","gene"]
+
     missing = [c for c in expected if c not in df.columns]
+
     if missing:
         raise ValueError("Malformed allele count dataframe; missing: "
                          + ", ".join(missing))
@@ -230,19 +233,7 @@ def check_allele_df(df: pd.DataFrame, allowed_contigs=None, contig_aliases=None)
         raise ValueError("Inconsistent SNP genotypes; are cells from "
                          "different individuals mixed together?")
 
-    df["CHROM"] = df["CHROM"].astype("string").str.strip()
-    if contig_aliases is not None:
-        df["CHROM"] = df["CHROM"].replace(contig_aliases)
-
-    if allowed_contigs is not None:
-        allowed_contigs = pd.Index([str(x) for x in allowed_contigs], dtype="string")
-        unexpected = pd.Index(df["CHROM"].dropna().unique()).difference(allowed_contigs)
-
-        if len(unexpected):
-            raise ValueError("Allele table contains contigs absent from the "
-                             f"selected genome: {unexpected[:10].tolist()}")
-
-        df = df[df["CHROM"].isin(allowed_contigs)].copy()
+    df["CHROM"] = df["CHROM"].astype("string")
 
     return df
 
