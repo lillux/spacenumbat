@@ -19,57 +19,101 @@ from spacenumbat import (utils, diagnostics, clustering,
                          tree, phylo)
 from spacenumbat.preprocessing import multiome_unpaired
 from spacenumbat._log import configure, get_logger
+from spacenumbat.genome import GenomeSpec, canonical_chromosome
 
-PACKAGED_NUMBAT_GENOMES = {"hg38", "hg38_old"}
+
+PACKAGED_NUMBAT_GENOMES = {
+    "hg38",
+    "hg38_old",
+}
+
+
+HG38_CHROM_SIZES = {
+    "chr1": 248956422,
+    "chr2": 242193529,
+    "chr3": 198295559,
+    "chr4": 190214555,
+    "chr5": 181538259,
+    "chr6": 170805979,
+    "chr7": 159345973,
+    "chr8": 145138636,
+    "chr9": 138394717,
+    "chr10": 133797422,
+    "chr11": 135086622,
+    "chr12": 133275309,
+    "chr13": 114364328,
+    "chr14": 107043718,
+    "chr15": 101991189,
+    "chr16": 90338345,
+    "chr17": 83257441,
+    "chr18": 80373285,
+    "chr19": 58617616,
+    "chr20": 64444167,
+    "chr21": 46709983,
+    "chr22": 50818468,
+    "chrX": 156040895,
+    "chrY": 57227415,
+}
+
+
+HG38_HLA = pd.DataFrame({
+    "CHROM": ["6"],
+    "seg_start": [28_510_120],
+    "seg_end": [33_480_577],
+    "reason": ["HLA"],
+})
 
 def run_spacenumbat(
     count_mat=None,
     lambdas_ref=None,
     df_allele=None,
     gtf=None,
-    genome='hg38',
-    out_dir=None,
-    max_iter=2,
-    max_nni=100,
-    t=1e-5,
-    gamma=20,
-    min_LLR=5,
-    alpha=1e-4,
-    eps=1e-5,
-    max_entropy=0.5,
-    init_k=3,
-    min_cells=50,
-    tau=0.3,
-    nu=1,
-    max_cost=None,
-    n_cut=0,
-    min_depth=0,
-    common_diploid=True,
-    min_overlap=0.45,
-    ncores=1,
-    ncores_nni=None,
-    use_pbar=False,
-    random_init=False,
+    genome:str ='hg38',
+    chrom_size_fai_path: str | None = None,
+    include_x: bool = False,
+    include_y: bool = False,
+    out_dir:str=None,
+    max_iter:int=2,
+    max_nni:int=100,
+    t:float=1e-5,
+    gamma:float=20,
+    min_LLR:float=5,
+    alpha:float=1e-4,
+    eps:float=1e-5,
+    max_entropy:float=0.5,
+    init_k:int=3,
+    min_cells:int=50,
+    tau:float=0.3,
+    nu:float=1,
+    max_cost:float=None,
+    n_cut:int=0,
+    min_depth:int=0,
+    common_diploid:bool=True,
+    min_overlap:float=0.45,
+    ncores:int=1,
+    ncores_nni:int=None,
+    use_pbar:bool=False,
+    random_init:bool=False,
     segs_loh=None,
-    call_clonal_loh=False,
-    verbose=True,
+    call_clonal_loh:bool=False,
+    verbose:bool=True,
     diploid_chroms=None,
     segs_consensus_fix=None,
     use_loh=None,
-    min_genes=10,
-    skip_nj=False,
-    multi_allelic=True,
-    p_multi=None,
-    check_convergence=False,
-    exclude_neu=True,
-    p_min = 1e-10,
-    plot_results=True,
-    filter_hla_hg38=True,
+    min_genes:int=10,
+    skip_nj:bool=False,
+    multi_allelic:bool=True,
+    p_multi:float=None,
+    check_convergence:bool=False,
+    exclude_neu:bool=True,
+    p_min:float = 1e-10,
+    plot_results:bool=True,
+    filter_hla_hg38:bool=True,
     filter_chromosome_segments=None,
-    spatial=False,
+    spatial:bool=False,
     spatial_adata=None,
-    spatial_method="hmrf",
-    spatial_decay="gaussian",
+    spatial_method:str="hmrf",
+    spatial_decay:str="gaussian",
     spatial_method_kwargs: Mapping = None,
     connectivity_key: str ="spatial_connectivities",
     distance_key: str = "weighted_adjacency",
@@ -230,6 +274,53 @@ def run_spacenumbat(
     if mode not in valid_modes:
         raise ValueError(f"mode must be one of {sorted(valid_modes)}, "
                          f"not {mode!r}.")
+        
+    if not isinstance(genome, str) or not genome.strip():
+        raise TypeError("genome must be a non-empty genome name.")
+    
+    genome = genome.strip()
+    genome_excluded_regions = None
+    
+    if (genome in PACKAGED_NUMBAT_GENOMES and filter_hla_hg38):
+        genome_excluded_regions = HG38_HLA
+    
+    
+    if chrom_size_fai_path is not None:
+    
+        genome_spec = GenomeSpec.from_fai(
+            name=genome,
+            fai_path=chrom_size_fai_path,
+            include_x=include_x,
+            include_y=include_y,
+            excluded_regions=genome_excluded_regions,
+        )
+    
+    elif genome in PACKAGED_NUMBAT_GENOMES:
+    
+        genome_spec = GenomeSpec.from_chrom_sizes(
+            name=genome,
+            chrom_sizes=HG38_CHROM_SIZES,
+            include_x=include_x,
+            include_y=include_y,
+            excluded_regions=genome_excluded_regions,
+        )
+    
+    else:
+    
+        raise ValueError(
+            f"Genome {genome!r} is not packaged with "
+            "SpaceNumbat. Supply chrom_size_fai_path "
+            "to define the reference assembly."
+        )
+    
+    
+    log.info(
+        "Genome configuration | "
+        f"name={genome_spec.name} | "
+        f"chromosomes="
+        f"{','.join(genome_spec.analysis_chromosomes)} | "
+        f"include_x={genome_spec.include_x} | "
+        f"include_y={genome_spec.include_y}")
         
     log.info(f"Pipeline configuration | mode={mode} | genome={genome} | binning={binning} | "
              f"spatial={spatial} | ncores={ncores}")
