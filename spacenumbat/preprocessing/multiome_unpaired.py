@@ -162,8 +162,6 @@ def get_atac_binning(fragments_path: str,
     if isinstance(chrom_sizes, pd.DataFrame):
         chrom_sizes = dict(zip(chrom_sizes["CHROM"].astype(str),
                                chrom_sizes["length"].astype(int)))
-    else:
-        chrom_sizes = {str(k): int(v) for k, v in chrom_sizes.items()}
 
     adata_atac = snap.pp.import_fragments(fragments_path,
                                           chrom_sizes=chrom_sizes,
@@ -177,7 +175,7 @@ def get_atac_binning(fragments_path: str,
                                           counting_strategy=counting_strategy,
                                           use_rep=genomic_regions)
 
-    return adata_atac[:,adata_atac.var.sort_index(key=natsort.natsort_keygen()).index,]
+    return adata_atac[:,adata_atac.var.sort_index(key=natsort.natsort_keygen()).index]
     
 
 def get_binned_ref(ref_df, gene_bin_intersection, gene_id="gene", bin_id="bin_id",):
@@ -327,14 +325,13 @@ def validate_chrom_sizes(chrom_sizes):
 def prepare_unpaired_multiome_inputs(
     mode: str,
     binning: str,
+    genome_spec,
     snap_chrom_sizes,
     source_gtf: pd.DataFrame | None,
     rna_reference: pd.DataFrame | None,
     atac_reference=None,
     numbat_binning=None,
     custom_binning=None,
-    chrom_size_fai_path: str | None = None,
-    chrom_sizes: pd.DataFrame | None = None,
     bin_size: int | None = None,
     rna_mtx_path: str | None = None,
     rna_barcodes_path: str | None = None,
@@ -381,30 +378,31 @@ def prepare_unpaired_multiome_inputs(
         else:
     
             if not isinstance(bin_size, int):
-                raise ValueError("bin_size must be an integer when "
-                                 "binning='fixed' and custom_binning is not supplied.")
-    
-            if (chrom_sizes is not None and chrom_size_fai_path is not None):
-                raise ValueError("Supply either chrom_sizes or "
-                                 "chrom_size_fai_path, not both.")
-    
-            if chrom_sizes is not None:
-                chrom_size_df = validate_chrom_sizes(chrom_sizes)
-    
-            elif chrom_size_fai_path is not None:
-                chrom_size_df = get_chrom_sizes_from_fasta_index(chrom_size_fai_path)
-    
-            else:
-                raise ValueError("Fixed binning requires one of: "
-                                 "custom_binning, chrom_sizes, or "
-                                 "chrom_size_fai_path.")
-    
-            current_binning = get_custom_gtf_binning(chrom_size_df, bin_size=bin_size,)
+                raise ValueError("bin_size must be an integer when binning='fixed'")
+                
+            if bin_size <= 0:
+                raise ValueError("bin_size must be positive.")
 
-        log.info(f'Using fixed genomic bins | bin_size={bin_size} | '
-                 f'source={"custom_binning" if custom_binning is not None else "chromosome_sizes"}')
+            current_binning = get_custom_gtf_binning(genome_spec=genome_spec,
+                                                     bin_size=bin_size)
+                
     else:
         raise ValueError("binning must be 'numbat' or 'fixed'.")
+        
+    current_binning = genome_spec.normalize_table(current_binning,
+                                                  table_name="genomic binning")
+    
+    if "source_bin_id" not in current_binning.columns:
+
+        source_chrom = current_binning["CHROM"].map(genome_spec.canonical_to_source)
+        
+        current_binning["source_bin_id"] = (
+            source_chrom.astype(str)
+            + ":"
+            + current_binning["start"].astype(str)
+            + "-"
+            + current_binning["end"].astype(str)
+            )
 
     required_binning = {
         "bin_id",
@@ -483,17 +481,21 @@ def prepare_unpaired_multiome_inputs(
         atac_ref = _load_table(atac_reference, index_col=0)
         atac_ref.index = atac_ref.index.astype(str)
 
-        # IMPORTANT:
-        # every reference feature must belong to the selected
-        # genomic binning. Missing bins are allowed because
-        # later we take the shared feature space.
-        unexpected = atac_ref.index.difference(expected_bins)
-
-        if len(unexpected) > 0:
-            raise ValueError("The ATAC reference was generated using an "
-                             "incompatible genomic binning. "
-                             f"Examples of incompatible bins: "
-                             f"{unexpected[:5].tolist()}")
+        source_to_internal = current_binning.set_index("source_bin_id")["bin_id"]
+        snap_features = pd.Index(adata_atac.var_names.astype(str))
+        unexpected = snap_features.difference(source_to_internal.index)
+        
+        if len(unexpected):
+            raise ValueError("SnapATAC2 returned regions absent from "
+                             "the selected SpaceNumbat binning. "
+                             f"Examples: {unexpected[:5].tolist()}")
+        
+        adata_atac.var_names = pd.Index(
+            source_to_internal
+            .reindex(snap_features)
+            .to_numpy(),
+            name="bin_id",
+            )
 
     # Optional cell subsampling
     rng = np.random.default_rng(seed)

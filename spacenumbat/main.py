@@ -72,6 +72,7 @@ def run_spacenumbat(
     chrom_size_fai_path: str | None = None,
     include_x: bool = False,
     include_y: bool = False,
+    snap_chrom_sizes=None,
     out_dir:str=None,
     max_iter:int=2,
     max_nni:int=100,
@@ -283,17 +284,29 @@ def run_spacenumbat(
     
     if (genome in PACKAGED_NUMBAT_GENOMES and filter_hla_hg38):
         genome_excluded_regions = HG38_HLA
+        
+    effective_filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)
+    filter_hla=effective_filter_hla
     
-    
+    # GenomeSpec resolution    
     if chrom_size_fai_path is not None:
     
-        genome_spec = GenomeSpec.from_fai(
+        genome_spec = GenomeSpec.from_fai(name=genome,
+                                          fai_path=chrom_size_fai_path,
+                                          include_x=include_x,
+                                          include_y=include_y)
+    
+    elif snap_chrom_sizes is not None:
+    
+        snap_sizes = getattr(snap_chrom_sizes, 
+                             "chrom_sizes",
+                             snap_chrom_sizes)
+    
+        genome_spec = GenomeSpec.from_chrom_sizes(
             name=genome,
-            fai_path=chrom_size_fai_path,
+            chrom_sizes=snap_sizes,
             include_x=include_x,
-            include_y=include_y,
-            excluded_regions=genome_excluded_regions,
-        )
+            include_y=include_y)
     
     elif genome in PACKAGED_NUMBAT_GENOMES:
     
@@ -301,17 +314,13 @@ def run_spacenumbat(
             name=genome,
             chrom_sizes=HG38_CHROM_SIZES,
             include_x=include_x,
-            include_y=include_y,
-            excluded_regions=genome_excluded_regions,
-        )
+            include_y=include_y)
     
     else:
     
-        raise ValueError(
-            f"Genome {genome!r} is not packaged with "
-            "SpaceNumbat. Supply chrom_size_fai_path "
-            "to define the reference assembly."
-        )
+        raise ValueError(f"Genome {genome!r} is not packaged. "
+                         "Provide chrom_size_fai_path or a "
+                         "SnapATAC2 genome through snap_chrom_sizes.")
     
     
     log.info(
@@ -346,19 +355,23 @@ def run_spacenumbat(
             
     if has_atac and snap_chrom_sizes is None:
 
-        if binning == "numbat" and genome in PACKAGED_NUMBAT_GENOMES:
-    
+        if genome in PACKAGED_NUMBAT_GENOMES:
+        
             try:
                 import snapatac2 as snap
             except ImportError as exc:
-                raise ImportError("ATAC preprocessing requires SnapATAC2. "
-                                  "Install SpaceNumbat with ATAC dependencies.") from exc
-    
+                raise ImportError("ATAC preprocessing requires SnapATAC2.") from exc
+        
             snap_chrom_sizes = snap.genome.hg38
-    
+        
         else:
-            raise ValueError("snap_chrom_sizes must be supplied for ATAC analysis "
-                             "with custom/fixed genomic binning.")
+        
+            raise ValueError(
+                "snap_chrom_sizes must be provided for "
+                f"ATAC analysis of genome {genome!r}. "
+                "It may be a SnapATAC2 Genome object "
+                "or chromosome-size dictionary."
+            )
             
     if gtf is not None:
         gtf = diagnostics.load_annotation(gtf)
@@ -401,17 +414,10 @@ def run_spacenumbat(
         # RNA genes to genomic bins.
         source_gtf = gtf
 
-        if source_gtf is None and mode in {"rna_bin", "combined"}:
+        if source_gtf is not None:
 
-            if genome == "hg38":
-                source_gtf = spacenumbat.data.hg38
-
-            elif genome == "hg38_old":
-                source_gtf = spacenumbat.data.hg38_old
-
-            else:
-                raise ValueError(f"Unsupported genome {genome!r}. "
-                                 "Supply a gene-level GTF.")
+            source_gtf = genome_spec.normalize_table(source_gtf,
+                                                     table_name="source GTF")
 
         # RNA reference.
         rna_reference = lambdas_ref
@@ -439,9 +445,7 @@ def run_spacenumbat(
                     "A custom ATAC reference must be supplied "
                     "when using ATAC data with binning='fixed'. "
                     "The reference must be generated using the "
-                    "same genomic bins as the analyzed sample."
-                )
-                
+                    "same genomic bins as the analyzed sample.")
 
         prepared = (
             multiome_unpaired.prepare_unpaired_multiome_inputs(
@@ -487,11 +491,11 @@ def run_spacenumbat(
             f"Prepared {mode} input using {binning} binning: "
             f"{count_mat.n_obs} cells × "
             f"{count_mat.n_vars} genomic bins.")
+        
     
+    gtf = genome_spec.normalize_table(gtf, table_name="inference annotation")
     gtf = diagnostics.validate_annotation(gtf)
-    gtf = diagnostics.load_annotation(gtf)
 
-    gtf = genome_spec.normalize_table(gtf, table_name="GTF")
     df_allele = genome_spec.normalize_table(df_allele, table_name="allele counts")
     df_allele = utils.check_allele_df(df_allele)
     df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
@@ -562,6 +566,26 @@ def run_spacenumbat(
     else:
         filter_segments_df = None
         
+        
+    # Normalize diploid chrom
+    if diploid_chroms is not None:
+
+        normalized_diploid = []
+    
+        for chrom in diploid_chroms:
+    
+            canonical = canonical_chromosome(chrom,
+                                             include_x=genome_spec.include_x,
+                                             include_y=genome_spec.include_y)
+    
+            if (canonical is None or canonical not in genome_spec.analysis_chromosomes):
+                raise ValueError(f"Invalid diploid chromosome "
+                                 f"{chrom!r} for genome {genome!r}.")
+    
+            normalized_diploid.append(canonical)
+            
+        diploid_chroms = list(dict.fromkeys(normalized_diploid))
+        
     # Prepare parameter log
     log_lines = [
         "",
@@ -603,7 +627,7 @@ def run_spacenumbat(
         f"ncores = {ncores}",
         f"ncores_nni = {ncores_nni}",
         f"use_pbar = {use_pbar}",
-        f"Filter HLA region = {filter_hla_hg38}",
+        f"Filter HLA region = {filter_hla}",
         f"Filtering custom chromosomal region = {'None' if filter_segments_df is None else 'Given'}",
         f"spatial = {spatial}",
         f"spatial_method = {spatial_method}",
@@ -626,7 +650,7 @@ def run_spacenumbat(
                               lambdas_ref,
                               df_allele, 
                               gtf, 
-                              filter_hla=filter_hla_hg38,
+                              filter_hla=filter_hla,
                               filter_segments=filter_segments_df,
                               min_depth=min_depth,
                               nu=nu)
@@ -663,7 +687,7 @@ def run_spacenumbat(
                            gtf=gtf,
                            sc_refs=sc_refs,
                            ncores=ncores,
-                           filter_hla=filter_hla_hg38,
+                           filter_hla=filter_hla,
                            filter_segments=filter_segments_df,
                            verbose=verbose)
         # save window-smoothed normalized expression profiles as AnnData
@@ -713,7 +737,7 @@ def run_spacenumbat(
                                                min_depth=min_depth,
                                                nu=nu,
                                                segs_loh=segs_loh,
-                                               filter_hla=filter_hla_hg38,
+                                               filter_hla=filter_hla,
                                                filter_segments=filter_segments_df,
                                                ncores=ncores)
         

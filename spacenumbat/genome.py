@@ -127,73 +127,38 @@ class GenomeSpec:
         raw = raw.dropna(subset=["CHROM"]).copy()
     
         if raw.empty:
-            raise ValueError(
-                "No valid analysis chromosomes found."
-            )
-    
+            raise ValueError("No valid analysis chromosomes found.")
         if (raw["length"] <= 0).any():
-            raise ValueError(
-                "Chromosome lengths must be positive."
-            )
+            raise ValueError("Chromosome lengths must be positive.")
     
-        duplicated = raw["CHROM"].duplicated(
-            keep=False
-        )
+        duplicated = raw["CHROM"].duplicated(keep=False)
     
         if duplicated.any():
-            raise ValueError(
-                "Multiple reference contigs map to "
-                "the same canonical chromosome."
-            )
-    
+            raise ValueError("Multiple reference contigs map to "
+                             "the same canonical chromosome.")
         if include_x and "X" not in set(raw["CHROM"]):
-            raise ValueError(
-                "include_x=True but X is absent."
-            )
-    
+            raise ValueError("include_x=True but X is absent.")
         if include_y and "Y" not in set(raw["CHROM"]):
-            raise ValueError(
-                "include_y=True but Y is absent."
-            )
+            raise ValueError("include_y=True but Y is absent.")
     
-        numeric = raw[
-            raw["CHROM"].str.fullmatch(r"[0-9]+")
-        ].copy()
-    
-        numeric["_order"] = (
-            numeric["CHROM"].astype(int)
-        )
-    
-        numeric = (
-            numeric
-            .sort_values("_order")
-            .drop(columns="_order")
-        )
-    
+        numeric = raw[raw["CHROM"].str.fullmatch(r"[0-9]+")].copy()
+        numeric["_order"] = numeric["CHROM"].astype(int)
+        numeric = numeric.sort_values("_order").drop(columns="_order")
         ordered = [numeric]
     
         if include_x:
-            ordered.append(
-                raw[raw["CHROM"] == "X"]
-            )
-    
+            ordered.append(raw[raw["CHROM"] == "X"])
         if include_y:
-            ordered.append(
-                raw[raw["CHROM"] == "Y"]
-            )
+            ordered.append(raw[raw["CHROM"] == "Y"])
     
-        chrom_sizes = pd.concat(
-            ordered,
-            ignore_index=True,
-        )
+        chrom_sizes = pd.concat(ordered, ignore_index=True)
     
         return cls(
             name=name,
             chrom_sizes=chrom_sizes,
             include_x=include_x,
             include_y=include_y,
-            excluded_regions=excluded_regions,
-        )
+            excluded_regions=excluded_regions)
     
 
     @classmethod
@@ -204,14 +169,12 @@ class GenomeSpec:
         include_x=False,
         include_y=False,
         excluded_regions=None,
-    ):
+        ):
     
-        raw = pd.read_table(
-            fai_path,
-            header=None,
-            usecols=[0, 1],
-            names=["source_chrom", "length"],
-        )
+        raw = pd.read_table(fai_path,
+                            header=None,
+                            usecols=[0, 1],
+                            names=["source_chrom", "length"])
     
         return cls.from_chrom_sizes(
             name=name,
@@ -289,35 +252,16 @@ class GenomeSpec:
             "end",
         }
     
-        missing = required.difference(
-            binning.columns
-        )
+        missing = required.difference(binning.columns)
     
         if missing:
-            raise ValueError(
-                "Binning table is missing columns: "
-                f"{sorted(missing)}"
-            )
+            raise ValueError("Binning table is missing columns: "
+                             f"{sorted(missing)}")
     
-        out = self.normalize_table(
-            binning,
-            table_name="genomic binning",
-        )
-    
-        out["start"] = pd.to_numeric(
-            out["start"],
-            errors="raise",
-        ).astype(np.int64)
-    
-        out["end"] = pd.to_numeric(
-            out["end"],
-            errors="raise",
-        ).astype(np.int64)
-    
-        chromosome_length = out["CHROM"].map(
-            self.chromosome_lengths
-        )
-    
+        out = self.normalize_table(binning, table_name="genomic binning")
+        out["start"] = pd.to_numeric(out["start"], errors="raise").astype(np.int64)
+        out["end"] = pd.to_numeric(out["end"], errors="raise").astype(np.int64)
+        chromosome_length = out["CHROM"].map(self.chromosome_lengths)
         invalid = (
             (out["start"] < 0)
             | (out["end"] <= out["start"])
@@ -325,15 +269,11 @@ class GenomeSpec:
         )
     
         if invalid.any():
-            raise ValueError(
-                "Genomic bins contain invalid or "
-                "out-of-bound coordinates."
-            )
+            raise ValueError("Genomic bins contain invalid or "
+                             "out-of-bound coordinates.")
     
-        source_chrom = out["CHROM"].map(
-            self.canonical_to_source
-        )
-    
+        source_chrom = out["CHROM"].map(self.canonical_to_source)
+        
         out["bin_id"] = (
             out["CHROM"].astype(str)
             + ":"
@@ -350,15 +290,11 @@ class GenomeSpec:
             + out["end"].astype(str)
         )
     
-        out["width"] = (
-            out["end"] - out["start"]
-        )
+        out["width"] = out["end"] - out["start"]
     
         if out["bin_id"].duplicated().any():
-            raise ValueError(
-                "Duplicated genomic bins after "
-                "chromosome normalization."
-            )
+            raise ValueError("Duplicated genomic bins after "
+                             "chromosome normalization.")
     
         return out.reset_index(drop=True)
 
