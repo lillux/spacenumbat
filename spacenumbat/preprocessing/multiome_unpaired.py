@@ -124,24 +124,25 @@ def get_gene_bin_intersection(gtf: pd.DataFrame, gtf_binned: pd.DataFrame) -> pd
 
         for row_idx, row in genes.iterrows():
 
-            candidate_bins = chrom_bins[
-                (chrom_bins["start"] < row.gene_end) &
-                (chrom_bins["end"] > row.gene_start)]
-
+            gene_start0 = int(row.gene_start) - 1
+            gene_end0 = int(row.gene_end)
+        
+            candidate_bins = chrom_bins[(chrom_bins["start"] < gene_end0)
+                                        & (chrom_bins["end"] > gene_start0)]
+        
             if candidate_bins.empty:
                 continue
-
-            overlap = (
-                np.minimum(candidate_bins["end"].to_numpy(), row.gene_end)
-                - np.maximum(candidate_bins["start"].to_numpy(), row.gene_start))
-
+        
+            overlap = (np.minimum(candidate_bins["end"].to_numpy(), gene_end0)
+                       - np.maximum(
+                           candidate_bins["start"].to_numpy(),
+                           gene_start0))
+        
             best = np.argmax(overlap)
             assigned_bin = candidate_bins.index[best]
-
-            out.append({
-                "gene": row.gene,
-                "bin_id": assigned_bin,
-            })
+        
+            out.append({"gene": row.gene,
+                        "bin_id": assigned_bin})
 
     return pd.DataFrame(out)
 
@@ -222,11 +223,17 @@ def get_binned_ref(ref_df, gene_bin_intersection, gene_id="gene", bin_id="bin_id
 
 def get_binned_gtf(binning):
 
-    return diagnostics.validate_annotation(
+    out = diagnostics.validate_annotation(
         pd.DataFrame({"CHROM": binning["CHROM"].astype("string"),
-                      "gene_start": binning["start"].astype(np.int64),
+                      # Bin coordinates to 1-based inclusive coordinates.
+                      "gene_start": binning["start"].astype(np.int64) + 1,
                       "gene_end": binning["end"].astype(np.int64),
                       "gene": binning["bin_id"].astype(str)}))
+
+    # Preserve the exact genomic width of the bin.
+    out["gene_length"] = binning["end"].to_numpy(dtype=np.int64) - binning["start"].to_numpy(dtype=np.int64)
+
+    return out
 
 
 def _load_table(x, index_col=None):
@@ -234,12 +241,15 @@ def _load_table(x, index_col=None):
     if isinstance(x, pd.DataFrame):
 
         out = x.copy()
+        has_explicit_index = (out.index.name is not None or not isinstance(out.index, pd.RangeIndex))
 
-        if index_col is not None:
+        if index_col is not None and not has_explicit_index:
 
             if isinstance(index_col, int):
                 index_name = out.columns[index_col]
             else:
+                if index_col not in out.columns:
+                    raise KeyError(f"Column {index_col!r} is absent from the table.")
                 index_name = index_col
 
             out = out.set_index(index_name)

@@ -547,15 +547,6 @@ def run_spacenumbat(
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
-    annotation_chroms = set(gtf["CHROM"].astype(str))
-    
-    if include_x and "X" not in annotation_chroms:
-        raise ValueError("include_x=True but chromosome X is absent "
-                         "from the final inference annotation.")
-    if include_y and "Y" not in annotation_chroms:
-        raise ValueError("include_y=True but chromosome Y is absent "
-                         "from the final inference annotation.")
-    
     if max_cost == None:
         max_cost = count_mat.shape[0]*tau
         
@@ -578,14 +569,23 @@ def run_spacenumbat(
     common_genes = utils.get_common_genes(count_mat=count_mat,
                                           reference=lambdas_ref,
                                           gtf=gtf)
+    
+    feature_chroms = set(gtf.loc[gtf["gene"].astype(str).isin(common_genes),
+                                 "CHROM"].astype(str))
+    
+    if include_x and "X" not in feature_chroms:
+        raise ValueError("include_x=True but chromosome X has no features "
+                         "shared by the count matrix, reference, and annotation.")
+    if include_y and "Y" not in feature_chroms:
+        raise ValueError("include_y=True but chromosome Y has no features "
+                         "shared by the count matrix, reference, and annotation.")
 
     count_mat = count_mat[:, common_genes].copy()
     lambdas_ref = lambdas_ref.reindex(common_genes).copy()
     
     if not count_mat.var_names.equals(lambdas_ref.index):
-        raise RuntimeError(
-            "Internal gene alignment failed: count_mat and lambdas_ref "
-            "do not have identical feature indices.")
+        raise RuntimeError("Internal gene alignment failed: count_mat and lambdas_ref "
+                           "do not have identical feature indices.")
     
     # filter 0 coverage cells
     zero_cov = count_mat[count_mat.X.sum(1) == 0].obs_names.to_list()
