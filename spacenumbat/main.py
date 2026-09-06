@@ -153,6 +153,19 @@ def run_spacenumbat(
         dataframe Transcript GTF, if NULL will use the default GTF for the specified genome 
     genome : str, optional
         Genome version (e.g., 'hg38', 'hg38_old'). Default is 'hg38'.
+    chrom_size_fai_path : str or Path, optional
+        FASTA index (.fai) used to define chromosome names and lengths
+        for custom genomes. For ATAC analysis, it may also be used to
+        construct the chromosome-size dictionary passed to SnapATAC2.
+    include_x : bool, optional
+        Include chromosome X in the analysis. Default is False.
+    include_y : bool, optional
+        Include chromosome Y in the analysis. Default is False.
+    snap_chrom_sizes : snapatac2.genome.Genome or dict[str, int], optional
+        Genome definition used for ATAC fragment import. May be a
+        SnapATAC2 Genome object or a chromosome-name to chromosome-length
+        dictionary. For custom ATAC genomes, either this argument or
+        chrom_size_fai_path must be supplied.
     out_dir : str, optional
         Output directory. Default is the system temporary directory.
     gamma : float, optional
@@ -280,10 +293,6 @@ def run_spacenumbat(
         raise TypeError("genome must be a non-empty genome name.")
     
     genome = genome.strip()
-    genome_excluded_regions = None
-    
-    if (genome in PACKAGED_NUMBAT_GENOMES and filter_hla_hg38):
-        genome_excluded_regions = HG38_HLA
         
     has_rna = mode in {"rna", "rna_bin", "combined"}
     has_atac = mode in {"atac_bin", "combined"}
@@ -383,6 +392,9 @@ def run_spacenumbat(
                              "The ATAC reference must match both the genome build "
                              "and genomic binning used for the sample.")
             
+    if df_allele is None:
+        raise ValueError("df_allele is required for all SpaceNumbat modes.")
+            
     if gtf is not None:
         
         if isinstance(gtf, pd.DataFrame):
@@ -453,15 +465,18 @@ def run_spacenumbat(
 
         # Default Numbat binning/reference
         if binning == "numbat":
+            
+            if include_x or include_y:
+                raise ValueError("The packaged Numbat binning is autosomal. "
+                                 "Use binning='fixed' or custom_binning "
+                                 "to include chromosome X or Y.")
         
             if genome not in PACKAGED_NUMBAT_GENOMES:
-                raise ValueError(
-                    "binning='numbat' uses the packaged Numbat "
-                    "hg38 genomic bins and is only valid for "
-                    "'hg38' and 'hg38_old'. "
-                    "Use binning='fixed' or custom_binning for "
-                    f"genome={genome!r}."
-                )
+                raise ValueError("binning='numbat' uses the packaged Numbat "
+                                 "hg38 genomic bins and is only valid for "
+                                 "'hg38' and 'hg38_old'. "
+                                 "Use binning='fixed' or custom_binning for "
+                                 f"genome={genome!r}.")
         
             numbat_binning = spacenumbat.data.numbat_bins
         
@@ -1069,6 +1084,8 @@ def run_spacenumbat(
                                          min_depth=min_depth, 
                                          nu=nu, 
                                          segs_loh=segs_loh,
+                                         filter_hla=filter_hla,
+                                         filter_segments=filter_segments_df,
                                          ncores=ncores)
     
     bulk_clones = operations.run_group_hmms(bulks=bulk_clones, 

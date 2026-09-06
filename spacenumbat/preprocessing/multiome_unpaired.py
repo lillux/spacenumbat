@@ -416,32 +416,53 @@ def prepare_unpaired_multiome_inputs(
     current_binning = genome_spec.normalize_table(current_binning,
                                                   table_name="genomic binning")
     
-    if "source_bin_id" not in current_binning.columns:
-
-        source_chrom = current_binning["CHROM"].map(genome_spec.canonical_to_source)
-        
-        current_binning["source_bin_id"] = (
-            source_chrom.astype(str)
-            + ":"
-            + current_binning["start"].astype(str)
-            + "-"
-            + current_binning["end"].astype(str)
-            )
-
-    required_binning = {
-        "bin_id",
-        "CHROM",
-        "start",
-        "end",
-        }
-
+    required_binning = {"bin_id",
+                        "CHROM",
+                        "start",
+                        "end"}
+    
     missing = required_binning.difference(current_binning.columns)
-
+    
     if missing:
         raise ValueError(f"Binning table is missing columns: {sorted(missing)}")
-
+    
     current_binning = current_binning.copy()
+    current_binning["start"] = pd.to_numeric(current_binning["start"],
+                                             errors="raise").astype(np.int64)
+    current_binning["end"] = pd.to_numeric(current_binning["end"],
+                                           errors="raise").astype(np.int64)
+    
+    chrom_length = current_binning["CHROM"].map(genome_spec.chromosome_lengths)
+    
+    invalid = (
+        (current_binning["start"] < 0)
+        | (current_binning["end"] <= current_binning["start"])
+        | (current_binning["end"] > chrom_length)
+        )
+    
+    if invalid.any():
+        raise ValueError("Genomic bins contain invalid or out-of-bound coordinates.")
+    # bin_id is an opaque internal feature identifier.
     current_binning["bin_id"] = current_binning["bin_id"].astype(str)
+    # source_bin_id is always reconstructed from the genome source namespace.
+    source_chrom = current_binning["CHROM"].map(genome_spec.canonical_to_source)
+    
+    current_binning["source_bin_id"] = (
+        source_chrom.astype(str)
+        + ":"
+        + current_binning["start"].astype(str)
+        + "-"
+        + current_binning["end"].astype(str)
+        )
+    
+    current_binning["width"] = current_binning["end"] - current_binning["start"]
+    
+    if current_binning["bin_id"].duplicated().any():
+        raise ValueError("Binning table contains duplicated bin_id values.")
+    
+    if current_binning["source_bin_id"].duplicated().any():
+        raise ValueError("Binning table contains duplicated genomic regions.")
+    
     current_binning.index = current_binning["bin_id"]
     expected_bins = pd.Index(current_binning["bin_id"], name="bin_id")
 
@@ -456,10 +477,8 @@ def prepare_unpaired_multiome_inputs(
 
         if missing:
             raise ValueError(f"Missing RNA inputs: {missing}")
-
         if source_gtf is None:
             raise ValueError("source_gtf is required for RNA binning.")
-
         if rna_reference is None:
             raise ValueError("rna_reference is required for RNA binning.")
 
@@ -491,8 +510,6 @@ def prepare_unpaired_multiome_inputs(
         if atac_reference is None:
             raise ValueError("An ATAC reference is required.")
 
-        genomic_regions = expected_bins.tolist()
-
         adata_atac = get_atac_binning(
             fragments_path=atac_fragments_path,
             genomic_regions=current_binning["source_bin_id"].tolist(),
@@ -516,11 +533,11 @@ def prepare_unpaired_multiome_inputs(
         for feature in atac_ref.index:
         
             if feature in expected_set:
-                # Already using internal bin IDs.
+                # using internal bin IDs.
                 normalized_index.append(feature)
             
             elif feature in source_to_internal.index:
-                # External/source chromosome namespace.
+                # source chromosome namespace.
                 normalized_index.append(source_to_internal.loc[feature])
         
             else:
