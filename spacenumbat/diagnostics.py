@@ -224,6 +224,12 @@ def check_filter_segments(filter_segments):
     else:
         raise TypeError("filter_segments must be a "
                         "DataFrame or TSV path.")
+        
+    if ("seg_start" not in df.columns and "start" in df.columns):
+        df = df.rename(columns={"start": "seg_start"})
+    
+    if ("seg_end" not in df.columns and "end" in df.columns):
+        df = df.rename(columns={"end": "seg_end"})
 
     required = {"CHROM",
                 "seg_start",

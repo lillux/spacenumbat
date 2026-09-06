@@ -285,42 +285,85 @@ def run_spacenumbat(
     if (genome in PACKAGED_NUMBAT_GENOMES and filter_hla_hg38):
         genome_excluded_regions = HG38_HLA
         
-    effective_filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)
-    filter_hla=effective_filter_hla
+    has_rna = mode in {"rna", "rna_bin", "combined"}
+    has_atac = mode in {"atac_bin", "combined"}
     
-    # GenomeSpec resolution    
-    if chrom_size_fai_path is not None:
+    filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)
     
-        genome_spec = GenomeSpec.from_fai(name=genome,
-                                          fai_path=chrom_size_fai_path,
-                                          include_x=include_x,
-                                          include_y=include_y)
+    # Resolve genome definition    
+    if has_atac:
+        # SnapATAC2 Genome or dict[str, int].
+        if snap_chrom_sizes is None:
     
-    elif snap_chrom_sizes is not None:
+            # An explicitly supplied FAI is sufficient to construct
+            # a valid chromosome-size dictionary for SnapATAC2.
+            if chrom_size_fai_path is not None:
     
-        snap_sizes = getattr(snap_chrom_sizes, 
-                             "chrom_sizes",
-                             snap_chrom_sizes)
+                fai_spec = GenomeSpec.from_fai(name=genome,
+                                               fai_path=chrom_size_fai_path,
+                                               include_x=include_x,
+                                               include_y=include_y)
     
-        genome_spec = GenomeSpec.from_chrom_sizes(
-            name=genome,
-            chrom_sizes=snap_sizes,
-            include_x=include_x,
-            include_y=include_y)
+                snap_chrom_sizes = fai_spec.source_chromosome_lengths
     
-    elif genome in PACKAGED_NUMBAT_GENOMES:
+            elif genome in PACKAGED_NUMBAT_GENOMES:
     
-        genome_spec = GenomeSpec.from_chrom_sizes(
-            name=genome,
-            chrom_sizes=HG38_CHROM_SIZES,
-            include_x=include_x,
-            include_y=include_y)
+                try:
+                    import snapatac2 as snap
+                except ImportError as exc:
+                    raise ImportError("ATAC preprocessing requires SnapATAC2.") from exc
+    
+                snap_chrom_sizes = snap.genome.hg38
+    
+            else:
+    
+                raise ValueError("ATAC analysis of a custom genome requires "
+                                 "either snap_chrom_sizes or "
+                                 "chrom_size_fai_path.")
+    
+        # The exact chromosome namespace supplied to SnapATAC2
+        # defines source_chrom.
+        snap_sizes = multiome_unpaired._get_snap_chrom_sizes(snap_chrom_sizes)
+        genome_spec = GenomeSpec.from_chrom_sizes(name=genome,
+                                                  chrom_sizes=snap_sizes,
+                                                  include_x=include_x,
+                                                  include_y=include_y)
+    
+        # Optional independent assembly consistency check.
+        if chrom_size_fai_path is not None:
+    
+            fai_spec = GenomeSpec.from_fai(name=genome,
+                                           fai_path=chrom_size_fai_path,
+                                           include_x=include_x,
+                                           include_y=include_y)
+    
+            if (fai_spec.chromosome_lengths != genome_spec.chromosome_lengths):
+                raise ValueError("chrom_size_fai_path and "
+                                 "snap_chrom_sizes describe different "
+                                 "chromosome lengths.")
     
     else:
+        # RNA-only path.
+        if chrom_size_fai_path is not None:
     
-        raise ValueError(f"Genome {genome!r} is not packaged. "
-                         "Provide chrom_size_fai_path or a "
-                         "SnapATAC2 genome through snap_chrom_sizes.")
+            genome_spec = GenomeSpec.from_fai(name=genome,
+                                              fai_path=chrom_size_fai_path,
+                                              include_x=include_x,
+                                              include_y=include_y)
+    
+        elif genome in PACKAGED_NUMBAT_GENOMES:
+    
+            genome_spec = GenomeSpec.from_chrom_sizes(
+                name=genome,
+                chrom_sizes=HG38_CHROM_SIZES,
+                include_x=include_x,
+                include_y=include_y)
+    
+        else:
+    
+            raise ValueError(f"Genome {genome!r} is not packaged. "
+                             "RNA-only analysis requires "
+                             "chrom_size_fai_path.")
     
     
     log.info(
@@ -329,83 +372,8 @@ def run_spacenumbat(
         f"chromosomes="
         f"{','.join(genome_spec.analysis_chromosomes)} | "
         f"include_x={genome_spec.include_x} | "
-        f"include_y={genome_spec.include_y}")
-        
-    log.info(f"Pipeline configuration | mode={mode} | genome={genome} | binning={binning} | "
-             f"spatial={spatial} | ncores={ncores}")
-    
-    if df_allele is None:
-        raise ValueError("df_allele is required for all SpaceNumbat modes.")
-        
-    has_rna = mode in {"rna", "rna_bin", "combined"}
-    has_atac = mode in {"atac_bin", "combined"}
-    
-    if has_rna and lambdas_ref is None:
-        raise ValueError(f"lambdas_ref must be supplied when mode={mode!r}. "
-                         "SpaceNumbat does not infer an RNA reference because "
-                         "the reference must match the analyzed genome.")
-    
-    if has_atac and snap_chrom_sizes is None:
-
-        if genome in PACKAGED_NUMBAT_GENOMES:
-        
-            try:
-                import snapatac2 as snap
-            except ImportError as exc:
-                raise ImportError("ATAC preprocessing requires SnapATAC2.") from exc
-        
-            snap_chrom_sizes = snap.genome.hg38
-        
-        else:
-        
-            raise ValueError(
-                "snap_chrom_sizes must be provided for "
-                f"ATAC analysis of genome {genome!r}. "
-                "It may be a SnapATAC2 Genome object "
-                "or chromosome-size dictionary.")
-            
-    if has_atac:
-
-        # For ATAC the Snap/fragments chromosome namespace
-        # defines source_chrom.
-        snap_sizes = multiome_unpaired._get_snap_chrom_sizes(snap_chrom_sizes)
-        genome_spec = GenomeSpec.from_chrom_sizes(name=genome,
-                                                  chrom_sizes=snap_sizes,
-                                                  include_x=include_x,
-                                                  include_y=include_y)
-    
-    elif chrom_size_fai_path is not None:
-    
-        genome_spec = GenomeSpec.from_fai(name=genome,
-                                          fai_path=chrom_size_fai_path,
-                                          include_x=include_x,
-                                          include_y=include_y)
-    
-    elif genome in PACKAGED_NUMBAT_GENOMES:
-    
-        genome_spec = GenomeSpec.from_chrom_sizes(name=genome,
-                                                  chrom_sizes=HG38_CHROM_SIZES,
-                                                  include_x=include_x,
-                                                  include_y=include_y)
-    
-    else:
-    
-        raise ValueError(f"Genome {genome!r} is not packaged. "
-                         "RNA-only analysis requires "
-                         "chrom_size_fai_path.")
-        
-    if (has_atac and chrom_size_fai_path is not None):
-
-        fai_spec = GenomeSpec.from_fai(
-            name=genome,
-            fai_path=chrom_size_fai_path,
-            include_x=include_x,
-            include_y=include_y,)
-    
-        if (fai_spec.chromosome_lengths != genome_spec.chromosome_lengths):
-            raise ValueError("chrom_size_fai_path and "
-                             "snap_chrom_sizes describe "
-                             "different chromosome lengths.")
+        f"include_y={genome_spec.include_y}"
+    )
             
     if has_atac and atac_reference is None:
         if binning == "numbat" and genome in PACKAGED_NUMBAT_GENOMES:
@@ -415,11 +383,16 @@ def run_spacenumbat(
                              "The ATAC reference must match both the genome build "
                              "and genomic binning used for the sample.")
             
-    
-            
     if gtf is not None:
-        gtf = diagnostics.load_annotation(gtf)
+        
+        if isinstance(gtf, pd.DataFrame):
+            gtf = gtf.copy()
     
+        elif isinstance(gtf, (str, os.PathLike)):
+            gtf = pd.read_table(gtf)
+    
+        else:
+            raise TypeError("gtf must be a pandas.DataFrame or path to a TSV file.")
     
     if mode == "rna":
 
@@ -559,6 +532,15 @@ def run_spacenumbat(
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
+    annotation_chroms = set(gtf["CHROM"].astype(str))
+    
+    if include_x and "X" not in annotation_chroms:
+        raise ValueError("include_x=True but chromosome X is absent "
+                         "from the final inference annotation.")
+    if include_y and "Y" not in annotation_chroms:
+        raise ValueError("include_y=True but chromosome Y is absent "
+                         "from the final inference annotation.")
+    
     if max_cost == None:
         max_cost = count_mat.shape[0]*tau
         
@@ -621,8 +603,8 @@ def run_spacenumbat(
         if call_clonal_loh:
             msg = "Cannot specify both segs_loh and call_clonal_loh"
             raise ValueError(msg)
-            segs_loh = genome_spec.normalize_table(segs_loh,
-                                                   table_name="LOH segments")
+        segs_loh = genome_spec.normalize_table(segs_loh,
+                                               table_name="LOH segments")
         segs_loh = diagnostics.check_segs_loh(segs_loh)
     
     # Check if filtering Chromosomal segments
