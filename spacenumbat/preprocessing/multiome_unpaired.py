@@ -50,6 +50,30 @@ def get_chrom_sizes_from_fasta_index(fasta_fai_path: str,
     return chrom_sizes
 
 
+def _get_snap_chrom_sizes(value):
+
+    if isinstance(value, dict):
+        sizes = value
+
+    else:
+        sizes = getattr(value, "chrom_sizes", None)
+
+        if not isinstance(sizes, dict):
+            raise TypeError("snap_chrom_sizes must be either "
+                            "a SnapATAC2 Genome object or "
+                            "dict[str, int].")
+
+    sizes = {str(chrom): int(length) for chrom, length in sizes.items()}
+
+    if not sizes:
+        raise ValueError("snap_chrom_sizes is empty.")
+
+    if any(length <= 0 for length in sizes.values()):
+        raise ValueError("All SnapATAC chromosome lengths "
+                         "must be positive.")
+    return sizes
+
+
 def get_custom_gtf_binning(genome_spec, bin_size: int = 220_000):
 
     rows = []
@@ -482,6 +506,38 @@ def prepare_unpaired_multiome_inputs(
         atac_ref.index = atac_ref.index.astype(str)
 
         source_to_internal = current_binning.set_index("source_bin_id")["bin_id"]
+        if source_to_internal.index.has_duplicates:
+            raise ValueError("source_bin_id contains duplicated bins.")
+        
+        expected_set = set(expected_bins)
+        normalized_index = []
+        unknown = []
+        
+        for feature in atac_ref.index:
+        
+            if feature in expected_set:
+                # Already using internal bin IDs.
+                normalized_index.append(feature)
+            
+            elif feature in source_to_internal.index:
+                # External/source chromosome namespace.
+                normalized_index.append(source_to_internal.loc[feature])
+        
+            else:
+                unknown.append(feature)
+        
+        if unknown:
+        
+            raise ValueError("The ATAC reference contains bins that "
+                             "do not belong to the selected genome/binning. "
+                             f"Examples: {unknown[:5]}")
+        
+        atac_ref.index = pd.Index(normalized_index, name="bin_id")
+        
+        if atac_ref.index.has_duplicates:
+            raise ValueError("The ATAC reference contains duplicated "
+                             "bins after genome normalization.")
+            
         snap_features = pd.Index(adata_atac.var_names.astype(str))
         unexpected = snap_features.difference(source_to_internal.index)
         

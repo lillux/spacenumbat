@@ -207,66 +207,36 @@ def check_segs_loh(segs_loh: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return segs_loh
 
 
-def check_filter_segments(filter_segments_path: Union[Path, None]) -> pd.DataFrame:
-    """
-    Validate that the provided path exists, is a readable TSV file,
-    and contains required columns with correct types.
-    Required columns are: ['CHROM', 'seg_start', 'seg_end']
+def check_filter_segments(filter_segments):
 
-    Parameters
-    ----------
-    filter_segments_path : str
-        File path to the TSV file containing segment data.
+    if filter_segments is None:
+        return None
 
-    Returns
-    -------
-    pd.DataFrame
-        Loaded DataFrame if all checks pass.
+    if isinstance(filter_segments, pd.DataFrame):
+        df = filter_segments.copy()
 
-    Raises
-    ------
-    FileNotFoundError
-        If the file does not exist or path is invalid.
-    ValueError
-        If the file cannot be read as a TSV, or required columns are missing
-        or have incorrect types.
-    """
-    if filter_segments_path is None:
-        return filter_segments_path
-    
-    # Check path existence and validity
-    if not os.path.exists(filter_segments_path):
-        raise FileNotFoundError(f"Path does not exist: {filter_segments_path}")
-    if not os.path.isfile(filter_segments_path):
-        raise FileNotFoundError(f"Path is not a file: {filter_segments_path}")
+    elif isinstance(filter_segments,(str, Path),):
+        if not os.path.isfile(filter_segments):
+            raise FileNotFoundError(f"File not found: {filter_segments}")
 
-    # Read the file as TSV
-    try:
-        df = pd.read_csv(filter_segments_path, sep='\t')
-    except Exception as e:
-        raise ValueError(f"Failed to read file as TSV: {e}")
+        df = pd.read_table(filter_segments)
 
-    # Validate required columns
-    required_columns = ['CHROM', 'seg_start', 'seg_end']
-    missing_cols = [col for col in required_columns if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns: {missing_cols}")
+    else:
+        raise TypeError("filter_segments must be a "
+                        "DataFrame or TSV path.")
 
-    # Validate column types: CHROM as string, seg_start and seg_end as integers
-    # Coerce columns to expected types and check for errors
-    if not pd.api.types.is_string_dtype(df['CHROM']):
-        try:
-            df['CHROM'] = df['CHROM'].astype("string")
-        except Exception:
-            raise ValueError("Column 'CHROM' cannot be converted to string")
+    required = {"CHROM",
+                "seg_start",
+                "seg_end"}
 
-    for col in ['seg_start', 'seg_end']:
-        if not pd.api.types.is_integer_dtype(df[col]):
-            # Try coercing to integers (may fail if non-numeric data present)
-            try:
-                df[col] = pd.to_numeric(df[col], errors='raise').astype(int)
-            except Exception:
-                raise ValueError(f"Column '{col}' cannot be converted to integer")
+    missing = required.difference(df.columns)
+
+    if missing:
+        raise ValueError(f"Missing columns: {sorted(missing)}")
+
+    df["CHROM"] = df["CHROM"].astype("string").str.strip()
+    df["seg_start"] = pd.to_numeric(df["seg_start"], errors="raise").astype(np.int64)
+    df["seg_end"] = pd.to_numeric(df["seg_end"], errors="raise").astype(np.int64)
 
     return df
 
