@@ -299,7 +299,52 @@ class GenomeSpec:
         return out.reset_index(drop=True)
 
 
-
+    def validate_position_bounds(self,
+                                 table: pd.DataFrame,
+                                 pos_col: str = "POS",
+                                 table_name: str = "table") -> pd.DataFrame:
+    
+        out = table.copy()
+        out[pos_col] = pd.to_numeric(out[pos_col], errors="raise").astype(np.int64)
+        chrom_length = out["CHROM"].map(self.chromosome_lengths)
+        invalid = ((out[pos_col] < 1) | (out[pos_col] > chrom_length))
+    
+        if invalid.any():
+            examples = out.loc[invalid, ["CHROM", pos_col]].head()
+    
+            raise ValueError(f"{table_name} contains genomic positions "
+                             "outside the selected genome assembly. "
+                             f"Examples:\n{examples}")
+    
+        return out
+    
+    
+    def validate_interval_bounds(self,
+                                 table: pd.DataFrame,
+                                 start_col: str,
+                                 end_col: str,
+                                 table_name: str = "table",
+                                 min_start: int = 0) -> pd.DataFrame:
+    
+        out = table.copy()
+        out[start_col] = pd.to_numeric(out[start_col], errors="raise").astype(np.int64)
+        out[end_col] = pd.to_numeric(out[end_col], errors="raise").astype(np.int64)
+        chrom_length = out["CHROM"].map(self.chromosome_lengths)
+    
+        invalid = (
+            (out[start_col] < min_start)
+            | (out[end_col] < out[start_col])
+            | (out[end_col] > chrom_length)
+            )
+    
+        if invalid.any():
+            examples = out.loc[invalid, ["CHROM", start_col, end_col]].head()
+    
+            raise ValueError(f"{table_name} contains intervals outside "
+                             "the selected genome assembly. "
+                             f"Examples:\n{examples}")
+    
+        return out
 
 
 

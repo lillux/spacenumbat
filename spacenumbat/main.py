@@ -457,6 +457,12 @@ def run_spacenumbat(
         
             source_gtf = genome_spec.normalize_table(source_gtf,
                                                      table_name="source GTF")
+            # check for compatibility between chromosome bounds and current annotation
+            source_gtf = genome_spec.validate_interval_bounds(source_gtf,
+                                                              start_col="gene_start",
+                                                              end_col="gene_end",
+                                                              table_name="source GTF",
+                                                              min_start=1)
         
             source_gtf = diagnostics.validate_annotation(source_gtf)
         
@@ -539,9 +545,17 @@ def run_spacenumbat(
         
     
     gtf = genome_spec.normalize_table(gtf, table_name="inference annotation")
+    gtf = genome_spec.validate_interval_bounds(gtf,
+                                               start_col="gene_start",
+                                               end_col="gene_end",
+                                               table_name="inference annotation",
+                                               min_start=1)
     gtf = diagnostics.validate_annotation(gtf)
 
     df_allele = genome_spec.normalize_table(df_allele, table_name="allele counts")
+    df_allele = genome_spec.validate_position_bounds(df_allele,
+                                                     pos_col="POS",
+                                                     table_name="allele counts")
     df_allele = utils.check_allele_df(df_allele)
     df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
     

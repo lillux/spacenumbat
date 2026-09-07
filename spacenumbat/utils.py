@@ -637,6 +637,18 @@ def get_allele_bulk(
     
     df_allele['AR'] = df_allele.AD / df_allele.DP
     df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
+    
+    # verify continuity and positivity of genetic distance mapping
+    for chrom, chrom_df in df_allele.groupby("CHROM", observed=True, sort=False):
+    
+        cm = pd.to_numeric(chrom_df["cM"], errors="raise").to_numpy(dtype=float)
+    
+        if not np.isfinite(cm).all():
+            raise ValueError(f"Non-finite genetic-map positions on chromosome {chrom}.")
+        if np.any(np.diff(cm) < 0):
+            raise ValueError(f"Genetic-map cM positions decrease with physical "
+                             f"position on chromosome {chrom}. "
+                             "Check that the genetic map matches the genome build.")
 
     # Assign SNP index per chromosome before depth filtering.
     flat_list = []

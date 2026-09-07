@@ -494,6 +494,11 @@ def prepare_unpaired_multiome_inputs(
 
         gene_intersect = get_gene_bin_intersection(source_gtf, current_binning)
         
+        if gene_intersect.empty:
+            raise ValueError("No genes could be assigned to genomic bins. "
+                             "Check that the GTF and chromosome-size definition "
+                             "use the same genome assembly and coordinate system.")
+        
         log.info(f'RNA gene-to-bin mapping | input_genes={source_gtf["gene"].nunique()} | '
                  f'mapped_genes={gene_intersect["gene"].nunique()} | '
                  f'populated_bins={gene_intersect["bin_id"].nunique()}')

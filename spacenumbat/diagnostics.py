@@ -26,18 +26,16 @@ def validate_annotation(annotation: pd.DataFrame) -> pd.DataFrame:
 
     The ``gene`` column must uniquely identify one genomic interval because
     expression matrices and reference profiles use it as their feature key.
+    
+    gene_start and gene_end are 1-based inclusive coordinates.
     """
     required = ["CHROM", "gene_start", "gene_end", "gene"]
     missing = [column for column in required if column not in annotation.columns]
 
     if missing:
-        raise ValueError(
-            "Gene annotation is missing required columns: "
-            + ", ".join(missing)
-        )
+        raise ValueError("Gene annotation is missing required columns: " + ", ".join(missing))
 
     annotation = annotation.loc[:, required].copy()
-
     annotation["gene"] = annotation["gene"].astype("string").str.strip()
     annotation["CHROM"] = annotation["CHROM"].astype("string").str.strip()
     annotation["gene_start"] = pd.to_numeric(annotation["gene_start"], errors="raise").astype(np.int64)
@@ -45,28 +43,21 @@ def validate_annotation(annotation: pd.DataFrame) -> pd.DataFrame:
 
     missing_gene = annotation["gene"].isna() | annotation["gene"].eq("")
     if missing_gene.any():
-        raise ValueError(
-            f"Gene annotation contains {missing_gene.sum()} missing or empty "
-            "gene identifiers."
-        )
+        raise ValueError(f"Gene annotation contains {missing_gene.sum()} missing or empty "
+                         "gene identifiers.")
 
     invalid_coordinates = (
-        annotation["gene_start"].lt(0)
+        annotation["gene_start"].lt(1)
         | annotation["gene_end"].lt(annotation["gene_start"])
     )
     if invalid_coordinates.any():
-        raise ValueError(
-            f"Gene annotation contains {invalid_coordinates.sum()} invalid "
-            "genomic intervals."
-        )
+        raise ValueError(f"Gene annotation contains {invalid_coordinates.sum()} invalid "
+                         "genomic intervals.")
 
     duplicated = annotation["gene"].duplicated(keep=False)
     if duplicated.any():
         duplicate_counts = (annotation.loc[duplicated, "gene"].value_counts().head(10))
-        preview = ", ".join(
-            f"{gene} ({count})"
-            for gene, count in duplicate_counts.items()
-        )
+        preview = ", ".join(f"{gene} ({count})" for gene, count in duplicate_counts.items())
 
         raise ValueError(
             "Column 'gene' must contain unique feature identifiers. "
@@ -74,12 +65,9 @@ def validate_annotation(annotation: pd.DataFrame) -> pd.DataFrame:
             f"identifiers. Examples: {preview}. "
             "Collapse transcript records to one gene-level interval or use "
             "unique gene identifiers consistently in the annotation, count "
-            "matrix, and reference profile."
-        )
+            "matrix, and reference profile.")
 
-    annotation["gene_length"] = (
-        annotation["gene_end"] - annotation["gene_start"]
-    )
+    annotation["gene_length"] = annotation["gene_end"] - annotation["gene_start"]
 
     return annotation
 
