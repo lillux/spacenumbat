@@ -621,10 +621,13 @@ def run_spacenumbat(
     # check provided consensus CNVs
     if segs_consensus_fix is not None:
 
-        segs_consensus_fix = genome_spec.normalize_table(
-            segs_consensus_fix,
-            table_name="fixed consensus segments")
-    
+        segs_consensus_fix = genome_spec.normalize_table(segs_consensus_fix,
+                                                         table_name="fixed consensus segments")
+        segs_consensus_fix = genome_spec.validate_interval_bounds(segs_consensus_fix,
+                                                                  start_col="seg_start",
+                                                                  end_col="seg_end",
+                                                                  table_name="fixed consensus segments",
+                                                                  min_start=1)
     segs_consensus_fix = diagnostics.check_segs_fix(segs_consensus_fix)
     
     # check provided clonal LoH
@@ -634,6 +637,11 @@ def run_spacenumbat(
             raise ValueError(msg)
         segs_loh = genome_spec.normalize_table(segs_loh,
                                                table_name="LOH segments")
+        segs_loh = genome_spec.validate_interval_bounds(segs_loh,
+                                                        start_col="seg_start",
+                                                        end_col="seg_end",
+                                                        table_name="LOH segments",
+                                                        min_start=1)
         segs_loh = diagnostics.check_segs_loh(segs_loh)
     
     # Check if filtering Chromosomal segments
@@ -641,11 +649,13 @@ def run_spacenumbat(
 
         filter_segments_df = diagnostics.check_filter_segments(filter_chromosome_segments)    
         filter_segments_df = genome_spec.normalize_table(filter_segments_df, table_name="filtered chromosome segments")
-    
+        filter_segments_df = genome_spec.validate_interval_bounds(filter_segments_df,
+                                                                  start_col="seg_start",
+                                                                  end_col="seg_end",
+                                                                  table_name="filtered chromosome segments",
+                                                                  min_start=1)
     else:
-    
         filter_segments_df = None
-            
         
     # Normalize diploid chrom
     if diploid_chroms is not None:
