@@ -412,8 +412,8 @@ def filter_genes(
         genes_exclude = []
         for _, row in filter_segments.iterrows():
             overlapping = gtf_df[(gtf_df['CHROM'].astype("string") == str(row.CHROM)) &
-                                 (gtf_df['gene_start'] < row.seg_end) &
-                                 (gtf_df['gene_end'] > row.seg_start)]['gene'].tolist()
+                                 (gtf_df['gene_start'] <= row.seg_end) &
+                                 (gtf_df['gene_end'] >= row.seg_start)]['gene'].tolist()
             genes_exclude.extend(overlapping)
         genes_keep = [gene for gene in genes_keep if gene not in genes_exclude]
 
@@ -426,8 +426,7 @@ def filter_genes(
 
     lambdas_obs = pd.Series(
         np.array(count_mat_filtered.X.sum(0) / count_mat_filtered.X.sum()).ravel(),
-        index=count_mat_filtered.var_names
-    )
+        index=count_mat_filtered.var_names)
 
     # Thresholds and means
     min_both = 2
@@ -756,8 +755,8 @@ def combine_bulk(
         genes_exclude = []
         for _, row in filter_segments.iterrows():
             to_filter = bulk[(bulk['CHROM'].astype("string") == str(row.CHROM)) &
-                             (bulk['POS'] < row.seg_end) &
-                             (bulk['POS'] > row.seg_start)].index.tolist()
+                             (bulk['POS'] <= row.seg_end) &
+                             (bulk['POS'] >= row.seg_start)].index.tolist()
             genes_exclude.extend(to_filter)
         bulk = bulk.drop(index=genes_exclude)
     

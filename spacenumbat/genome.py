@@ -9,7 +9,6 @@ Created on Thu Sep  3 23:57:36 2026
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import re
 
 import numpy as np
@@ -274,13 +273,17 @@ class GenomeSpec:
     
         source_chrom = out["CHROM"].map(self.canonical_to_source)
         
-        out["bin_id"] = (
-            out["CHROM"].astype(str)
-            + ":"
-            + out["start"].astype(str)
-            + "-"
-            + out["end"].astype(str)
-        )
+        if "bin_id" in out.columns:
+            out["bin_id"] = out["bin_id"].astype(str)
+        
+        else:
+            out["bin_id"] = (
+                out["CHROM"].astype(str)
+                + ":"
+                + out["start"].astype(str)
+                + "-"
+                + out["end"].astype(str)
+            )
     
         out["source_bin_id"] = (
             source_chrom.astype(str)
@@ -294,6 +297,10 @@ class GenomeSpec:
     
         if out["bin_id"].duplicated().any():
             raise ValueError("Duplicated genomic bins after "
+                             "chromosome normalization.")
+            
+        if out["source_bin_id"].duplicated().any():
+            raise ValueError("Duplicated source genomic bins after "
                              "chromosome normalization.")
     
         return out.reset_index(drop=True)

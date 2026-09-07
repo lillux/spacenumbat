@@ -294,7 +294,6 @@ def run_spacenumbat(
     
     genome = genome.strip()
         
-    has_rna = mode in {"rna", "rna_bin", "combined"}
     has_atac = mode in {"atac_bin", "combined"}
     
     filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)
@@ -373,7 +372,6 @@ def run_spacenumbat(
             raise ValueError(f"Genome {genome!r} is not packaged. "
                              "RNA-only analysis requires "
                              "chrom_size_fai_path.")
-    
     
     log.info(
         "Genome configuration | "
@@ -551,6 +549,9 @@ def run_spacenumbat(
                                                table_name="inference annotation",
                                                min_start=1)
     gtf = diagnostics.validate_annotation(gtf)
+    chrom_order = {chrom: i for i, chrom in enumerate(genome_spec.analysis_chromosomes)}
+    gtf = gtf.assign(_chrom_order=gtf["CHROM"].map(chrom_order)).sort_values(["_chrom_order", "gene_start", "gene_end"],
+                                                                              kind="stable").drop(columns="_chrom_order").reset_index(drop=True)
 
     df_allele = genome_spec.normalize_table(df_allele, table_name="allele counts")
     df_allele = genome_spec.validate_position_bounds(df_allele,
