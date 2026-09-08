@@ -577,7 +577,7 @@ def run_spacenumbat(
                                                        kind=spatial_decay,
                                                        connectivity_key=connectivity_key)
         
-    count_mat = utils.check_anndata(count_mat, count_to_int=False)
+    count_mat = utils.check_anndata(count_mat, count_to_int=True)
     lambdas_ref = utils.check_exp_ref(lambdas_ref)
     
     # filter for annotated genes

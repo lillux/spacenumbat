@@ -16,7 +16,6 @@ from typing import List
 
 import pandas as pd
 import numpy as np
-from pathlib import Path
 from scipy.io import mmread
 
 import scipy.sparse as sp
@@ -24,6 +23,7 @@ import pyranges as pr
 
 import spacenumbat
 from spacenumbat import diagnostics
+from spacenumbat.genome import GenomeSpec
 
 
 # Utility functions
@@ -285,6 +285,40 @@ def read_cellsnp_mtx(pu_dir: str):
     return AD, DP, barcodes
 
 
+def load_prephased_vcf(path, label, chromosomes=None):
+
+    df = pd.read_csv(
+        path,
+        sep="\t",
+        comment="#",
+        header=None,
+        low_memory=False)
+
+    if df.shape[1] < 10:
+        raise ValueError("--prephased requires a VCF containing one sample genotype column.")
+
+    df = df.rename(
+        columns={
+            0: "CHROM",
+            1: "POS",
+            3: "REF",
+            4: "ALT",
+            9: label})
+
+    df["CHROM"] = df["CHROM"].astype(str).str.replace("^chr", "", regex=True)
+
+    # Also works for VCFs containing GT:AD:DP etc.
+    df[label] = (
+        df[label]
+        .astype(str)
+        .str.split(":")
+        .str[0])
+
+    if chromosomes is not None:
+        df = df[df["CHROM"].isin(chromosomes)]
+
+    return df[["CHROM", "POS", "REF", "ALT", label]]
+
 
 def preprocess_allele(
     sample: str,
@@ -357,16 +391,15 @@ def preprocess_allele(
         vcf_pu["CHROM"].astype(str) + "_"
         + vcf_pu["POS"].astype(str) + "_"
         + vcf_pu["REF"].astype(str) + "_"
-        + vcf_pu["ALT"].astype(str)
-    )
+        + vcf_pu["ALT"].astype(str))
 
     # Convert DP and AD sparse matrices into long format
     dp_coo = DP.tocoo()
     dp_df = pd.DataFrame({
         "i": dp_coo.row,
         "j": dp_coo.col,
-        "DP": dp_coo.data,
-    })
+        "DP": dp_coo.data})
+    
     dp_df["cell"] = [barcodes[j] for j in dp_df["j"]]
     snp_ids = vcf_pu["snp_id"].to_numpy()
     dp_df["snp_id"] = snp_ids[dp_df["i"].values]
@@ -376,8 +409,8 @@ def preprocess_allele(
     ad_df = pd.DataFrame({
         "i": ad_coo.row,
         "j": ad_coo.col,
-        "AD": ad_coo.data,
-    })
+        "AD": ad_coo.data})
+    
     ad_df["cell"] = [barcodes[j] for j in ad_df["j"]]
     ad_df["snp_id"] = snp_ids[ad_df["i"].values]
     ad_df = ad_df.drop(columns=["i", "j"])[["cell", "snp_id", "AD"]]
@@ -391,8 +424,7 @@ def preprocess_allele(
     df = df.merge(
         vcf_pu_renamed[["snp_id", "CHROM", "POS", "REF", "ALT", "AD_all", "DP_all", "OTH_all"]],
         on="snp_id",
-        how="left",
-    )
+        how="left")
 
     # Avoid division by zero
     df["AR"] = df["AD"] / df["DP"].replace({0: np.nan})
@@ -419,8 +451,7 @@ def preprocess_allele(
         "Chromosome": vcf_phased["CHROM"].astype(str),
         "Start": vcf_phased["POS"].astype(int),
         "End": vcf_phased["POS"].astype(int) + 1,
-        "snp_index_tmp": vcf_phased["snp_index_tmp"],
-    }))
+        "snp_index_tmp": vcf_phased["snp_index_tmp"]}))
 
     gtf_tmp = gtf.reset_index(drop=True).copy()
     gtf_tmp["gene_index_tmp"] = np.arange(len(gtf_tmp))
@@ -429,8 +460,7 @@ def preprocess_allele(
         "Chromosome": gtf_tmp["CHROM"].astype(str),
         "Start": gtf_tmp["gene_start"].astype(int),
         "End": gtf_tmp["gene_end"].astype(int) + 1,
-        "gene_index_tmp": gtf_tmp["gene_index_tmp"],
-    }))
+        "gene_index_tmp": gtf_tmp["gene_index_tmp"]}))
 
     ov = pr_snps.join(pr_genes).as_df()
     if not ov.empty:
@@ -516,18 +546,25 @@ def main():
     parser.add_argument("--samples", default="sample")
     parser.add_argument("--bams", required=True)
     parser.add_argument("--barcodes")
-    parser.add_argument("--gmap", required=True)
+    parser.add_argument("--gmap", default=None)
     parser.add_argument("--eagle", default="eagle")
     parser.add_argument("--snpvcf", required=True)
-    parser.add_argument("--paneldir", required=True)
+    parser.add_argument("--paneldir", default=None)
     parser.add_argument("--outdir", required=True)
-    parser.add_argument("--genome", choices=["hg38", "hg38_old"], default="hg38", help=(
-        "Packaged genome annotation to use when --gtf is not supplied. "
-        "Default: hg38."))
+    parser.add_argument("--genome", default="hg38", help=(
+        "Genome identifier. Packaged annotation is available for hg38/hg38_old; "
+        "other genomes require --gtf."))
     parser.add_argument("--gtf", default=None, help=(
         "Custom genomic annotation TSV with columns CHROM, gene_start, "
         "gene_end and gene. Overrides --genome. The annotation must use "
         "the same genome build as --snpvcf, --gmap and --paneldir."))
+    parser.add_argument("--chrom-size-fai-path", default=None)
+    parser.add_argument("--include-x", action="store_true")
+    parser.add_argument("--include-y", action="store_true")
+    parser.add_argument("--prephased", action="store_true", help=(
+        "Treat --snpvcf as a single-sample VCF containing known "
+        "phased heterozygous GT values and skip Eagle phasing."))
+    
     parser.add_argument("--ncores", type=int, default=1)
     parser.add_argument("--UMItag", default="Auto")
     parser.add_argument("--cellTAG", default="CB")
@@ -542,8 +579,34 @@ def main():
 
     args = parser.parse_args()
     
+    if not args.prephased:
+        if args.gmap is None:
+            raise ValueError("--gmap is required unless --prephased is used.")
+        if args.paneldir is None:
+            raise ValueError("--paneldir is required unless --prephased is used.")
+    
+    # GenomeSpec handles custom genome when .fai path is given
+    if args.chrom_size_fai_path is not None:
+        genome_spec = GenomeSpec.from_fai(
+            name=args.genome,
+            fai_path=args.chrom_size_fai_path,
+            include_x=args.include_x,
+            include_y=args.include_y,
+        )
+    
+        chromosomes = list(genome_spec.analysis_chromosomes)
+        source_chrom = genome_spec.canonical_to_source
+    
+    else:
+        # Preserve legacy behaviour.
+        genome_spec = None
+        chromosomes = [str(i) for i in range(1, 23)]
+        source_chrom = {chrom: f"chr{chrom}" for chrom in chromosomes}
+    
     # Annotation
     gtf = load_annotation(gtf_path=args.gtf, genome=args.genome)
+    if genome_spec is not None:
+        gtf = genome_spec.normalize_table(gtf, table_name="pileup annotation")
 
     # Parse inputs
     samples = _split_csv(args.samples)
