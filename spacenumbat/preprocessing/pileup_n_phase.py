@@ -37,6 +37,12 @@ def _split_csv(value: str | None) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _strip_chr_prefix(value) -> str:
+    """Convert chr1 -> 1 while leaving already canonical labels unchanged."""
+    value = str(value).strip()
+    return value[3:] if value.lower().startswith("chr") else value
+
+
 def _validate_10x_inputs(
     samples: list[str],
     bams: list[str],
@@ -141,7 +147,7 @@ def load_vcf(path: str) -> pd.DataFrame:
             parts = line.rstrip().split("\t")
             info = parse_info(parts[7])
             lines.append({
-                "CHROM": parts[0].replace("chr", ""),
+                "CHROM": _strip_chr_prefix(parts[0]),
                 "POS": int(parts[1]),
                 "REF": parts[3],
                 "ALT": parts[4],
@@ -156,37 +162,29 @@ def load_vcf(path: str) -> pd.DataFrame:
     return df
 
 
-def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = True) -> None:
-    """Write per-chromosome VCF with proper INFO/FORMAT header lines."""
-    # declare the contigs that may be emitted
-    contigs = [f"chr{i}" for i in range(1, 23)] if chr_prefix else [str(i) for i in range(1, 23)]
+def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, contig: str) -> None:
+    """Write a single-chromosome VCF using the source-genome contig name."""
 
     header = [
         "##fileformat=VCFv4.2",
         "##source=numbat",
-        # INFO field definitions
         '##INFO=<ID=AD,Number=1,Type=Integer,Description="Alt read count across all cells/samples">',
         '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total read depth across all cells/samples">',
         '##INFO=<ID=OTH,Number=1,Type=Integer,Description="Other reads (non-REF/ALT) across all cells/samples">',
-        # FORMAT field definitions
         '##FORMAT=<ID=GT,Number=1,Type=String,Description="Unphased genotype">',
-    ]
-    # Add contig lines (optional)
-    header += [f"##contig=<ID={c}>" for c in contigs]
-
-    # Column header line with sample label
-    header.append("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + label)
+        f"##contig=<ID={contig}>",
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + label]
 
     with open(path, "w") as out:
         for h in header:
             out.write(h + "\n")
+
         for _, row in snps.iterrows():
-            chrom = row.CHROM
-            if chr_prefix:
-                chrom = f"chr{chrom}"
+
             info = f"AD={row.AD};DP={row.DP};OTH={row.OTH}"
+
             line = [
-                chrom,
+                str(contig),
                 str(int(row.POS)),
                 ".",
                 row.REF,
@@ -197,8 +195,8 @@ def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, chr_prefix: bool = 
                 "GT",
                 row.GT,
             ]
+
             out.write("\t".join(line) + "\n")
-            
     return
 
 
@@ -251,27 +249,44 @@ def read_vcf_table(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t", comment="#", header=None, low_memory=False)
     return df
 
-def load_phased_concat(outdir: str, label: str) -> pd.DataFrame:
-    """Concatenate {label}_chr*.phased.vcf.gz into one DataFrame with CHROM stripped of 'chr'."""
+def load_phased_concat(outdir: str, label: str, chromosomes: List[str]) -> pd.DataFrame:
+    """Concatenate phased chromosome VCFs."""
+
     dfs = []
-    for chr_num in range(1, 23):
-        vcf_gz = os.path.join(outdir, "phasing", f"{label}_chr{chr_num}.phased.vcf.gz")
+
+    for chrom in chromosomes:
+
+        vcf_gz = os.path.join(outdir, "phasing", f"{label}_chr{chrom}.phased.vcf.gz")
+
         if not os.path.exists(vcf_gz):
             raise FileNotFoundError(f"Phased VCF not found: {vcf_gz}")
+
         df = pd.read_csv(vcf_gz, sep="\t", comment="#", header=None, low_memory=False)
         dfs.append(df)
+
+    if not dfs:
+        raise RuntimeError("No phased chromosome VCFs were produced.")
+
     phased = pd.concat(dfs, axis=0, ignore_index=True)
-    # Standard VCF format
-    phased = phased.rename(columns={0: "CHROM", 1: "POS", 3: "REF", 4: "ALT"})
-    phased["CHROM"] = phased["CHROM"].astype(str).str.replace("^chr", "", regex=True)
+
+    phased = phased.rename(columns={
+        0: "CHROM",
+        1: "POS",
+        3: "REF",
+        4: "ALT",
+    })
+
+    phased["CHROM"] = phased["CHROM"].astype(str).map(_strip_chr_prefix)
+
     return phased
+
 
 def load_pileup_body(pu_dir: str) -> pd.DataFrame:
     """Read cellSNP.base.vcf and strip 'chr' from CHROM."""
     vcf_pu = pd.read_csv(os.path.join(pu_dir, "cellSNP.base.vcf"),
                          sep="\t", comment="#", header=None, low_memory=False)
     vcf_pu = vcf_pu.rename(columns={0: "CHROM", 1: "POS", 3: "REF", 4: "ALT"})
-    vcf_pu["CHROM"] = vcf_pu["CHROM"].astype(str).str.replace("^chr", "", regex=True)
+    vcf_pu["CHROM"] = vcf_pu["CHROM"].astype(str).map(_strip_chr_prefix)
     return vcf_pu
 
 def read_cellsnp_mtx(pu_dir: str):
@@ -305,7 +320,7 @@ def load_prephased_vcf(path, label, chromosomes=None):
             4: "ALT",
             9: label})
 
-    df["CHROM"] = df["CHROM"].astype(str).str.replace("^chr", "", regex=True)
+    df["CHROM"] = df["CHROM"].astype("string").map(_strip_chr_prefix)
 
     # Also works for VCFs containing GT:AD:DP etc.
     df[label] = (
@@ -328,7 +343,7 @@ def preprocess_allele(
     DP: sp.spmatrix,
     barcodes: List[str],
     gtf: pd.DataFrame,
-    gmap: str,
+    gmap: str | None,
     ) -> pd.DataFrame:
     """
     Preprocess allele counts and annotations for one sample.
