@@ -323,11 +323,7 @@ def load_prephased_vcf(path, label, chromosomes=None):
     df["CHROM"] = df["CHROM"].astype("string").map(_strip_chr_prefix)
 
     # Also works for VCFs containing GT:AD:DP etc.
-    df[label] = (
-        df[label]
-        .astype(str)
-        .str.split(":")
-        .str[0])
+    df[label] = df[label].astype(str).str.split(":").str[0]
 
     if chromosomes is not None:
         df = df[df["CHROM"].isin(chromosomes)]
@@ -581,6 +577,10 @@ def main():
         "phased heterozygous GT values and skip Eagle phasing."))
     
     parser.add_argument("--ncores", type=int, default=1)
+    parser.add_argument("--min-count", type=int, default=2, help=(
+        "cellsnp-lite --minCOUNT value. "
+        "Default: 2. Numbat's F1 mouse tutorial uses 1."))
+    
     parser.add_argument("--UMItag", default="Auto")
     parser.add_argument("--cellTAG", default="CB")
     
@@ -594,34 +594,72 @@ def main():
 
     args = parser.parse_args()
     
-    if not args.prephased:
+    # Reference inputs
+    if not os.path.isfile(args.snpvcf):
+        raise FileNotFoundError(f"--snpvcf file not found: {args.snpvcf}")
+    if args.chrom_size_fai_path is not None:
+        if not os.path.isfile(args.chrom_size_fai_path):
+            raise FileNotFoundError( "--chrom-size-fai-path file not found: "
+                                    f"{args.chrom_size_fai_path}")
+
+    if args.prephased:
+        # A genetic map is optional for already phased input.
+        if args.gmap is not None and not os.path.isfile(args.gmap):
+            raise FileNotFoundError(f"--gmap file not found: {args.gmap}")
+
+    else:
+
         if args.gmap is None:
             raise ValueError("--gmap is required unless --prephased is used.")
         if args.paneldir is None:
             raise ValueError("--paneldir is required unless --prephased is used.")
-    
-    # GenomeSpec handles custom genome when .fai path is given
+        if not os.path.isfile(args.gmap):
+            raise FileNotFoundError("--gmap file not found: {args.gmap}")
+        if not os.path.isdir(args.paneldir):
+            raise FileNotFoundError(f"--paneldir directory not found: {args.paneldir}")
+
+    # Resolve analysis chromosomes.
+    packaged_genomes = {"hg38", "hg38_old"}
+
     if args.chrom_size_fai_path is not None:
+
         genome_spec = GenomeSpec.from_fai(
             name=args.genome,
             fai_path=args.chrom_size_fai_path,
             include_x=args.include_x,
             include_y=args.include_y,
         )
-    
+
         chromosomes = list(genome_spec.analysis_chromosomes)
-        source_chrom = genome_spec.canonical_to_source
-    
-    else:
-        # Preserve legacy behaviour.
+        source_chrom = (genome_spec.canonical_to_source)
+
+    elif args.genome in packaged_genomes:
+
+        # Preserve existing hg38 behaviour when no FAI is supplied.
         genome_spec = None
+
         chromosomes = [str(i) for i in range(1, 23)]
+
+        if args.include_x:
+            chromosomes.append("X")
+        if args.include_y:
+            chromosomes.append("Y")
         source_chrom = {chrom: f"chr{chrom}" for chrom in chromosomes}
+
+    else:
+
+        raise ValueError(f"Genome {args.genome!r} requires "
+                         "--chrom-size-fai-path so that preprocessing "
+                         "can determine the analysis chromosomes.")
     
     # Annotation
     gtf = load_annotation(gtf_path=args.gtf, genome=args.genome)
     if genome_spec is not None:
         gtf = genome_spec.normalize_table(gtf, table_name="pileup annotation")
+    # Legacy hg38 path.
+    else:
+        gtf = gtf.copy()
+        gtf["CHROM"] = gtf["CHROM"].astype(str).map(_strip_chr_prefix)
 
     # Parse inputs
     samples = _split_csv(args.samples)
@@ -700,8 +738,7 @@ def main():
                 "-O", os.path.join(pileup_dir, sample),
                 "-R", args.snpvcf,
                 "-p", str(args.ncores),
-                "--minMAF", "0",
-                "--minCOUNT", "2",
+                "--minCOUNT", str(args.min_count),
                 "--UMItag", "None",
                 "--cellTAG", "None",
             ]
@@ -715,7 +752,7 @@ def main():
             "-R", args.snpvcf,
             "-p", str(args.ncores),
             "--minMAF", "0",
-            "--minCOUNT", "2",
+            "--minCOUNT", str(args.min_count),
             "--UMItag", "None",
             "--cellTAG", "None",
         ]
@@ -730,7 +767,7 @@ def main():
                 "-R", args.snpvcf,
                 "-p", str(args.ncores),
                 "--minMAF", "0",
-                "--minCOUNT", "2",
+                "--minCOUNT", str(args.min_count),
                 "--UMItag", tag,
                 "--cellTAG", args.cellTAG,
             ]
@@ -782,51 +819,107 @@ def main():
         vcfs.append(vcf)
 
     # Joint genotyping
-    print("Creating joint genotype VCF")
-    genotype(args.label, vcfs, phasing_dir, chr_prefix=True)
+    if args.prephased:
 
-    ## Phasing
-    print("Running phasing\n")
-    phasing_cmds = []
-    for chr_num in range(1, 23):
-        target_vcf = os.path.join(phasing_dir, f"{args.label}_chr{chr_num}.vcf.gz")
-        reference_bcf = os.path.join(args.paneldir, f"chr{chr_num}.genotypes.bcf")
-        out_prefix = os.path.join(phasing_dir, f"{args.label}_chr{chr_num}.phased")
-
-        phasing_cmds.append(
-            " ".join([
-                args.eagle,
-                "--numThreads", str(args.ncores),
-                "--vcfTarget", target_vcf,
-                "--vcfRef", reference_bcf,
-                f"--geneticMapFile={args.gmap}",
-                "--outPrefix", out_prefix]))
+        print("Using supplied phased VCF; "
+              "skipping joint genotyping and Eagle")
         
-    phasing_script = os.path.join(args.outdir, "run_phasing.sh")
-    
-    
-    with open(phasing_script, "w") as fh:
-        fh.write("set -e\n")
+        vcf_phased_all = load_prephased_vcf(path=args.snpvcf,
+                                            label=args.label,
+                                            chromosomes=chromosomes)
+    else:
 
-        for cmd in phasing_cmds:
-            fh.write(cmd + "\n")
+       # Joint genotyping
+       print("Creating joint genotype VCF")
 
-    phasing_log = os.path.join(args.outdir, "phasing.log")
+       phased_chromosomes = genotype(
+           label=args.label,
+           vcfs=vcfs,
+           outdir=phasing_dir,
+           chromosomes=chromosomes,
+           source_chrom=source_chrom,
+       )
 
-    try:
-        with open(phasing_log, "w") as log:
-            subprocess.run(
-                ["sh", phasing_script],
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                check=True)
+       if not phased_chromosomes:
+           raise RuntimeError("No chromosomes contained variants suitable "
+                              "for phasing.")
+       # Eagle phasing
+       print("Running phasing\n")
 
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            "Eagle phasing failed. "
-            f"See log file: {phasing_log}") from exc
+       phasing_cmds = []
+
+       for chrom in phased_chromosomes:
+
+           target_vcf = os.path.join(phasing_dir,
+                                     f"{args.label}_chr{chrom}.vcf.gz")
+
+           # Reference-panel filenames follow the source
+           # chromosome namespace defined by the FAI.
+           ref_chrom = source_chrom[str(chrom)]
+
+           reference_bcf = os.path.join(args.paneldir, f"{ref_chrom}.genotypes.bcf")
+           out_prefix = os.path.join(phasing_dir, f"{args.label}_chr{chrom}.phased")
+
+           phasing_cmds.append(
+               " ".join([
+                   args.eagle,
+                   "--numThreads",
+                   str(args.ncores),
+                   "--vcfTarget",
+                   target_vcf,
+                   "--vcfRef",
+                   reference_bcf,
+                   f"--geneticMapFile={args.gmap}",
+                   "--outPrefix",
+                   out_prefix,
+               ]))
+
+       phasing_script = os.path.join(args.outdir, "run_phasing.sh")
+
+       with open(phasing_script, "w") as fh:
+
+           fh.write("set -e\n")
+
+           for cmd in phasing_cmds:
+               fh.write(cmd + "\n")
+
+       phasing_log = os.path.join(args.outdir, "phasing.log")
+
+       try:
+           with open(phasing_log, "w") as log:
+
+               subprocess.run(
+                   ["sh", phasing_script],
+                   stdout=log,
+                   stderr=subprocess.STDOUT,
+                   check=True)
+
+       except subprocess.CalledProcessError as exc:
+
+           raise RuntimeError("Eagle phasing failed. "
+                              f"See log file: {phasing_log}") from exc
+
+       # Concatenate only chromosomes that were actually phased.
+       vcf_phased_all = load_phased_concat(
+           outdir=args.outdir,
+           label=args.label,
+           chromosomes=phased_chromosomes)
+
+       if vcf_phased_all.shape[1] < 10:
+           raise RuntimeError("Unexpected phased VCF structure: "
+                              "FORMAT/sample columns missing.")
+
+       vcf_phased_all = vcf_phased_all.rename(columns={8: "FORMAT",
+                                                       9: args.label})
+
+       vcf_phased_all = vcf_phased_all.loc[:,
+                                           ["CHROM",
+                                            "POS",
+                                            "REF",
+                                            "ALT",
+                                            args.label]]
         
-   # Generate allele-count dataframes
+    # Generate allele-count dataframes
     print("Generating allele count dataframes...")
 
     # Concatenate all phased chromosomes once (same phased VCF used for all samples)
