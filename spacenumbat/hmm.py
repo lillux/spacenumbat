@@ -225,6 +225,73 @@ def viterbi_allele(hmm:Mapping[str, Any]):
     return decoded_states
 
 
+def run_exp_hmm_s3(Y_obs,
+                   lambda_ref,
+                   d_total,
+                   mu,
+                   sig,
+                   t=1e-5,
+                   phi_del=2**(-0.25),
+                   phi_amp=2**0.25,
+                   prior=None
+                   ):
+    
+    Y_obs = np.asarray(Y_obs, dtype=float)
+    lambda_ref = np.asarray(lambda_ref, dtype=float)
+
+    N = len(Y_obs)
+
+    d_total = np.asarray(d_total, dtype=float)
+    if d_total.size == 1:
+        d_total = np.full(N, d_total.item())
+
+    mu = np.asarray(mu, dtype=float)
+    sig = np.asarray(sig, dtype=float)
+
+    if mu.size == 1:
+        mu = np.full(N, mu.item())
+
+    if sig.size == 1:
+        sig = np.full(N, sig.item())
+
+    states = np.asarray(["neu", "del", "amp"])
+    phi = np.asarray([1.0, phi_del, phi_amp])
+
+    # P(change CNA state) = t.
+    A = np.full((3, 3), t / 2.0)
+    np.fill_diagonal(A, 1.0 - t)
+
+    logPi = np.repeat(np.log(A)[None, :, :], 
+                      N,
+                      axis=0)
+
+    if prior is None:
+        t0 = min(100.0 * t, 0.2)
+        prior = np.asarray([1.0 - t0,
+                            t0 / 2.0, 
+                            t0 / 2.0])
+
+    logprob = np.zeros((N, 3), dtype=float)
+
+    valid = (np.isfinite(Y_obs) 
+             & np.isfinite(lambda_ref)
+             & (lambda_ref > 0))
+
+    for state_i, state_phi in enumerate(phi):
+        logprob[valid, state_i] = dpoilog(
+            x=Y_obs[valid],
+            mu=(mu[valid] + 
+                np.log(state_phi * d_total[valid] * lambda_ref[valid])),
+            sig=sig[valid],
+            log=True)
+
+    z = viterbi_compute(log_delta=np.log(prior),
+                        logprob=logprob,
+                        logPi=logPi)
+
+    return states[z].tolist()
+
+
 def run_allele_hmm_s5(pAD: np.ndarray, 
                       DP: np.ndarray, 
                       p_s: np.ndarray, 

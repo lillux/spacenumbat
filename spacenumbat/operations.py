@@ -34,9 +34,22 @@ log = get_logger(__name__)
 
 
 def run_group_hmms(
-    bulks, t=1e-4, gamma=20, alpha=1e-4, min_genes=10, nu=1,
-    common_diploid=True, diploid_chroms=None, allele_only=False, retest=True, run_hmm=True,
-    exclude_neu=True, ncores=1, verbose=False, debug=False
+    bulks,
+    t=1e-4,
+    gamma=20, 
+    alpha=1e-4, 
+    min_genes=10,
+    nu=1,
+    common_diploid=True,
+    diploid_chroms=None,
+    exp_only=False,
+    allele_only=False, 
+    retest=True, 
+    run_hmm=True,
+    exclude_neu=True,
+    ncores=1,
+    verbose=False, 
+    debug=False
     ):
     """
     Run multiple HMMs.
@@ -77,7 +90,8 @@ def run_group_hmms(
         bulks['sample'] = '0'
 
     # Drop samples with no allele data
-    bulks = bulks.groupby('sample', observed=True, sort=False).filter(lambda x: x['DP'].notna().sum() > 0).copy()
+    if not exp_only:
+        bulks = bulks.groupby('sample', observed=True, sort=False).filter(lambda x: x['DP'].notna().sum() > 0).copy()
 
     if bulks.shape[0] == 0:
         return bulks
@@ -107,6 +121,7 @@ def run_group_hmms(
                 nu=nu,
                 find_diploid=find_diploid,
                 run_hmm=run_hmm,
+                exp_only=exp_only,
                 allele_only=allele_only,
                 diploid_chroms=diploid_chroms,
                 min_genes=min_genes,

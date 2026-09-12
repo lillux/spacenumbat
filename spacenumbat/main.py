@@ -119,6 +119,7 @@ def run_spacenumbat(
     connectivity_key: str ="spatial_connectivities",
     distance_key: str = "weighted_adjacency",
     mode: str = "rna",
+    evidence_mode = 'joint',
     binning: str = "numbat",
     bin_size: int | None = None,
     custom_binning=None,
@@ -294,6 +295,21 @@ def run_spacenumbat(
     
     genome = genome.strip()
         
+    evidence_mode = evidence_mode.lower()
+
+    valid_evidence_modes = {"joint", "expression"}
+
+    if evidence_mode not in valid_evidence_modes:
+        raise ValueError(f"evidence_mode must be one of {sorted(valid_evidence_modes)}")
+
+    exp_only = evidence_mode == "expression"
+
+    if not exp_only and df_allele is None:
+        raise ValueError("df_allele is required when evidence_mode='joint'.")
+
+    if exp_only and call_clonal_loh:
+        raise ValueError("call_clonal_loh cannot be used with expression-only inference.")
+            
     has_atac = mode in {"atac_bin", "combined"}
     
     filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)

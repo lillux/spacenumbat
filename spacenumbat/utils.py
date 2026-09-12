@@ -861,6 +861,37 @@ def annot_consensus(bulk, segs_consensus, join_mode='inner'):
     return bulk
 
 
+def make_expression_marker_bulk(exp_bulk: pd.DataFrame) -> pd.DataFrame:
+    
+    bulk = exp_bulk.copy()
+
+    # Preserve the existing marker-oriented internal schema.
+    bulk["snp_id"] = bulk["gene"].astype("string")
+    bulk["POS"] = bulk["gene_start"].astype(np.int64)
+
+    # Allele channel is unavailable, not zero-depth evidence.
+    bulk["AD"] = np.nan
+    bulk["DP"] = np.nan
+    bulk["pAD"] = np.nan
+    bulk["AR"] = np.nan
+    bulk["pBAF"] = np.nan
+    bulk["GT"] = pd.NA
+    bulk["REF"] = pd.NA
+    bulk["ALT"] = pd.NA
+    bulk["cM"] = np.nan
+
+    # No phase process exists in expression-only mode.
+    bulk["inter_snp_cm"] = 0.0
+    bulk["p_s"] = 0.0
+
+    bulk = bulk.sort_values(["CHROM", "POS"], key=natsort.natsort_keygen()).reset_index(drop=True)
+    bulk["snp_index"] = bulk.groupby("CHROM", observed=True, sort=False).cumcount()
+
+    bulk["loh"] = False
+
+    return bulk
+
+
 def get_bulk(
     count_mat: ad.AnnData,
     lambdas_ref: Union[pd.DataFrame, pd.Series],
@@ -874,6 +905,7 @@ def get_bulk(
     disp: bool = False,
     filter_hla: bool = True,
     filter_segments: Optional[pd.DataFrame] = None,
+    exp_only = False,
     ) -> pd.DataFrame:
     """
     Compute combined bulk allele and expression data with filtering and clonal LOH annotation.
@@ -932,14 +964,18 @@ def get_bulk(
     exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla, filter_segments=filter_segments)
     exp_bulk = exp_bulk[((exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5)) | (exp_bulk.loc[:,'Y_obs'] == 0)]
     exp_bulk.loc[:,'mse'] = fit['mse']
-    allele_bulk = get_allele_bulk(df_allele, nu=nu, min_depth=min_depth)
-    bulk = combine_bulk(allele_bulk, exp_bulk, filter_hla=filter_hla, filter_segments=filter_segments)
+    
+    if exp_only:
+        bulk = make_expression_marker_bulk(exp_bulk)
+    else:
+        allele_bulk = get_allele_bulk(df_allele, nu=nu, min_depth=min_depth)
+        bulk = combine_bulk(allele_bulk, exp_bulk, filter_hla=filter_hla, filter_segments=filter_segments)
+    
     if np.unique(bulk.loc[:,'snp_id']).shape[0] != bulk.loc[:,'snp_id'].shape[0]:
         raise ValueError('Duplicated SNPs found, please check genotypes')
     
     # Filter out rows where lambda_ref is zero or gene is not NaN
     bulk = bulk[(bulk.loc[:, 'lambda_ref'] != 0) | (bulk.loc[:,'gene'].isna())]    
-    #bulk.loc[:,'CHROM'] = np.where(bulk.loc[:, 'CHROM'] == 'X', "23", bulk.loc[:,'CHROM'])
     bulk = bulk.sort_values(by=['CHROM','POS'], key=natsort.natsort_keygen())
     bulk = bulk.reset_index(drop=True)
 
@@ -3315,10 +3351,16 @@ def analyze_bulk(
         bulk = bulk.drop(columns=['gamma'])
         
     # Update transition probability 'p_s'
-    if 'inter_snp_cm' not in bulk.columns:
-        raise ValueError("'bulk' is missing required column 'inter_snp_cm'")
-    bulk = bulk.loc[:,[col != 'p_s' for col in bulk.columns]].copy()
-    bulk.loc[:,'p_s'] = switch_prob(bulk['inter_snp_cm'], nu=nu)
+    if not exp_only and bulk["DP"].isna().all():
+        raise ValueError("No allele data (all DP are NA)")
+
+    if exp_only:
+        bulk["p_s"] = 0.0
+    else:
+        if 'inter_snp_cm' not in bulk.columns:
+            raise ValueError("'bulk' is missing required column 'inter_snp_cm'")
+        bulk = bulk.loc[:,[col != 'p_s' for col in bulk.columns]].copy()
+        bulk.loc[:,'p_s'] = switch_prob(bulk['inter_snp_cm'], nu=nu)
 
     # Determine diploid regions
     if exp_only or allele_only:
@@ -3379,28 +3421,42 @@ def analyze_bulk(
         def apply_run_hmm(df_group):
             # gamma_val might be per-chrom or use the arg 'gamma'
             gamma_val = gamma
-
-            # run_joint_hmm_s15 returns states for each row
-            states = hmmlib.run_joint_hmm_s15(
-                pAD            = df_group['pAD'].values,
-                DP             = df_group['DP'].values,
-                p_s            = df_group['p_s'].values,
-                Y_obs          = df_group['Y_obs'].values,
-                lambda_ref     = df_group['lambda_ref'].values,
-                d_total        = df_group['d_obs'].dropna().unique(),
-                phi_amp        = 2**(logphi_min),
-                phi_del        = 2**(-logphi_min),
-                mu             = df_group['mu'].values,
-                sig            = df_group['sig'].values,
-                t              = t,
-                gamma          = gamma_val,
-                theta_min      = theta_min,
-                prior          = prior,
-                bal_cnv        = bal_cnv,
-                exp_only       = exp_only,
-                allele_only    = allele_only,
-                classify_allele= classify_allele,
-            )
+            
+            if exp_only:
+                # run 3 states model when exp_only
+                states = hmmlib.run_exp_hmm_s3(
+                    Y_obs     = df_group["Y_obs"].values,
+                    lambda_ref= df_group["lambda_ref"].values,
+                    d_total   = df_group["d_obs"].dropna().unique(),
+                    mu        = df_group["mu"].values,
+                    sig       = df_group["sig"].values,
+                    t         = t,
+                    phi_del   = 2**(-logphi_min),
+                    phi_amp   = 2**logphi_min,
+                )
+                
+            else:
+                # run_joint_hmm_s15 returns states for each row
+                states = hmmlib.run_joint_hmm_s15(
+                    pAD            = df_group['pAD'].values,
+                    DP             = df_group['DP'].values,
+                    p_s            = df_group['p_s'].values,
+                    Y_obs          = df_group['Y_obs'].values,
+                    lambda_ref     = df_group['lambda_ref'].values,
+                    d_total        = df_group['d_obs'].dropna().unique(),
+                    phi_amp        = 2**(logphi_min),
+                    phi_del        = 2**(-logphi_min),
+                    mu             = df_group['mu'].values,
+                    sig            = df_group['sig'].values,
+                    t              = t,
+                    gamma          = gamma_val,
+                    theta_min      = theta_min,
+                    prior          = prior,
+                    bal_cnv        = bal_cnv,
+                    exp_only       = exp_only,
+                    allele_only    = allele_only,
+                    classify_allele= classify_allele,
+                )
             return pd.Series(states, index=df_group.index, name='state')
 
         bulk.loc[:,'state'] = bulk.groupby('CHROM', group_keys=False, observed=True, sort=False).apply(apply_run_hmm, include_groups=False)
