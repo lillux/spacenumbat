@@ -40,9 +40,27 @@ def _split_csv(value: str | None) -> list[str]:
 
 
 def _strip_chr_prefix(value) -> str:
-    """Convert chr1 -> 1 while leaving already canonical labels unchanged."""
+    """
+    Normalize the chromosome namespace used internally by SpaceNumbat.
+
+    Examples
+    --------
+    chr1 -> 1
+    01   -> 1
+    chrX -> X
+    """
     value = str(value).strip()
-    return value[3:] if value.lower().startswith("chr") else value
+
+    if value.lower().startswith("chr"):
+        value = value[3:]
+        
+    if value.isdigit():
+        return str(int(value))
+
+    if value.upper() in {"X", "Y"}:
+        return value.upper()
+
+    return value
 
 
 def _validate_10x_inputs(
@@ -730,14 +748,7 @@ def main():
         # In single-library behavior no modality namespace is required.
         modalities = [None]
         
-    # Validate reference inputs.
-    for path, name in [(args.snpvcf, "--snpvcf"), (args.gmap, "--gmap")]:
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"{name} file not found: {path}")
-
-    if not os.path.isdir(args.paneldir):
-        raise FileNotFoundError(f"--paneldir directory not found: {args.paneldir}")
-
+        
     # Output directories
     os.makedirs(args.outdir, exist_ok=True)
 
@@ -767,6 +778,7 @@ def main():
                 "-O", os.path.join(pileup_dir, sample),
                 "-R", args.snpvcf,
                 "-p", str(args.ncores),
+                "--minMAF", "0",
                 "--minCOUNT", str(args.min_count),
                 "--UMItag", "None",
                 "--cellTAG", "None",
