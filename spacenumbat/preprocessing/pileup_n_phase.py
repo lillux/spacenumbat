@@ -25,6 +25,8 @@ import spacenumbat
 from spacenumbat import diagnostics
 from spacenumbat.genome import GenomeSpec
 
+import shutil
+
 
 # Utility functions
 
@@ -200,48 +202,75 @@ def write_vcf_chr(path: str, snps: pd.DataFrame, label: str, contig: str) -> Non
     return
 
 
-def genotype(label: str, vcfs: List[str], outdir: str, het_only: bool = False, chr_prefix: bool = True) -> None:
+def genotype(
+    label: str,
+    vcfs: List[str],
+    outdir: str,
+    chromosomes: List[str],
+    source_chrom: dict[str, str],
+    het_only: bool = False,
+    ) -> List[str]:
+    """
+    Jointly genotype pileup VCFs and create one indexed target VCF
+    per chromosome for Eagle.
+
+    bgzip/tabix are required only because Eagle reference-based
+    phasing requires indexed VCF/BCF target input.
+    """
+
+    # This function is called only in the Eagle branch.
+    missing = [exe for exe in ("bgzip", "tabix") if shutil.which(exe) is None]
+
+    if missing:
+        raise RuntimeError("Eagle reference-based phasing requires indexed target VCFs. "
+                           "Missing executable(s): " 
+                           + ", ".join(missing))
+
     dfs = [load_vcf(v) for v in vcfs]
-    snps = pd.concat(dfs)
-    snps = snps.groupby(["CHROM", "POS", "REF", "ALT", "snp_id"], as_index=False).agg({"AD": "sum", "DP": "sum", "OTH": "sum"})
-    snps["AR"] = snps.AD / snps.DP.replace({0: pd.NA})
-    snps = snps.sort_values(["CHROM", "POS"])
+    snps = pd.concat(dfs, ignore_index=True)
+    snps = snps.groupby(["CHROM", "POS", "REF", "ALT", "snp_id"],
+                        as_index=False).agg({"AD": "sum",
+                                             "DP": "sum",
+                                             "OTH": "sum"})
+    snps["AR"] = snps["AD"] / snps["DP"].replace({0: pd.NA})
+    written_chromosomes = []
 
-    for chr_num in range(1, 23):
-        chr_snps = snps[snps.CHROM.astype("string") == str(chr_num)].copy()
+    for chrom in chromosomes:
+
+        chr_snps = snps[snps["CHROM"].astype("string") == str(chrom)].copy()
+
         if chr_snps.empty:
             continue
-        chr_snps["het"] = (chr_snps.AR >= 0.1) & (chr_snps.AR <= 0.9)
-        chr_snps["hom_alt"] = (chr_snps.AR == 1) & (chr_snps.DP >= 10)
-        chr_snps["hom_ref"] = (chr_snps.AR == 0) & (chr_snps.DP >= 10)
-        chr_snps = chr_snps[chr_snps.het | chr_snps.hom_alt]
-        chr_snps.loc[chr_snps.het, "GT"] = "0/1"
-        chr_snps.loc[chr_snps.hom_alt, "GT"] = "1/1"
-        chr_snps.loc[chr_snps.hom_ref, "GT"] = "0/0"
+
+        chr_snps = chr_snps.sort_values("POS")
+        chr_snps["het"] = ((chr_snps["AR"] >= 0.1) & (chr_snps["AR"] <= 0.9))
+        chr_snps["hom_alt"] = ((chr_snps["AR"] == 1) & (chr_snps["DP"] >= 10))
+        chr_snps = chr_snps[chr_snps["het"] | chr_snps["hom_alt"]].copy()
+        chr_snps.loc[chr_snps["het"], "GT"] = "0/1"
+        chr_snps.loc[chr_snps["hom_alt"], "GT",] = "1/1"
+
         if het_only:
-            chr_snps = chr_snps[chr_snps.het]
+            chr_snps = chr_snps[chr_snps["het"]].copy()
+
         if chr_snps.empty:
             continue
 
-        out_file = os.path.join(outdir, f"{label}_chr{chr_num}.vcf")
-        write_vcf_chr(out_file, chr_snps, label, chr_prefix=chr_prefix)
+        out_file = os.path.join(outdir, f"{label}_chr{chrom}.vcf")
 
-        # compress to .vcf.gz and tabix-index ---
+        write_vcf_chr(
+            path=out_file,
+            snps=chr_snps,
+            label=label,
+            contig=source_chrom[str(chrom)])
+
         gz_path = out_file + ".gz"
-        try:
-            import pysam
-            # compress then index; remove uncompressed file
-            pysam.tabix_compress(out_file, gz_path, force=True)
-            pysam.tabix_index(gz_path, preset="vcf", force=True)
-            try:
-                os.remove(out_file)
-            except OSError:
-                pass
-        except Exception:
-            # fallback to system bgzip/tabix
-            subprocess.run(["bgzip", "-f", out_file], check=True)
-            subprocess.run(["tabix", "-f", "-p", "vcf", gz_path], check=True)
-    return
+
+        # Required by Eagle reference-based phasing.
+        subprocess.run(["bgzip", "-f", out_file], check=True)
+        subprocess.run(["tabix", "-f", "-p", "vcf", gz_path], check=True)
+        written_chromosomes.append(str(chrom))
+
+    return written_chromosomes
 
 
 def read_vcf_table(path: str) -> pd.DataFrame:
@@ -476,75 +505,75 @@ def preprocess_allele(
     ov = pr_snps.join(pr_genes).as_df()
     if not ov.empty:
         ov = ov[["snp_index_tmp", "gene_index_tmp"]]
-        ov = ov.merge(
-            vcf_phased[["snp_index_tmp", "snp_id"]],
-            on="snp_index_tmp",
-            how="left",
-        )
-        ov = ov.merge(
-            gtf_tmp[["gene_index_tmp", "gene", "gene_start", "gene_end"]],
-            on="gene_index_tmp",
-            how="left",
-        )
+        ov = ov.merge(vcf_phased[["snp_index_tmp", "snp_id"]],
+                      on="snp_index_tmp",
+                      how="left")
+        ov = ov.merge(gtf_tmp[["gene_index_tmp", "gene", "gene_start", "gene_end"]],
+                      on="gene_index_tmp",
+                      how="left")
         ov = ov.sort_values(["snp_index_tmp", "gene"]).drop_duplicates(
             subset="snp_index_tmp",
-            keep="first",
-        )
-        vcf_phased = vcf_phased.merge(
-            ov[["snp_id", "gene", "gene_start", "gene_end"]],
-            on="snp_id",
-            how="left",
-        )
+            keep="first")
+        vcf_phased = vcf_phased.merge(ov[["snp_id", "gene", "gene_start", "gene_end"]],
+                                      on="snp_id",
+                                      how="left")
     else:
         vcf_phased["gene"] = np.nan
         vcf_phased["gene_start"] = np.nan
         vcf_phased["gene_end"] = np.nan
 
     # Annotate SNPs with genetic map cM using interpolation
-    gmap_tmp = pd.read_csv(gmap, sep=r"\s+", header=None, engine="python")
-    gmap_tmp.columns = ["CHROM", "POS", "rate", "cM"]
+    # Genetic-map annotation.
+    #
+    # A constant cM is appropriate when phase is known without
+    # uncertainty, for example a direct F1 of two homozygous
+    # inbred parental strains.
+    if gmap is None:
+        vcf_phased["cM"] = 0.0
 
-    gmap_tmp["CHROM"] = (
-        gmap_tmp["CHROM"]
-        .astype(str)
-        .str.replace("^chr", "", regex=True)
-        .str.replace(r"\.0$", "", regex=True)
-    )
-    gmap_tmp["POS"] = pd.to_numeric(gmap_tmp["POS"], errors="coerce")
-    gmap_tmp["cM"] = pd.to_numeric(gmap_tmp["cM"], errors="coerce")
-    gmap_tmp = gmap_tmp.dropna(subset=["CHROM", "POS", "cM"]).copy()
-    gmap_tmp = gmap_tmp.sort_values(["CHROM", "POS"]).drop_duplicates(["CHROM", "POS"])
+    else:
+        gmap_tmp = pd.read_csv(gmap, sep=r"\s+", header=None, engine="python")
+        gmap_tmp.columns = ["CHROM", "POS", "rate", "cM"]
+        gmap_tmp["CHROM"] = (gmap_tmp["CHROM"].astype(str).map(_strip_chr_prefix).str.replace(r"\.0$", "", regex=True))
+        gmap_tmp["POS"] = pd.to_numeric(gmap_tmp["POS"], errors="coerce")
 
-    vcf_phased["cM"] = np.nan
+        gmap_tmp["cM"] = pd.to_numeric(gmap_tmp["cM"], errors="coerce")
 
-    for chrom, idx in vcf_phased.groupby("CHROM").groups.items():
-        gm = gmap_tmp[gmap_tmp["CHROM"] == str(chrom)]
-        if gm.empty:
-            continue
+        gmap_tmp = (
+            gmap_tmp
+            .dropna(subset=["CHROM", "POS", "cM"])
+            .sort_values(["CHROM", "POS"])
+            .drop_duplicates(["CHROM", "POS"])
+        )
 
-        snp_idx = list(idx)
-        snp_pos = vcf_phased.loc[snp_idx, "POS"].astype(float).to_numpy()
-        map_pos = gm["POS"].astype(float).to_numpy()
-        map_cm = gm["cM"].astype(float).to_numpy()
+        vcf_phased["cM"] = np.nan
 
-        if len(map_pos) == 1:
-            vcf_phased.loc[snp_idx, "cM"] = map_cm[0]
-        else:
-            vcf_phased.loc[snp_idx, "cM"] = np.interp(
-                snp_pos,
-                map_pos,
-                map_cm,
-                left=map_cm[0],
-                right=map_cm[-1],
-            )
+        for chrom, idx in vcf_phased.groupby("CHROM").groups.items():
+
+            gm = gmap_tmp[gmap_tmp["CHROM"] == str(chrom)]
+
+            if gm.empty:
+                continue
+
+            snp_idx = list(idx)
+            snp_pos = (vcf_phased.loc[snp_idx, "POS"].astype(float).to_numpy())
+            map_pos = (gm["POS"].astype(float).to_numpy())
+            map_cm = (gm["cM"].astype(float).to_numpy())
+
+            if len(map_pos) == 1:
+
+                vcf_phased.loc[snp_idx, "cM"] = map_cm[0]
+
+            else:
+
+                vcf_phased.loc[snp_idx, "cM"] = np.interp(snp_pos,
+                                                          map_pos,
+                                                          map_cm,
+                                                          left=map_cm[0],
+                                                          right=map_cm[-1])
 
     # Merge phased annotations into cell-wise counts and filter hets
-    df = df.merge(
-        vcf_phased[["snp_id", "gene", "GT", "cM"]],
-        on="snp_id",
-        how="left",
-    )
-
+    df = df.merge(vcf_phased[["snp_id", "gene", "GT", "cM"]], on="snp_id", how="left")
     df_out = df[["cell", "snp_id", "CHROM", "POS", "cM", "REF", "ALT", "AD", "DP", "GT", "gene"]]
     df_out = df_out[df_out["GT"].isin(["1|0", "0|1"])].reset_index(drop=True)
 
@@ -599,7 +628,7 @@ def main():
         raise FileNotFoundError(f"--snpvcf file not found: {args.snpvcf}")
     if args.chrom_size_fai_path is not None:
         if not os.path.isfile(args.chrom_size_fai_path):
-            raise FileNotFoundError( "--chrom-size-fai-path file not found: "
+            raise FileNotFoundError("--chrom-size-fai-path file not found: "
                                     f"{args.chrom_size_fai_path}")
 
     if args.prephased:
@@ -614,7 +643,7 @@ def main():
         if args.paneldir is None:
             raise ValueError("--paneldir is required unless --prephased is used.")
         if not os.path.isfile(args.gmap):
-            raise FileNotFoundError("--gmap file not found: {args.gmap}")
+            raise FileNotFoundError(f"--gmap file not found: {args.gmap}")
         if not os.path.isdir(args.paneldir):
             raise FileNotFoundError(f"--paneldir directory not found: {args.paneldir}")
 
@@ -921,18 +950,6 @@ def main():
         
     # Generate allele-count dataframes
     print("Generating allele count dataframes...")
-
-    # Concatenate all phased chromosomes once (same phased VCF used for all samples)
-    vcf_phased_all = load_phased_concat(args.outdir, args.label)
-    # Put the single target-sample phased GT column into a named column for convenience
-    # FORMAT is column 8, sample is column 9 if a single target sample
-    # If Eagle produced exactly one sample (the target), its GT is in column 10 (0-based index=9)
-    # We keep only CHROM, POS, REF, ALT, and sample GT
-    if vcf_phased_all.shape[1] < 10:
-        # FORMAT + one sample expected; if not, raise for clarity
-        raise RuntimeError("Unexpected phased VCF structure: FORMAT/sample columns missing.")
-    vcf_phased_all = vcf_phased_all.rename(columns={8: "FORMAT", 9: args.label})
-    vcf_phased_all = vcf_phased_all.loc[:, ["CHROM", "POS", "REF", "ALT", args.label]]
 
     allele_tables = []
     cell_manifests = []
