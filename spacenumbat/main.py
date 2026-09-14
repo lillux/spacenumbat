@@ -1067,10 +1067,14 @@ def run_spacenumbat(
             has_neutral_baseline = segs_consensus_retest_corrected["cnv_state"].astype(str).eq("neu").any()
         
             if not has_neutral_baseline:
-                raise log.warning("Your data do not have a normal baseline!!!!!\n"
-                                  "RNA-only single-cell inference requires either "
-                                  "at least one neutral consensus segment or "
-                                  "diploid_chroms to define the expression baseline.")
+                msg = ("Your data do not have a normal baseline!!!!!\n"
+                       "RNA-only single-cell inference requires either "
+                       "at least one neutral consensus segment or "
+                       "diploid_chroms to define the expression baseline.")
+                
+                #log.warning(msg)
+                raise ValueError(msg)
+                
         
         exp_post = operations.get_exp_post(segs_consensus_retest_corrected,
                                            count_mat=count_mat,
