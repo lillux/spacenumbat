@@ -953,13 +953,20 @@ def get_bulk(
 
     # ***EXPLICIT*** COPY OF THE ANNDATA BEFORE YOU WRITE ON IT!
     count_mat = check_anndata(count_mat.copy())
+    
+    if not exp_only and df_allele is None:
+        raise ValueError("df_allele is required when exp_only=False.")
     if subset is not None: 
         if not set(subset).issubset(set(count_mat.obs_names)):
             raise KeyError('All the requested cell barcodes must be present in count_mat')
         else:
             count_mat = count_mat[subset]
+            if not exp_only:
+                df_allele = df_allele[df_allele["cell"].isin(subset)].copy()
+                
             df_allele_subset_mask = [i in subset for i in df_allele.cell]
             df_allele = df_allele[df_allele_subset_mask]
+            
     fit = fit_ref_sse_ad(count_mat, lambdas_ref, gtf, verbose=disp)
     exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla, filter_segments=filter_segments)
     exp_bulk = exp_bulk[((exp_bulk.loc[:,'logFC'] > -5) & (exp_bulk.loc[:,'logFC'] < 5)) | (exp_bulk.loc[:,'Y_obs'] == 0)]
@@ -1559,6 +1566,7 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
                      ncores: int = None,
                      filter_hla: bool = True,
                      filter_segments = None,
+                     exp_only=False,
                      ) -> pd.DataFrame:
     """
     Build pseudobulk profiles for a collection of groups, in parallel.
@@ -1629,7 +1637,8 @@ def make_group_bulks(groups: Dict[str, Dict[str, Any]],
         nu=nu,
         segs_loh=segs_loh,
         filter_hla=filter_hla,
-        filter_segments=filter_segments
+        filter_segments=filter_segments,
+        exp_only=exp_only,
     )
 
     # Use joblib's Parallel and delayed for parallel processing
@@ -1672,7 +1681,9 @@ def process_group(g: Dict[str, Any],
                   nu: float,
                   segs_loh: pd.DataFrame=None,
                   filter_hla=True,
-                  filter_segments=None) -> Union[pd.DataFrame, Dict]:
+                  filter_segments=None,
+                  exp_only=False,
+                  ) -> Union[pd.DataFrame, Dict]:
     """
     Build a single group's pseudobulk by delegating to `get_bulk`, augmenting the
     result with group metadata.
@@ -1724,7 +1735,8 @@ def process_group(g: Dict[str, Any],
             nu=nu,
             segs_loh=segs_loh,
             filter_hla=filter_hla,
-            filter_segments=filter_segments
+            filter_segments=filter_segments,
+            exp_only=exp_only,
         )
         # Add additional columns
         bulk['n_cells'] = g['size']
@@ -2800,13 +2812,163 @@ def classify_alleles(bulk: pd.DataFrame) -> pd.DataFrame:
     return bulk
 
 
+def retest_exp_cnv(bulk: pd.DataFrame,
+                   logphi_min: float = 0.25,
+                   exclude_neu: bool = True,
+                   likelihood_weight: float = 1.0,
+                   ) -> pd.DataFrame:
+    """
+    Retest expression-only CNA segments.
+
+    Only three identifiable states are used:
+        neutral, deletion, amplification.
+
+    p_del and p_amp are conditional probabilities given CNA.
+    """
+
+    if not 0 < likelihood_weight <= 1:
+        raise ValueError("likelihood_weight must be in (0, 1].")
+
+    work = bulk.copy()
+
+    if exclude_neu:
+        work = work[work["cnv_state"] != "neu"].copy()
+
+    if work.empty:
+        return pd.DataFrame()
+
+    phi_del = 2**(-logphi_min)
+    phi_amp = 2**logphi_min
+
+    rows = []
+
+    group_cols = [
+        "CHROM",
+        "seg",
+        "seg_start",
+        "seg_end",
+        "cnv_state",
+    ]
+
+    for keys, group in work.groupby(group_cols, observed=True, sort=False):
+        chrom, seg, seg_start, seg_end, cnv_state = keys
+
+        valid = (group["Y_obs"].notna()
+                 & group["lambda_ref"].notna()
+                 & (group["lambda_ref"] > 0))
+
+        g = group.loc[valid].copy()
+
+        if g.empty:
+            continue
+
+        d_values = g["d_obs"].dropna().unique()
+
+        if len(d_values) != 1:
+            raise ValueError(f"Expected one library depth in segment {seg}; "
+                             f"found {len(d_values)}.")
+
+        d = float(d_values[0])
+
+        y = g["Y_obs"].to_numpy(dtype=float)
+        lam = g["lambda_ref"].to_numpy(dtype=float)
+        mu = g["mu"].to_numpy(dtype=float)
+        sig = g["sig"].to_numpy(dtype=float)
+
+        l_neu = dist_prob.l_lnpois(y, lam, d, mu, sig, phi=1.0)
+        l_del_raw = dist_prob.l_lnpois(y, lam, d, mu, sig, phi=phi_del)
+        l_amp_raw = dist_prob.l_lnpois(y, lam, d, mu, sig, phi=phi_amp)
+
+        # Power-likelihood calibration relative to neutral.
+        l_del = l_neu + likelihood_weight * (l_del_raw - l_neu)
+        l_amp = l_neu + likelihood_weight * (l_amp_raw - l_neu)
+
+        # Prior:
+        # neutral = 0.5
+        # all CNA = 0.5, split equally del/amp
+        z_neu = np.log(0.5) + l_neu
+        z_del = np.log(0.25) + l_del
+        z_amp = np.log(0.25) + l_amp
+
+        z_cnv = numeric.log_sum_exp(np.asarray([z_del, z_amp], dtype=float))
+        z_total = numeric.log_sum_exp(np.asarray([z_neu, z_cnv], dtype=float))
+
+        p_neu = numeric.safe_exp_difference(z_neu, z_total)
+
+        # conditional state probabilities among CNAs.
+        p_del = numeric.safe_exp_difference(z_del, z_cnv)
+        p_amp = numeric.safe_exp_difference(z_amp, z_cnv)
+        logbf = numeric.safe_subtract(z_cnv, z_neu)
+
+        if p_neu >= 0.5:
+            state_post = "neu"
+        else:
+            state_post = ("del" if p_del >= p_amp else "amp")
+
+        phi_post = approx_phi_post(
+            Y_obs=y,
+            lambda_ref=lam,
+            d=d,
+            mu=mu,
+            sig=sig,
+        )
+
+        rows.append({
+            "CHROM": str(chrom),
+            "seg": str(seg),
+            "seg_start": int(seg_start),
+            "seg_end": int(seg_end),
+            
+            "cnv_state": str(cnv_state),
+            "cnv_state_post": state_post,
+            
+            "n_genes": int(g["gene"].dropna().nunique()),
+            "n_snps": 0,
+
+            "theta_hat": np.nan,
+            "theta_mle": np.nan,
+            "theta_sigma": np.nan,
+
+            "phi_mle": phi_post["phi_mle"],
+            "phi_sigma": phi_post["phi_sigma"],
+
+            "L_x_n": l_neu,
+            "L_x_d": l_del,
+            "L_x_a": l_amp,
+
+            "L_y_n": 0.0,
+            "L_y_d": 0.0,
+            "L_y_a": 0.0,
+
+            "Z_n": z_neu,
+            "Z_cnv": z_cnv,
+            "Z": z_total,
+            "logBF": logbf,
+
+            "p_neu": p_neu,
+            "p_loh": 0.0,
+            "p_del": p_del,
+            "p_amp": p_amp,
+            "p_bamp": 0.0,
+            "p_bdel": 0.0,
+
+            "LLR_x": logbf,
+            "LLR_y": 0.0,
+            "LLR": logbf,
+        })
+
+    return pd.DataFrame(rows)
+
 
 def retest_cnv(bulk:pd.DataFrame,
                theta_min:float = 0.08,
                logphi_min:float = 0.25,
                gamma:float = 20,
                allele_only:bool = False,
-               exclude_neu:bool = True) -> pd.DataFrame:
+               exp_only=False,
+               exclude_neu:bool = True,
+               expression_likelihood_weight=1.0,
+               ) -> pd.DataFrame:
     """
     Retest copy-number variations (CNVs) in a pseudobulk profile. This function
     computes segment-level statistics and posterior estimates for CNVs, optionally
@@ -2863,6 +3025,14 @@ def retest_cnv(bulk:pd.DataFrame,
           - 'cnv_state_post' column indicates the post-retesting
             classification of the segment (e.g. 'loh', 'amp', 'del', 'bamp', 'bdel', or 'neu').
     """
+    
+    if exp_only:
+        return retest_exp_cnv(
+            bulk=bulk,
+            logphi_min=logphi_min,
+            exclude_neu=exclude_neu,
+            likelihood_weight=expression_likelihood_weight,
+        )
     
     bulk = annot_theta_roll(bulk.copy())
     
@@ -3292,7 +3462,8 @@ def analyze_bulk(
     run_hmm: bool = True,
     prior=None,
     exclude_neu: bool = True,
-    verbose: bool = True
+    verbose: bool = True,
+    expression_likelihood_weight: float = 1,
     ) -> pd.DataFrame:
     """
     Call joint HMM to infer CNVs in a pseudobulk profile.
@@ -3345,8 +3516,6 @@ def analyze_bulk(
     # checks
     if not isinstance(t, (int, float)):
         raise ValueError("Transition probability (t) is not numeric")
-    if bulk['DP'].isna().all():
-        raise ValueError("No allele data (all DP are NA)")
     if 'gamma' in bulk.columns:
         bulk = bulk.drop(columns=['gamma'])
         
@@ -3365,23 +3534,29 @@ def analyze_bulk(
     # Determine diploid regions
     if exp_only or allele_only:
         bulk['diploid'] = True
-    elif diploid_chroms is not None:
+    
+    if diploid_chroms is not None:
         if verbose:
             log.info(f"Using diploid chromosomes given: {', '.join(diploid_chroms)}")
         bulk['diploid'] = bulk['CHROM'].isin(diploid_chroms)
+        
+    elif not find_diploid and "diploid" in bulk.columns:
+    # Keep currently defined baseline.
+        pass
+
+    elif exp_only or allele_only:
+        bulk["diploid"] = True
+        
+    elif find_diploid:
+        bulk = find_common_diploid(
+            bulk,
+            gamma=gamma,
+            t=t,
+            theta_min=theta_min,
+            min_genes=min_genes,
+            fc_min=2**logphi_min)
     else:
-        if find_diploid:
-            bulk = find_common_diploid(
-                bulk,
-                gamma=gamma,
-                t=t,
-                theta_min=theta_min,
-                min_genes=min_genes,
-                fc_min=2**logphi_min
-            )
-        else:
-            if 'diploid' not in bulk.columns:
-                raise ValueError("Must define diploid region if not given and not found automatically.")
+        raise ValueError("Must define diploid region when automatic inference is disabled.")
 
     # Fit expression baseline if not allele_only
     if not allele_only:
@@ -3425,14 +3600,15 @@ def analyze_bulk(
             if exp_only:
                 # run 3 states model when exp_only
                 states = hmmlib.run_exp_hmm_s3(
-                    Y_obs     = df_group["Y_obs"].values,
-                    lambda_ref= df_group["lambda_ref"].values,
-                    d_total   = df_group["d_obs"].dropna().unique(),
-                    mu        = df_group["mu"].values,
-                    sig       = df_group["sig"].values,
-                    t         = t,
-                    phi_del   = 2**(-logphi_min),
-                    phi_amp   = 2**logphi_min,
+                    Y_obs            = df_group["Y_obs"].values,
+                    lambda_ref       = df_group["lambda_ref"].values,
+                    d_total          = df_group["d_obs"].dropna().unique(),
+                    mu               = df_group["mu"].values,
+                    sig              = df_group["sig"].values,
+                    t                = t,
+                    phi_del          = 2**(-logphi_min),
+                    phi_amp          = 2**logphi_min,
+                    likelihood_weight=expression_likelihood_weight,
                 )
                 
             else:
@@ -3471,7 +3647,7 @@ def analyze_bulk(
         bulk = hmmlib.smooth_segs(bulk, min_genes=min_genes)
         bulk = annot_segs(bulk, var='cnv_state')
 
-    if retest and not exp_only:
+    if retest:
 
         if verbose:
             log.info('Retesting CNVs..')    
@@ -3481,7 +3657,9 @@ def analyze_bulk(
                                theta_min=theta_min,
                                logphi_min=logphi_min,
                                exclude_neu=exclude_neu,
-                               allele_only=allele_only
+                               allele_only=allele_only,
+                               exp_only=exp_only,
+                               expression_likelihood_weight=expression_likelihood_weight,
                               )
  
         col_to_discard = set(segs_post.columns.difference(('seg', 'CHROM', 'seg_start', 'seg_end')))
@@ -3490,33 +3668,39 @@ def analyze_bulk(
         bulk.loc[:,'cnv_state_post'] = np.where(bulk.cnv_state_post.isna(), 'neu', bulk.cnv_state_post)
         bulk.loc[:,'cnv_state'] = np.where(bulk.cnv_state.isna(), 'neu', bulk.cnv_state)
         
-        # Force segments with clonal LOH to be deletion
-        bulk.loc[:,'cnv_state_post'] = np.where(bulk['loh'], 'del', bulk['cnv_state_post'])
-        bulk.loc[:,'cnv_state']      = np.where(bulk['loh'], 'del', bulk['cnv_state'])
-        bulk.loc[:,'p_del']          = np.where(bulk['loh'], 1, bulk['p_del'])
-        bulk.loc[:,'p_amp']          = np.where(bulk['loh'], 0, bulk['p_amp'])
-        bulk.loc[:,'p_neu']          = np.where(bulk['loh'], 0, bulk['p_neu'])
-        bulk.loc[:,'p_loh']          = np.where(bulk['loh'], 0, bulk['p_loh'])
-        bulk.loc[:,'p_bdel']         = np.where(bulk['loh'], 0, bulk['p_bdel'])
-        bulk.loc[:,'p_bamp']         = np.where(bulk['loh'], 0, bulk['p_bamp'])
+        if exp_only:
+            bulk["state_post"] = bulk["cnv_state_post"].astype("string")
         
-        events = bulk.cnv_state_post.isin(set(('amp','del','loh'))) & ~bulk.cnv_state.isin(set(('bamp','bdel')))
-        state_suffix = r'(up_1|down_1|up_2|down_2|up|down|1_up|2_up|1_down|2_down)'
-        def tryextract(pattern, x):
-            try: 
-                return re.search(pattern, x).group(1)
-            except AttributeError:
-                return np.nan
-        suffix_out = bulk.state[events].apply(lambda x : tryextract(state_suffix, x)).astype("string")
-        naindex = suffix_out[suffix_out.isna()].index
-        suffix_out[naindex] = bulk.cnv_state_post[naindex].astype("string")
-        new_sp = pd.Series(np.repeat(np.nan, bulk.shape[0]), dtype='string')
-        new_sp[events] = ['_'.join((sp, su)) for sp, su in zip(bulk.cnv_state_post[suffix_out.index].values, suffix_out.values)]
-        new_sp[~events] = bulk.cnv_state_post[~events].astype('string')
-        bulk.loc[:,'state_post'] = new_sp
-        bulk['state_post'] = bulk['state_post'].str.replace(r'_NA$', '', regex=True)
-        bulk = classify_alleles(bulk)
-        bulk = annot_theta_roll(bulk)
+        else:
+            # Force segments with clonal LOH to be deletion
+            bulk.loc[:,'cnv_state_post'] = np.where(bulk['loh'], 'del', bulk['cnv_state_post'])
+            bulk.loc[:,'cnv_state']      = np.where(bulk['loh'], 'del', bulk['cnv_state'])
+            bulk.loc[:,'p_del']          = np.where(bulk['loh'], 1, bulk['p_del'])
+            bulk.loc[:,'p_amp']          = np.where(bulk['loh'], 0, bulk['p_amp'])
+            bulk.loc[:,'p_neu']          = np.where(bulk['loh'], 0, bulk['p_neu'])
+            bulk.loc[:,'p_loh']          = np.where(bulk['loh'], 0, bulk['p_loh'])
+            bulk.loc[:,'p_bdel']         = np.where(bulk['loh'], 0, bulk['p_bdel'])
+            bulk.loc[:,'p_bamp']         = np.where(bulk['loh'], 0, bulk['p_bamp'])
+            
+            events = bulk.cnv_state_post.isin(set(('amp','del','loh'))) & ~bulk.cnv_state.isin(set(('bamp','bdel')))
+            state_suffix = r'(up_1|down_1|up_2|down_2|up|down|1_up|2_up|1_down|2_down)'
+            
+            def tryextract(pattern, x):
+                try: 
+                    return re.search(pattern, x).group(1)
+                except AttributeError:
+                    return np.nan
+                
+            suffix_out = bulk.state[events].apply(lambda x : tryextract(state_suffix, x)).astype("string")
+            naindex = suffix_out[suffix_out.isna()].index
+            suffix_out[naindex] = bulk.cnv_state_post[naindex].astype("string")
+            new_sp = pd.Series(np.repeat(np.nan, bulk.shape[0]), dtype='string')
+            new_sp[events] = ['_'.join((sp, su)) for sp, su in zip(bulk.cnv_state_post[suffix_out.index].values, suffix_out.values)]
+            new_sp[~events] = bulk.cnv_state_post[~events].astype('string')
+            bulk.loc[:,'state_post'] = new_sp
+            bulk['state_post'] = bulk['state_post'].str.replace(r'_NA$', '', regex=True)
+            bulk = classify_alleles(bulk)
+            bulk = annot_theta_roll(bulk)
     
     else:
         bulk.loc[:,'state_post'] = bulk.state

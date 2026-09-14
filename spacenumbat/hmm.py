@@ -225,69 +225,126 @@ def viterbi_allele(hmm:Mapping[str, Any]):
     return decoded_states
 
 
-def run_exp_hmm_s3(Y_obs,
-                   lambda_ref,
-                   d_total,
-                   mu,
-                   sig,
-                   t=1e-5,
-                   phi_del=2**(-0.25),
-                   phi_amp=2**0.25,
-                   prior=None
-                   ):
-    
+def run_exp_hmm_s3(
+    Y_obs,
+    lambda_ref,
+    d_total,
+    mu,
+    sig,
+    t=1e-5,
+    phi_del=2**(-0.25),
+    phi_amp=2**0.25,
+    prior=None,
+    likelihood_weight=1.0,
+    ):
+    """
+    Expression-only 3-state CNA HMM.
+
+    States:
+        neu, del, amp
+
+    likelihood_weight in (0, 1] implements a power likelihood:
+        p(y | z) ** likelihood_weight
+
+    Values < 1 reduce expression overconfidence.
+    """
+
+    if not 0 < likelihood_weight <= 1:
+        raise ValueError("likelihood_weight must be in (0, 1].")
+
     Y_obs = np.asarray(Y_obs, dtype=float)
     lambda_ref = np.asarray(lambda_ref, dtype=float)
 
     N = len(Y_obs)
 
-    d_total = np.asarray(d_total, dtype=float)
-    if d_total.size == 1:
-        d_total = np.full(N, d_total.item())
+    def _broadcast(x, name):
+        x = np.asarray(x, dtype=float).reshape(-1)
 
-    mu = np.asarray(mu, dtype=float)
-    sig = np.asarray(sig, dtype=float)
+        if x.size == 1:
+            return np.full(N, x.item(), dtype=float)
 
-    if mu.size == 1:
-        mu = np.full(N, mu.item())
+        if x.size != N:
+            raise ValueError(f"{name} must be scalar or have length {N}; "
+                             f"got length {x.size}.")
 
-    if sig.size == 1:
-        sig = np.full(N, sig.item())
+        return x
+
+    d_total = _broadcast(d_total, "d_total")
+    mu = _broadcast(mu, "mu")
+    sig = _broadcast(sig, "sig")
 
     states = np.asarray(["neu", "del", "amp"])
-    phi = np.asarray([1.0, phi_del, phi_amp])
+    phi = np.asarray([1.0, phi_del, phi_amp], dtype=float)
 
-    # P(change CNA state) = t.
-    A = np.full((3, 3), t / 2.0)
+    # Same CNA state with probability 1-t.
+    A = np.full((3, 3), t / 2.0, dtype=float)
     np.fill_diagonal(A, 1.0 - t)
 
-    logPi = np.repeat(np.log(A)[None, :, :], 
-                      N,
-                      axis=0)
+    log_A = np.log(A,
+                   out=np.full_like(A, -np.inf),
+                   where=A > 0)
+
+    logPi = np.repeat(log_A[None, :, :], N, axis=0)
 
     if prior is None:
         t0 = min(100.0 * t, 0.2)
-        prior = np.asarray([1.0 - t0,
-                            t0 / 2.0, 
-                            t0 / 2.0])
+        prior = np.asarray([1.0 - t0, 
+                            t0 / 2.0,
+                            t0 / 2.0],
+                           dtype=float)
+    else:
+        prior = np.asarray(prior, dtype=float)
+
+        if prior.shape != (3,):
+            raise ValueError("prior must contain 3 probabilities.")
+
+        if np.any(prior < 0) or prior.sum() <= 0:
+            raise ValueError("prior must contain non-negative probabilities.")
+
+        prior = prior / prior.sum()
 
     logprob = np.zeros((N, 3), dtype=float)
 
-    valid = (np.isfinite(Y_obs) 
-             & np.isfinite(lambda_ref)
-             & (lambda_ref > 0))
+    valid = (
+        np.isfinite(Y_obs)
+        & np.isfinite(lambda_ref)
+        & (lambda_ref > 0)
+        & np.isfinite(d_total)
+        & (d_total > 0)
+        & np.isfinite(mu)
+        & np.isfinite(sig)
+    )
 
     for state_i, state_phi in enumerate(phi):
         logprob[valid, state_i] = dpoilog(
             x=Y_obs[valid],
-            mu=(mu[valid] + 
-                np.log(state_phi * d_total[valid] * lambda_ref[valid])),
+            mu=(
+                mu[valid]
+                + np.log(
+                    state_phi
+                    * d_total[valid]
+                    * lambda_ref[valid]
+                )
+            ),
             sig=sig[valid],
-            log=True)
+            log=True,
+        )
 
-    z = viterbi_compute(log_delta=np.log(prior),
-                        logprob=logprob,
-                        logPi=logPi)
+    # Temper state evidence relative to neutral.
+    #
+    # log p_w(y|z)
+    # = log p(y|neu)
+    #   + w * [log p(y|z) - log p(y|neu)]
+    #
+    # The common neutral term cancels when comparing states.
+    neutral = logprob[:, [0]]
+
+    logprob = neutral + likelihood_weight * (logprob - neutral)
+
+    z = viterbi_compute(
+        log_delta=np.log(prior),
+        logprob=logprob,
+        logPi=logPi)
 
     return states[z].tolist()
 

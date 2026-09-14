@@ -120,6 +120,8 @@ def run_spacenumbat(
     distance_key: str = "weighted_adjacency",
     mode: str = "rna",
     evidence_mode = 'joint',
+    logphi_min: float = 0.25,
+    expression_likelihood_weight: float = 1.0,
     binning: str = "numbat",
     bin_size: int | None = None,
     custom_binning=None,
@@ -302,14 +304,19 @@ def run_spacenumbat(
     if evidence_mode not in valid_evidence_modes:
         raise ValueError(f"evidence_mode must be one of {sorted(valid_evidence_modes)}")
 
-    exp_only = evidence_mode == "expression"
-
+    exp_only = (evidence_mode == "expression")
+    
+    if exp_only and mode not in {"rna", "rna_bin"}:
+        raise ValueError("evidence_mode='expression' requires RNA input.")
+    if not 0 < expression_likelihood_weight <= 1:
+        raise ValueError("expression_likelihood_weight must be in (0, 1].")
     if not exp_only and df_allele is None:
         raise ValueError("df_allele is required when evidence_mode='joint'.")
-
     if exp_only and call_clonal_loh:
         raise ValueError("call_clonal_loh cannot be used with expression-only inference.")
-            
+    if exp_only and use_loh is True:
+        raise ValueError("use_loh=True is not identifiable in expression-only mode.")        
+    
     has_atac = mode in {"atac_bin", "combined"}
     
     filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)
@@ -406,8 +413,6 @@ def run_spacenumbat(
                              "The ATAC reference must match both the genome build "
                              "and genomic binning used for the sample.")
             
-    if df_allele is None:
-        raise ValueError("df_allele is required for all SpaceNumbat modes.")
             
     if gtf is not None:
         
@@ -568,13 +573,13 @@ def run_spacenumbat(
     chrom_order = {chrom: i for i, chrom in enumerate(genome_spec.analysis_chromosomes)}
     gtf = gtf.assign(_chrom_order=gtf["CHROM"].map(chrom_order)).sort_values(["_chrom_order", "gene_start", "gene_end"],
                                                                               kind="stable").drop(columns="_chrom_order").reset_index(drop=True)
-
-    df_allele = genome_spec.normalize_table(df_allele, table_name="allele counts")
-    df_allele = genome_spec.validate_position_bounds(df_allele,
-                                                     pos_col="POS",
-                                                     table_name="allele counts")
-    df_allele = utils.check_allele_df(df_allele)
-    df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
+    if not exp_only:
+        df_allele = genome_spec.normalize_table(df_allele, table_name="allele counts")
+        df_allele = genome_spec.validate_position_bounds(df_allele,
+                                                         pos_col="POS",
+                                                         table_name="allele counts")
+        df_allele = utils.check_allele_df(df_allele)
+        df_allele = utils.annotate_genes(df=df_allele, gtf=gtf)
     
     gtf["CHROM"] = gtf["CHROM"].astype("string")
     
@@ -614,6 +619,19 @@ def run_spacenumbat(
     count_mat = count_mat[:, common_genes].copy()
     lambdas_ref = lambdas_ref.reindex(common_genes).copy()
     
+    # normalize reference
+    if exp_only:
+        ref_mass = lambdas_ref.sum(axis=0)
+    
+        if (ref_mass <= 0).any():
+            bad = ref_mass.index[ref_mass <= 0].tolist()
+    
+            raise ValueError("Expression reference has zero mass on "
+                             f"the measured panel for: {bad}")
+
+        lambdas_ref = lambdas_ref.div(ref_mass, axis=1)
+
+    
     if not count_mat.var_names.equals(lambdas_ref.index):
         raise RuntimeError("Internal gene alignment failed: count_mat and lambdas_ref "
                            "do not have identical feature indices.")
@@ -623,13 +641,15 @@ def run_spacenumbat(
     if len(zero_cov) > 0:
         log.info(f"Filtering out {len(zero_cov)} cells with 0 coverage")
         count_mat = count_mat[~count_mat.obs_names.isin(zero_cov),:]
-        df_allele = df_allele[~df_allele.cell.isin(zero_cov)]
+        if not exp_only:
+            df_allele = df_allele[~df_allele.cell.isin(zero_cov)]
     
     # keep cells that have a transcriptome
-    df_allele = df_allele[df_allele.cell.isin(count_mat.obs_names)]
-    if df_allele.shape[0] == 0:
-        msg = "No matching cell names between count_mat and df_allele. Breaking pipeline!"
-        raise ValueError(msg)
+    if not exp_only:
+        df_allele = df_allele[df_allele.cell.isin(count_mat.obs_names)]
+        if df_allele.empty:
+            msg = "No matching cell names between count_mat and df_allele. Breaking pipeline!"
+            raise ValueError(msg)
 
     # check if conficts on given genomic information
     if (segs_loh is not None and not segs_loh.empty and segs_consensus_fix is not None):
@@ -846,15 +866,16 @@ def run_spacenumbat(
                                                segs_loh=segs_loh,
                                                filter_hla=filter_hla,
                                                filter_segments=filter_segments_df,
-                                               ncores=ncores)
+                                               ncores=ncores,
+                                               exp_only=exp_only)
         
         ### Diagnostics
         
         if i == 0:
             
             bulk_subtrees0 = bulk_subtrees[bulk_subtrees["sample"] == "0"].copy()
-            
-            diagnostics.check_contam(bulk_subtrees0)
+            if not exp_only:
+                diagnostics.check_contam(bulk_subtrees0)
             diagnostics.check_exp_noise(bulk_subtrees0)
         
         if segs_consensus_fix is None:
@@ -868,7 +889,8 @@ def run_spacenumbat(
                                                   common_diploid = common_diploid,
                                                   diploid_chroms = diploid_chroms,
                                                   ncores = ncores,
-                                                  verbose = verbose)
+                                                  verbose = verbose,
+                                                  exp_only=exp_only)
             
             bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
             
@@ -902,7 +924,8 @@ def run_spacenumbat(
                                                     exclude_neu=exclude_neu,
                                                     gamma=gamma,
                                                     min_LLR=min_LLR,
-                                                    ncores=ncores)
+                                                    ncores=ncores,
+                                                    exp_only=exp_only)
             bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
             
             ## define consensus CNVs again
@@ -949,7 +972,8 @@ def run_spacenumbat(
                                              segs_loh = segs_loh,
                                              filter_hla=filter_hla,
                                              filter_segments=filter_segments_df,
-                                             ncores = ncores)
+                                             ncores = ncores,
+                                             exp_only=exp_only)
         
         bulk_clones = operations.run_group_hmms(bulks = bulk_clones,
                                                 t = t,
@@ -962,7 +986,8 @@ def run_spacenumbat(
                                                 exclude_neu=exclude_neu,
                                                 ncores = ncores,
                                                 verbose = verbose,
-                                                retest = False)
+                                                retest = False,
+                                                exp_only=exp_only)
         
         bulk_clones = operations.retest_bulks(bulks = bulk_clones,
                                               segs_consensus = segs_consensus,
@@ -971,7 +996,8 @@ def run_spacenumbat(
                                               use_loh = use_loh,
                                               min_LLR = min_LLR,
                                               diploid_chroms = diploid_chroms,
-                                              ncores = ncores)
+                                              ncores = ncores,
+                                              exp_only=exp_only)
         
         bulk_clones.to_csv(os.path.join(out_dir, f"bulk_clones_{i}.tsv"), sep="\t")
     
@@ -1012,14 +1038,21 @@ def run_spacenumbat(
                                            sc_refs=sc_refs,
                                            ncores=ncores,
                                            verbose=verbose,
-                                           use_pbar=use_pbar)
+                                           use_pbar=use_pbar,
+                                           logphi_min=logphi_min,
+                                           expression_likelihood_weight=expression_likelihood_weight,)
         
-        haplotype = operations.get_haplotype_post(bulk_subtrees, 
-                                                  segs_consensus_retest_corrected)
-        
-        allele_post = operations.get_allele_post(df_allele=df_allele,
-                                                 haplotypes=haplotype,
-                                                 segs_consensus=segs_consensus_retest_corrected)
+        if exp_only:
+            allele_post = None
+            
+        else:
+    
+            haplotype = operations.get_haplotype_post(bulk_subtrees, 
+                                                      segs_consensus_retest_corrected)
+            
+            allele_post = operations.get_allele_post(df_allele=df_allele,
+                                                     haplotypes=haplotype,
+                                                     segs_consensus=segs_consensus_retest_corrected)
             
     
         joint_post = operations.get_joint_post(
@@ -1031,19 +1064,26 @@ def run_spacenumbat(
             distance_key=distance_key,
             spatial=spatial,
             method=spatial_method,
-            method_kwargs=spatial_method_kwargs
+            method_kwargs=spatial_method_kwargs,
+            exp_only=exp_only,
             )
             
         joint_post.loc[:, "avg_entropy"] = operations.joint_post_entropy(joint_post)
         
         if multi_allelic:
             exp_post = operations.expand_states(exp_post, segs_consensus)
-            allele_post = operations.expand_states(allele_post, segs_consensus)
+            
+            if allele_post is not None:
+                allele_post = operations.expand_states(allele_post, segs_consensus)
+                
             joint_post = operations.expand_states(joint_post, segs_consensus)
     
             
         exp_post.to_csv(os.path.join(out_dir, f"exp_post_{i}.tsv"), sep="\t")
-        allele_post.to_csv(os.path.join(out_dir, f"allele_post_{i}.tsv"), sep="\t")
+        
+        if allele_post is not None:
+            allele_post.to_csv(os.path.join(out_dir, f"allele_post_{i}.tsv"), sep="\t")
+       
         joint_post.to_csv(os.path.join(out_dir, f"joint_post_{i}.tsv"), sep="\t")
     
         
@@ -1099,7 +1139,7 @@ def run_spacenumbat(
         msg = f"Found {len(normal_cells)} normal cells at iteration {i}."
         log.info(msg)
         
-       #if plot_results:
+        #if plot_results:
             #TODO: make plot
             
         # clone_to_node = operations.clone_to_node_from_Gm(G_m)
@@ -1127,7 +1167,8 @@ def run_spacenumbat(
                                          segs_loh=segs_loh,
                                          filter_hla=filter_hla,
                                          filter_segments=filter_segments_df,
-                                         ncores=ncores)
+                                         ncores=ncores,
+                                         exp_only=exp_only)
     
     bulk_clones = operations.run_group_hmms(bulks=bulk_clones, 
                                             t=t, 
@@ -1140,7 +1181,8 @@ def run_spacenumbat(
                                             exclude_neu=exclude_neu,
                                             ncores=ncores, 
                                             verbose=verbose, 
-                                            retest=False)
+                                            retest=False,
+                                            exp_only=exp_only)
     
     bulk_clones = operations.retest_bulks(bulks=bulk_clones, 
                                           segs_consensus=segs_consensus, 
@@ -1149,7 +1191,8 @@ def run_spacenumbat(
                                           use_loh=use_loh,
                                           min_LLR=min_LLR, 
                                           diploid_chroms=diploid_chroms, 
-                                          ncores=ncores)
+                                          ncores=ncores,
+                                          exp_only=exp_only)
     
     final_bulk_clones_saving_path = os.path.join(out_dir, "bulk_clones_final.tsv")
     bulk_clones.to_csv(final_bulk_clones_saving_path, sep="\t")

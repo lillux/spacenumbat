@@ -39,6 +39,7 @@ def run_group_hmms(
     gamma=20, 
     alpha=1e-4, 
     min_genes=10,
+    logphi_min=0.25,
     nu=1,
     common_diploid=True,
     diploid_chroms=None,
@@ -47,6 +48,7 @@ def run_group_hmms(
     retest=True, 
     run_hmm=True,
     exclude_neu=True,
+    expression_likelihood_weight=1.0,
     ncores=1,
     verbose=False, 
     debug=False
@@ -77,11 +79,15 @@ def run_group_hmms(
         pd.DataFrame: Resulting data after running HMMs.
     """
     
+    if exp_only and allele_only:
+        raise ValueError("exp_only and allele_only cannot both be True.")
+    
     if bulks is None:
         return pd.DataFrame()
 
     bulks = bulks.copy()
-    if bulks.shape[0] == 0:
+    
+    if bulks.empty:
         if 'sample' not in bulks.columns:
             bulks['sample'] = pd.Series(dtype=object)
         return bulks
@@ -93,7 +99,7 @@ def run_group_hmms(
     if not exp_only:
         bulks = bulks.groupby('sample', observed=True, sort=False).filter(lambda x: x['DP'].notna().sum() > 0).copy()
 
-    if bulks.shape[0] == 0:
+    if bulks.empty:
         return bulks
 
     n_groups = bulks['sample'].nunique()
@@ -103,6 +109,9 @@ def run_group_hmms(
 
     # Determine whether to find diploid regions
     if not run_hmm:
+        find_diploid = False
+    elif exp_only:
+        # Never call allele-based find_common_diploid().
         find_diploid = False
     elif common_diploid and diploid_chroms is None:
         bulks = utils.find_common_diploid(bulks, gamma=gamma, alpha=alpha, ncores=ncores)
@@ -118,6 +127,7 @@ def run_group_hmms(
                 bulk,
                 t=t,
                 gamma=gamma,
+                logphi_min=logphi_min,
                 nu=nu,
                 find_diploid=find_diploid,
                 run_hmm=run_hmm,
@@ -127,12 +137,16 @@ def run_group_hmms(
                 min_genes=min_genes,
                 retest=retest,
                 verbose=verbose,
-                exclude_neu=exclude_neu
+                exclude_neu=exclude_neu,
+                expression_likelihood_weight=expression_likelihood_weight,
             )
         except Exception as e:
             return e  # pass the exception back
     bulk_groups = bulks.groupby('sample', observed=True, sort=False)
-    ncores = np.max([1,np.min((len(bulk_groups), cpu_count(), ncores))])
+    ncores = int(np.max([1,
+                         np.min((len(bulk_groups), 
+                                 cpu_count(), 
+                                 ncores))]))
     log.info(f'Running bulk analysis on {ncores} core')
 
     results = Parallel(n_jobs=ncores)(
@@ -489,7 +503,10 @@ def retest_bulks(
     diploid_chroms=None,
     ncores: int = 1,
     exclude_neu: bool = True,
-    min_LLR: float = 5
+    min_LLR: float = 5,
+    exp_only=False,
+    logphi_min=0.25,
+    expression_likelihood_weight=1,
     ) -> pd.DataFrame:
     """
     This function:
@@ -542,7 +559,10 @@ def retest_bulks(
     # If segs_consensus is None, build it
     if segs_consensus is None:
         segs_consensus = get_segs_consensus(bulks)
-
+        
+    if exp_only:
+        use_loh = False
+    
     # use_loh can be decide automatically if the total neutral
     # region < 1.5e8 ## OR THIS MAY BE TUNABLE
     if use_loh is None:
@@ -576,7 +596,9 @@ def retest_bulks(
                            min_genes=min_genes, 
                            run_hmm=False, 
                            exclude_neu=exclude_neu, 
-                           ncores=ncores)
+                           ncores=ncores,
+                           logphi_min=logphi_min,
+                           expression_likelihood_weight=expression_likelihood_weight)
 
     bulks['LLR'] = bulks['LLR'].fillna(0)
     bulks.loc[ bulks['LLR']< min_LLR, 'cnv_state_post'] = 'neu'
@@ -899,6 +921,9 @@ def get_exp_likelihoods(
     sigma: Optional[float] = None,
     disp: bool = False,
     n_points: int = 256,
+    exp_only=False,
+    logphi_min=0.25,
+    likelihood_weight=1.0,
     ) -> pd.DataFrame:
     """
     Compute expression-model likelihood summaries per segment.
@@ -999,13 +1024,37 @@ def get_exp_likelihoods(
                                           upper=10)
 
         l11_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=1.0, n_points=n_points)
-        l20_val = l11_val
-        l10_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=0.5, n_points=n_points)
-        l21_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=1.5, n_points=n_points)
-        l31_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=2.0, n_points=n_points)
-        l22_val = l31_val
-        l32_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=2.5, n_points=n_points)
-        l00_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=0.25, n_points=n_points)
+        
+        if exp_only:
+            
+            phi_del = 2**(-logphi_min)
+            phi_amp = 2**logphi_min
+        
+            raw_del = dist_prob.l_lnpois(df["Y_obs"].values, df["lambda_ref"].values, depth_obs, mu, sigma, phi=phi_del, n_points=n_points)
+            raw_amp = dist_prob.l_lnpois(df["Y_obs"].values, df["lambda_ref"].values, depth_obs, mu, sigma, phi=phi_amp, n_points=n_points)
+        
+            # Temper relative Bayes evidence.
+            l10_val = l11_val + likelihood_weight * (raw_del - l11_val)
+            l21_val = l11_val + likelihood_weight * (raw_amp - l11_val)
+            
+            # Two identical amp components preserve the existing
+            # compute_posterior() schema.
+            l31_val = l21_val
+        
+            # Unidentifiable RNA-only states.
+            l20_val = l11_val   # LOH
+            l22_val = l11_val   # balanced amp
+            l00_val = l11_val   # balanced del
+            l32_val = l21_val
+        
+        else:
+            l20_val = l11_val
+            l10_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=0.5, n_points=n_points)
+            l21_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=1.5, n_points=n_points)
+            l31_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=2.0, n_points=n_points)
+            l22_val = l31_val
+            l32_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=2.5, n_points=n_points)
+            l00_val = dist_prob.l_lnpois(df['Y_obs'].values, df['lambda_ref'].values, depth_obs, mu, sigma, phi=0.25, n_points=n_points)
 
         return pd.Series({
             'n': n,
@@ -1358,7 +1407,10 @@ def get_exp_post(
     verbose: bool = True,
     use_pbar: bool = False,
     debug: bool = False,
-    n_points: int = 200
+    n_points: int = 200,
+    exp_only=False,
+    logphi_min=0.25,
+    expression_likelihood_weight=1.0,
     ) -> pd.DataFrame:
     """
     Compute per-cell expression-based posteriors for CNV states and merge them with segment priors.
@@ -1434,6 +1486,9 @@ def get_exp_post(
     
     exp_sc = get_exp_sc(segs_consensus, count_mat, gtf, segs_loh)
     
+    if exp_only:
+        use_loh = False
+    
     # Decide if use_loh
     if use_loh is None:
         fraction_neu_notloh = np.mean((exp_sc.var['cnv_state']=='neu') & (~exp_sc.var['loh']))
@@ -1468,7 +1523,10 @@ def get_exp_post(
             cell_lik = get_exp_likelihoods(exp_counts=sc_exp_data,
                                            use_loh=use_loh,
                                            diploid_chroms=diploid_chroms,
-                                           n_points=n_points)
+                                           n_points=n_points,
+                                           exp_only=exp_only,
+                                           logphi_min=logphi_min,
+                                           likelihood_weight=expression_likelihood_weight)
             cell_lik.loc[:,'cell'] = cell
             cell_lik.loc[:,'ref'] = ref
             return cell_lik
@@ -1523,15 +1581,20 @@ def get_exp_post(
     segs_consensus.seg = segs_consensus.seg.astype("string")
     segs_consensus.seg_cons = segs_consensus.seg_cons.astype("string")
     
-    segs_cons_temp = segs_consensus.loc[:,['CHROM',
-                                           'seg_cons',
-                                           'seg_start',
-                                           'seg_end',
-                                           'p_loh',
-                                           'p_amp',
-                                           'p_del',
-                                           'p_bamp',
-                                           'p_bdel']].copy()
+    segment_cols = ["CHROM",
+                    "seg_cons",
+                    "seg_start",
+                    "seg_end",
+                    "p_loh",
+                    "p_amp",
+                    "p_del",
+                    "p_bamp",
+                    "p_bdel"]
+
+    if "cnv_states" in segs_consensus.columns:
+        segment_cols.append("cnv_states")
+    
+    segs_cons_temp = segs_consensus[segment_cols].copy()
     segs_cons_temp = segs_cons_temp.rename(columns={'seg_cons':'seg',
                                                     'p_loh':'prior_loh',
                                                     'p_amp':'prior_amp',
@@ -1540,10 +1603,13 @@ def get_exp_post(
                                                     'p_bdel':'prior_bdel'})
 
     exp_post_merged = exp_post.merge(segs_cons_temp, on=['seg','CHROM'])
-   
-    prior_cols = ['prior_loh','prior_amp','prior_del','prior_bamp','prior_bdel']
-    for c in prior_cols:
-        exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-15
+    
+    if exp_only:
+        exp_post_merged = _set_expression_only_priors(exp_post_merged)
+    else:
+        prior_cols = ['prior_loh','prior_amp','prior_del','prior_bamp','prior_bdel']
+        for c in prior_cols:
+            exp_post_merged.loc[exp_post_merged[c]<0.05, c] = 1e-15
     #log.info('Disabling system warnings...')
     #warnings.filterwarnings('ignore')
     exp_posterior = compute_posterior(exp_post_merged)
@@ -1777,6 +1843,7 @@ def get_joint_post(
     connectivity_key: str = "spatial_connectivities",
     distance_key: str = "weighted_adjacency",
     method_kwargs: Optional[Dict[str, Any]] = None,
+    exp_only: bool = False,
     ) -> pd.DataFrame:
     """
     Combine expression and allele likelihoods and optionally apply spatial
@@ -1826,6 +1893,8 @@ def get_joint_post(
     ].copy()
 
     # Allele likelihoods.
+    has_allele = (allele_post is not None and not allele_post.empty)
+    
     allele_columns = {
         *key_columns,
         *likelihood_columns,
@@ -1839,11 +1908,24 @@ def get_joint_post(
         "total",
     }
 
-    allele_sel = allele_post.loc[
-        :,
-        [column for column in allele_post.columns if column in allele_columns],
-    ].copy()
-
+    if has_allele:
+        allele_sel = allele_post.loc[:,
+                                     [column for column in allele_post.columns if column in allele_columns]].copy()
+    else:
+        allele_sel = exp_sel[key_columns].drop_duplicates().copy()
+    
+        # Missing modality contributes zero log likelihood.
+        for column in likelihood_columns:
+            allele_sel[column] = 0.0
+    
+        # Keep diagnostic columns so pandas creates _x/_y
+        # suffixes, while clearly marking the allele diagnostic
+        # as unavailable.
+        allele_sel["Z"] = np.nan
+        allele_sel["Z_cnv"] = np.nan
+        allele_sel["Z_n"] = np.nan
+        allele_sel["logBF"] = np.nan
+        
     # spatial smoothing.
     if spatial and method != "hmrf":
         
@@ -1877,17 +1959,19 @@ def get_joint_post(
         ]
         
         allele_smoothing_columns = [column for column in allele_smoothing_columns if column in allele_sel.columns]
-
-        allele_sel = spatial_utils.neighbors_average(
-            df=allele_sel,
-            adata=count_mat,
-            columns=allele_smoothing_columns,
-            by=["seg"],
-            method=method,
-            method_kwargs=method_kwargs,
-            connectivity_key=connectivity_key,
-            distance_key=distance_key,
-        )
+        
+        
+        if has_allele:
+            allele_sel = spatial_utils.neighbors_average(
+                df=allele_sel,
+                adata=count_mat,
+                columns=allele_smoothing_columns,
+                by=["seg"],
+                method=method,
+                method_kwargs=method_kwargs,
+                connectivity_key=connectivity_key,
+                distance_key=distance_key,
+            )
 
     joint_post = pd.merge(exp_sel, allele_sel, on=key_columns, how="outer")
 
@@ -1929,6 +2013,9 @@ def get_joint_post(
             })
 
     joint_post = pd.merge(joint_post, segs_sel, on="seg", how="left")
+    
+    if exp_only:
+        joint_post = _set_expression_only_priors(joint_post)
 
     # Combine expression and allele log-likelihoods.
     for likelihood in likelihood_columns:
@@ -2138,35 +2225,6 @@ def expand_states(
           "bamp": "Z_bamp",
           "bdel": "Z_bdel",
           }
-        
-        
-        # For each row, dynamically select the posterior values based on cnv_state.
-        def select_posteriors(row):
-            state = row["cnv_state"]
-            p_col = f"p_{state}"
-            z_col = f"Z_{state}"
-
-            p_cnv = row.get(p_col, np.nan)
-
-            row["p_cnv"] = p_cnv
-            row["p_n"] = (
-                1.0 - p_cnv
-                if pd.notna(p_cnv)
-                else np.nan
-            )
-            row["Z_cnv"] = row.get(z_col, np.nan)
-
-            # logBF must describe the posterior values stored in this row.
-            if pd.notna(row["p_cnv"]) and pd.notna(row["p_n"]):
-                eps = 1e-15
-                p_alt = np.clip(float(row["p_cnv"]), eps, 1.0)
-                p_ref = np.clip(float(row["p_n"]), eps, 1.0)
-
-                row["logBF"] = np.log(p_alt) - np.log(p_ref)
-            else:
-                row["logBF"] = np.nan
-
-            return row
         
         
         def select_posteriors(row):
@@ -2418,3 +2476,48 @@ def check_convergence_and_update(
         return True, segs_consensus_old
     return False, segs_consensus.copy()
 
+
+def _set_expression_only_priors(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Give 0.5 prior probability to neutral and 0.5 total
+    prior probability to candidate CNA states.
+
+    Pseudobulk posterior strength is intentionally not reused,
+    because it was inferred from the same expression modality.
+    """
+
+    out = df.copy()
+
+    prior_cols = [
+        "prior_loh",
+        "prior_amp",
+        "prior_del",
+        "prior_bamp",
+        "prior_bdel",
+    ]
+
+    out.loc[:, prior_cols] = 0.0
+
+    for idx, row in out.iterrows():
+
+        states = []
+
+        if ("cnv_states" in out.columns and pd.notna(row.get("cnv_states"))):
+            states = [x.strip() for x in str(row["cnv_states"]).split(",") if x.strip()]
+
+        if not states:
+            states = [str(row["cnv_state"])]
+
+        active = [state for state in ("del", "amp") if state in states]
+
+        if not active:
+            continue
+
+        # compute_posterior() internally assigns half the
+        # supplied event prior mass to the CNA-vs-neutral side.
+        share = 1.0 / len(active)
+
+        for state in active:
+            out.at[idx, f"prior_{state}"] = share
+
+    return out

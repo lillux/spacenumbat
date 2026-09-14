@@ -1043,7 +1043,7 @@ def get_gtree(
 def get_clone_post(
     gtree: nx.DiGraph,
     exp_post: pd.DataFrame,
-    allele_post: pd.DataFrame,
+    allele_post: Optional[pd.DataFrame] = None,
     seg_col: str = "seg",
     cell_col: str = "cell",
     cnv_state_col: str = "cnv_state",
@@ -1112,8 +1112,11 @@ def get_clone_post(
         - ``p_cnv``, ``p_cnv_x``, ``p_cnv_y``
         - ``compartment_opt``
     """
+    
     if not 0.0 < probability_eps < 0.5:
         raise ValueError("probability_eps must be in the interval (0, 0.5).")
+
+
 
     empty_columns = [
         cell_col,
@@ -1127,23 +1130,16 @@ def get_clone_post(
     ]
 
     # Build clone table from the tree.
-    nodes_df = pd.DataFrame([
-        {
-            "GT": _normalize_gt(attrs.get("GT", "")),
-            "clone": attrs.get("clone", np.nan),
-            "compartment": attrs.get("compartment", np.nan),
-            "leaf": bool(attrs.get("leaf", False)),
-        }
-        for _, attrs in gtree.nodes(data=True)
-    ])
+    nodes_df = pd.DataFrame([{"GT": _normalize_gt(attrs.get("GT", "")),
+                              "clone": attrs.get("clone", np.nan),
+                              "compartment": attrs.get("compartment", np.nan),
+                              "leaf": bool(attrs.get("leaf", False))} for _, attrs in gtree.nodes(data=True)])
 
     if nodes_df.empty:
         return pd.DataFrame(columns=empty_columns)
 
-    gt_to_clone = _build_canonical_gt_clone_map(
-        nodes_df["GT"],
-        nodes_df["clone"],
-    )
+    gt_to_clone = _build_canonical_gt_clone_map(nodes_df["GT"],
+                                                nodes_df["clone"])
     nodes_df["clone"] = nodes_df["GT"].map(gt_to_clone).astype(int)
 
     clones = (
@@ -1324,9 +1320,7 @@ def get_clone_post(
         )
 
         if block.empty:
-            return pd.DataFrame(
-                columns=[*score_keys, output_col]
-            )
+            return pd.DataFrame(columns=[*score_keys, output_col])
 
         block = block.merge(
             clone_segs,
@@ -1451,17 +1445,21 @@ def get_clone_post(
         )
 
     # Modality-specific diagnostic scores.
+    has_allele = (allele_post is not None and not allele_post.empty)
+    
     x = _diagnostic_block(
         post=exp_post,
         suffix="x",
-        table_name="exp_post",
-    )
-
-    y = _diagnostic_block(
-        post=allele_post,
-        suffix="y",
-        table_name="allele_post",
-    )
+        table_name="exp_post")
+    
+    if has_allele:
+        y = _diagnostic_block(
+            post=allele_post,
+            suffix="y",
+            table_name="allele_post")
+        
+    else:
+        y = pd.DataFrame(columns=[*score_keys, "l_clone_y"])
 
     if joint_post is None:
         # Backward-compatible fallback.
@@ -1505,25 +1503,14 @@ def get_clone_post(
     if merged.empty:
         return pd.DataFrame(columns=empty_columns)
 
-    log_prior = np.log(
-        merged["prior_clone"].to_numpy(dtype=float)
-    )
+    log_prior = np.log(merged["prior_clone"].to_numpy(dtype=float))
 
     # Canonical clone score from joint posterior.
-    merged["Z_clone"] = (
-        log_prior
-        + merged["l_clone_joint"].to_numpy(dtype=float)
-    )
+    merged["Z_clone"] = (log_prior + merged["l_clone_joint"].to_numpy(dtype=float))
 
     # Separate expression and allele diagnostics.
-    merged["Z_clone_x"] = (
-        log_prior
-        + merged["l_clone_x"].to_numpy(dtype=float)
-    )
-    merged["Z_clone_y"] = (
-        log_prior
-        + merged["l_clone_y"].to_numpy(dtype=float)
-    )
+    merged["Z_clone_x"] = (log_prior + merged["l_clone_x"].to_numpy(dtype=float))
+    merged["Z_clone_y"] = (log_prior + merged["l_clone_y"].to_numpy(dtype=float))
 
     def _normalize_clone_scores(
         score_col: str,
@@ -1545,138 +1532,70 @@ def get_clone_post(
             normalizer = numeric.log_sum_exp(scores)
 
             if not np.isfinite(normalizer):
-                raise ValueError(
-                    f"Cannot normalize {score_col} for cell {cell!r}: "
-                    "all clone scores are non-finite."
-                )
+                raise ValueError(f"Cannot normalize {score_col} for cell {cell!r}: "
+                                 "all clone scores are non-finite.")
 
-            merged.loc[idx, output_col] = np.exp(
-                scores - normalizer
-            )
+            merged.loc[idx, output_col] = np.exp(scores - normalizer)
+        return
 
     _normalize_clone_scores("Z_clone", "p")
     _normalize_clone_scores("Z_clone_x", "p_x")
-    _normalize_clone_scores("Z_clone_y", "p_y")
+    
+    if has_allele:
+        _normalize_clone_scores("Z_clone_y", "p_y")
+    else:
+        merged["p_y"] = np.nan
 
     def _opt_block(df: pd.DataFrame) -> pd.Series:
         position = int(df["p"].to_numpy().argmax())
         clone_value = df["clone"].to_numpy()[position]
 
         return pd.Series({
-            "clone_opt": (
-                int(clone_value)
-                if pd.notna(clone_value)
-                else np.nan
-            ),
+            "clone_opt": (int(clone_value) if pd.notna(clone_value) else np.nan),
             "GT_opt": df["GT"].to_numpy()[position],
-            "p_opt": float(df["p"].to_numpy()[position]),
-        })
+            "p_opt": float(df["p"].to_numpy()[position])})
 
-    opt = (
-        merged
-        .groupby(
-            cell_col,
-            as_index=False,
-            sort=False,
-        )
-        .apply(
-            _opt_block,
-            include_groups=False,
-        )
-        .reset_index(drop=True)
-    )
+    opt = (merged.groupby(cell_col,
+                          as_index=False,
+                          sort=False).apply(_opt_block,
+                                            include_groups=False).reset_index(drop=True))
 
-    merged = merged.merge(
-        opt,
-        on=cell_col,
-        how="left",
-    )
+    merged = merged.merge(opt, on=cell_col, how="left")
 
-    pivot_index = [
-        cell_col,
-        "clone_opt",
-        "GT_opt",
-        "p_opt",
-    ]
+    pivot_index = [cell_col, "clone_opt", "GT_opt", "p_opt"]
 
-    piv_p = merged.pivot(
-        index=pivot_index,
-        columns="clone",
-        values="p",
-    )
-    piv_p_x = merged.pivot(
-        index=pivot_index,
-        columns="clone",
-        values="p_x",
-    )
-    piv_p_y = merged.pivot(
-        index=pivot_index,
-        columns="clone",
-        values="p_y",
-    )
+    piv_p = merged.pivot(index=pivot_index, columns="clone", values="p")
+    piv_p_x = merged.pivot(index=pivot_index, columns="clone", values="p_x")
+    piv_p_y = merged.pivot(index=pivot_index, columns="clone", values="p_y")
 
-    piv_p.columns = [
-        f"p_{int(clone)}"
-        for clone in piv_p.columns
-    ]
-    piv_p_x.columns = [
-        f"p_x_{int(clone)}"
-        for clone in piv_p_x.columns
-    ]
-    piv_p_y.columns = [
-        f"p_y_{int(clone)}"
-        for clone in piv_p_y.columns
-    ]
+    piv_p.columns = [f"p_{int(clone)}" for clone in piv_p.columns]
+    piv_p_x.columns = [f"p_x_{int(clone)}" for clone in piv_p_x.columns]
+    piv_p_y.columns = [f"p_y_{int(clone)}" for clone in piv_p_y.columns]
 
-    clone_post = pd.concat(
-        [piv_p, piv_p_x, piv_p_y],
-        axis=1,
-    ).reset_index()
+    clone_post = pd.concat([piv_p, piv_p_x, piv_p_y], axis=1).reset_index()
 
-    tumor_clones = (
-        clones.loc[
-            clones["compartment"].astype(str) == "tumor",
-            "clone",
-        ]
-        .dropna()
-        .astype(int)
-        .tolist()
-    )
+    tumor_clones = clones.loc[clones["compartment"].astype(str) == "tumor",
+                              "clone"].dropna().astype(int).tolist()
 
-    def _row_sum_cols(
-        df: pd.DataFrame,
-        columns: list[str],
-        ) -> np.ndarray:
-        columns = [
-            column
-            for column in columns
-            if column in df.columns
-        ]
+    def _row_sum_cols(df: pd.DataFrame,
+                      columns: list[str],
+                      ) -> np.ndarray:
+        columns = [column for column in columns if column in df.columns]
 
         if not columns:
             return np.zeros(len(df), dtype=float)
 
-        return df[
-            columns
-        ].to_numpy(dtype=float).sum(axis=1)
+        return df[columns].to_numpy(dtype=float).sum(axis=1)
 
-    clone_post["p_cnv"] = _row_sum_cols(
-        clone_post,
-        [f"p_{clone}" for clone in tumor_clones],
-    )
-    clone_post["p_cnv_x"] = _row_sum_cols(
-        clone_post,
-        [f"p_x_{clone}" for clone in tumor_clones],
-    )
-    clone_post["p_cnv_y"] = _row_sum_cols(
-        clone_post,
-        [f"p_y_{clone}" for clone in tumor_clones],
-    )
+    clone_post["p_cnv"] = _row_sum_cols(clone_post,
+                                        [f"p_{clone}" for clone in tumor_clones])
+    clone_post["p_cnv_x"] = _row_sum_cols(clone_post,
+                                          [f"p_x_{clone}" for clone in tumor_clones])
+    clone_post["p_cnv_y"] = _row_sum_cols(clone_post,
+                                          [f"p_y_{clone}" for clone in tumor_clones])
 
-    clone_post["compartment_opt"] = np.where(
-        clone_post["p_cnv"].to_numpy(dtype=float) > 0.5,
-        "tumor",
-        "normal",
-    )
+    clone_post["compartment_opt"] = np.where(clone_post["p_cnv"].to_numpy(dtype=float) > 0.5,
+                                             "tumor",
+                                             "normal")
 
     return clone_post
