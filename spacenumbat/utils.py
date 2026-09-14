@@ -3783,7 +3783,9 @@ def analyze_bulk(
                                                          h = 50)
         
         bulk = bulk.merge(phi_mle_roll, left_index=True, right_index=True)
-        bulk.loc[:,'phi_mle_roll'] = bulk.phi_mle_roll.ffill()
+        bulk["phi_mle_roll"] = bulk.groupby("CHROM",
+                                            observed=True,
+                                            sort=False)["phi_mle_roll"].ffill()
     
     bulk.loc[:,'nu'] = nu
     bulk.loc[:,'gamma'] = gamma

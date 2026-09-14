@@ -753,6 +753,7 @@ def run_spacenumbat(
         f"eps = {eps}",
         f"max_entropy = {max_entropy}",
         f"init_k = {init_k}",
+        f"clustering_window = {clustering_window}",
         f"min_cells = {min_cells}",
         f"tau = {tau}",
         f"nu = {nu}",
@@ -1062,10 +1063,20 @@ def run_spacenumbat(
         segs_consensus_retest_corrected = segs_consensus.copy()
         segs_consensus_retest_corrected.loc[:,'cnv_state'] = [row.cnv_state if row.cnv_state == 'neu' else row.cnv_state_post for idx, row in segs_consensus_retest_corrected.iterrows()]
         
+        if exp_only and diploid_chroms is None:
+            has_neutral_baseline = segs_consensus_retest_corrected["cnv_state"].astype(str).eq("neu").any()
+        
+            if not has_neutral_baseline:
+                raise log.warning("Your data do not have a normal baseline!!!!!\n"
+                                  "RNA-only single-cell inference requires either "
+                                  "at least one neutral consensus segment or "
+                                  "diploid_chroms to define the expression baseline.")
+        
         exp_post = operations.get_exp_post(segs_consensus_retest_corrected,
                                            count_mat=count_mat,
                                            gtf=gtf,
                                            lambdas_ref=lambdas_ref,
+                                           diploid_chroms=diploid_chroms,
                                            use_loh = use_loh,
                                            segs_loh = segs_loh,
                                            sc_refs=sc_refs,
@@ -1074,7 +1085,8 @@ def run_spacenumbat(
                                            use_pbar=use_pbar,
                                            exp_only=exp_only,
                                            logphi_min=logphi_min,
-                                           expression_likelihood_weight=expression_likelihood_weight,)
+                                           expression_likelihood_weight=expression_likelihood_weight,
+                                           )
         
         if exp_only:
             allele_post = None
