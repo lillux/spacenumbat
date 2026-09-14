@@ -221,9 +221,23 @@ def smooth_expression(
     exp_mat_norm = pd.DataFrame(exp_mat_norm)
 
     # Rolling window smoothing along genes (transpose, smooth, transpose back)
-    exp_mat_smooth = exp_mat_norm.T.rolling(window=window, center=True, min_periods=1).mean()
-    count_mat.layers['X_smooth'] = scipy.sparse.csr_matrix(exp_mat_smooth.values.T)
-    count_mat.layers['X'] = count_mat.X
+    # Keep cell × feature representation.
+    exp_mat_norm = np.asarray(exp_mat_norm, dtype=float,)
+    # Chromosome corresponding to every retained feature.
+    feature_chrom = gtf.set_index("gene").loc[count_mat.var_names, "CHROM"].astype("string").to_numpy()
+    exp_mat_smooth = np.empty_like(exp_mat_norm, dtype=float)
+    # Never smooth across chromosome boundaries.
+    for chrom in pd.unique(feature_chrom):
+    
+        idx = np.flatnonzero(feature_chrom == chrom)
+        current = pd.DataFrame(exp_mat_norm[:, idx])
+        current_smooth = current.T.rolling(window=window,
+                                           center=True, 
+                                           min_periods=1).mean().T.to_numpy()
+        exp_mat_smooth[:, idx] = current_smooth
+    
+    count_mat.layers["X_smooth"] = scipy.sparse.csr_matrix(exp_mat_smooth)
+    count_mat.layers["X"] = count_mat.X
 
     return count_mat
 

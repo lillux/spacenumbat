@@ -2809,6 +2809,55 @@ def classify_alleles(bulk: pd.DataFrame) -> pd.DataFrame:
     return bulk
 
 
+def _empty_result(bulk):
+    out = bulk.iloc[0:0][
+        [
+            "CHROM",
+            "seg",
+            "seg_start",
+            "seg_end",
+            "cnv_state",
+        ]
+    ].copy()
+
+    out["cnv_state_post"] = pd.Series(dtype="string")
+
+    for col in ["n_genes", "n_snps"]:
+        out[col] = pd.Series(dtype="int64")
+
+    float_cols = [
+        "theta_hat",
+        "theta_mle",
+        "theta_sigma",
+        "phi_mle",
+        "phi_sigma",
+        "L_x_n",
+        "L_x_d",
+        "L_x_a",
+        "L_y_n",
+        "L_y_d",
+        "L_y_a",
+        "Z_n",
+        "Z_cnv",
+        "Z",
+        "logBF",
+        "p_neu",
+        "p_loh",
+        "p_del",
+        "p_amp",
+        "p_bamp",
+        "p_bdel",
+        "LLR_x",
+        "LLR_y",
+        "LLR",
+    ]
+
+    for col in float_cols:
+        out[col] = pd.Series(dtype="float64")
+
+    return out
+
+
 def retest_exp_cnv(bulk: pd.DataFrame,
                    logphi_min: float = 0.25,
                    exclude_neu: bool = True,
@@ -2832,8 +2881,8 @@ def retest_exp_cnv(bulk: pd.DataFrame,
         work = work[work["cnv_state"] != "neu"].copy()
 
     if work.empty:
-        return pd.DataFrame()
-
+        return _empty_result(bulk)
+    
     phi_del = 2**(-logphi_min)
     phi_amp = 2**logphi_min
 
@@ -2953,6 +3002,9 @@ def retest_exp_cnv(bulk: pd.DataFrame,
             "LLR_y": 0.0,
             "LLR": logbf,
         })
+
+    if not rows:
+        return _empty_result(bulk)
 
     return pd.DataFrame(rows)
 

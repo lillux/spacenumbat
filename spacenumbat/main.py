@@ -83,6 +83,7 @@ def run_spacenumbat(
     eps:float=1e-5,
     max_entropy:float=0.5,
     init_k:int=3,
+    clustering_window: int = 101,
     min_cells:int=50,
     tau:float=0.3,
     nu:float=1,
@@ -177,6 +178,10 @@ def run_spacenumbat(
         Transition probability. Default is 1e-5.
     init_k : int, optional
         Number of clusters in the initial clustering. Default is 3.
+    clustering_window : int, default=101
+        Number of consecutive genomic features used in the centered
+        rolling mean for initial expression-based cell clustering.
+        The unit is features, not base pairs.
     min_cells : int, optional
         Minimum number of cells to run the hidden Markov model (HMM) on. Default is 50.
     min_genes : int, optional
@@ -316,15 +321,6 @@ def run_spacenumbat(
         raise ValueError("call_clonal_loh cannot be used with expression-only inference.")
     if exp_only and use_loh is True:
         raise ValueError("use_loh=True is not identifiable in expression-only mode.")  
-    if exp_only and segs_consensus_fix is not None:
-        allowed_states = {"neu", "del", "amp"}
-        bad_states = (set(segs_consensus_fix["cnv_state"].dropna().astype(str))
-                      - allowed_states)
-        if bad_states:
-            raise ValueError("Expression-only inference supports only "
-                             f"'neu', 'del', and 'amp'. Unsupported states: "
-                             f"{sorted(bad_states)}")
-            
     if (exp_only and segs_loh is not None and not segs_loh.empty):
         raise ValueError("segs_loh is unsupported in expression-only mode. "
                          "RNA expression alone cannot identify LOH.")
@@ -332,6 +328,13 @@ def run_spacenumbat(
     has_atac = mode in {"atac_bin", "combined"}
     
     filter_hla = (bool(filter_hla_hg38) and genome in PACKAGED_NUMBAT_GENOMES)
+    
+    if (not isinstance(clustering_window, (int, np.integer))
+        or isinstance(clustering_window, bool)
+        or clustering_window < 1):
+        raise ValueError("clustering_window must be a positive integer.")
+
+    clustering_window = int(clustering_window)
     
     # Resolve genome definition    
     if has_atac:
@@ -679,6 +682,15 @@ def run_spacenumbat(
                                                                   min_start=1)
     segs_consensus_fix = diagnostics.check_segs_fix(segs_consensus_fix)
     
+    if exp_only and segs_consensus_fix is not None:
+        allowed_states = {"neu", "del", "amp"}
+        bad_states = (set(segs_consensus_fix["cnv_state"].dropna().astype(str))
+                      - allowed_states)
+        if bad_states:
+            raise ValueError("Expression-only inference supports only "
+                             f"'neu', 'del', and 'amp'. Unsupported states: "
+                             f"{sorted(bad_states)}")
+    
     # check provided clonal LoH
     if (not (segs_loh is None) and not segs_loh.empty):
         if call_clonal_loh:
@@ -825,13 +837,14 @@ def run_spacenumbat(
     else:
         log.info("Approximating initial clusters using smoothed expression ...")
         clust = clustering.exp_hclust(count_mat=count_mat,
-                           lambdas_ref=lambdas_ref,
-                           gtf=gtf,
-                           sc_refs=sc_refs,
-                           ncores=ncores,
-                           filter_hla=filter_hla,
-                           filter_segments=filter_segments_df,
-                           verbose=verbose)
+                                      lambdas_ref=lambdas_ref,
+                                      gtf=gtf,
+                                      sc_refs=sc_refs,
+                                      window=clustering_window,
+                                      ncores=ncores,
+                                      filter_hla=filter_hla,
+                                      filter_segments=filter_segments_df,
+                                      verbose=verbose)
         # save window-smoothed normalized expression profiles as AnnData
         log.info("Saving clustering results")
         clust["gexp_roll_wide"].write_h5ad(os.path.join(out_dir, "gexp_roll_wide.h5ad"))
