@@ -895,7 +895,7 @@ def make_expression_marker_bulk(exp_bulk: pd.DataFrame) -> pd.DataFrame:
 def get_bulk(
     count_mat: ad.AnnData,
     lambdas_ref: Union[pd.DataFrame, pd.Series],
-    df_allele: pd.DataFrame,
+    df_allele: Optional[pd.DataFrame],
     gtf: pd.DataFrame,
     subset: Optional[Sequence[str]] = None,
     min_depth: int = 0,
@@ -963,9 +963,6 @@ def get_bulk(
             count_mat = count_mat[subset]
             if not exp_only:
                 df_allele = df_allele[df_allele["cell"].isin(subset)].copy()
-                
-            df_allele_subset_mask = [i in subset for i in df_allele.cell]
-            df_allele = df_allele[df_allele_subset_mask]
             
     fit = fit_ref_sse_ad(count_mat, lambdas_ref, gtf, verbose=disp)
     exp_bulk = get_exp_bulk(count_mat, fit['lambdas_bar'], gtf, verbose=verbose, filter_hla=filter_hla, filter_segments=filter_segments)
@@ -3532,9 +3529,6 @@ def analyze_bulk(
         bulk.loc[:,'p_s'] = switch_prob(bulk['inter_snp_cm'], nu=nu)
 
     # Determine diploid regions
-    if exp_only or allele_only:
-        bulk['diploid'] = True
-    
     if diploid_chroms is not None:
         if verbose:
             log.info(f"Using diploid chromosomes given: {', '.join(diploid_chroms)}")

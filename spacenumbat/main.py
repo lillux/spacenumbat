@@ -315,7 +315,19 @@ def run_spacenumbat(
     if exp_only and call_clonal_loh:
         raise ValueError("call_clonal_loh cannot be used with expression-only inference.")
     if exp_only and use_loh is True:
-        raise ValueError("use_loh=True is not identifiable in expression-only mode.")        
+        raise ValueError("use_loh=True is not identifiable in expression-only mode.")  
+    if exp_only and segs_consensus_fix is not None:
+        allowed_states = {"neu", "del", "amp"}
+        bad_states = (set(segs_consensus_fix["cnv_state"].dropna().astype(str))
+                      - allowed_states)
+        if bad_states:
+            raise ValueError("Expression-only inference supports only "
+                             f"'neu', 'del', and 'amp'. Unsupported states: "
+                             f"{sorted(bad_states)}")
+            
+    if (exp_only and segs_loh is not None and not segs_loh.empty):
+        raise ValueError("segs_loh is unsupported in expression-only mode. "
+                         "RNA expression alone cannot identify LOH.")
     
     has_atac = mode in {"atac_bin", "combined"}
     
@@ -762,6 +774,9 @@ def run_spacenumbat(
         f"spatial_method_kwargs = {'None' if spatial_method_kwargs is None else 'Given'}",
         f"connectivity_key = {connectivity_key}",
         f"distance_key = {distance_key}",
+        f"evidence_mode = {evidence_mode}",
+        f"logphi_min = {logphi_min}",
+        f"expression_likelihood_weight = {expression_likelihood_weight}",
         "Input metrics:",
         f"{count_mat.shape[0]} cells",
         ]
@@ -890,7 +905,9 @@ def run_spacenumbat(
                                                   diploid_chroms = diploid_chroms,
                                                   ncores = ncores,
                                                   verbose = verbose,
-                                                  exp_only=exp_only)
+                                                  exp_only=exp_only,
+                                                  logphi_min=logphi_min,
+                                                  expression_likelihood_weight=expression_likelihood_weight,)
             
             bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_{i}.tsv"), sep="\t")
             
@@ -925,7 +942,9 @@ def run_spacenumbat(
                                                     gamma=gamma,
                                                     min_LLR=min_LLR,
                                                     ncores=ncores,
-                                                    exp_only=exp_only)
+                                                    exp_only=exp_only,
+                                                    logphi_min=logphi_min,
+                                                    expression_likelihood_weight=expression_likelihood_weight,)
             bulk_subtrees.to_csv(os.path.join(out_dir, f"bulk_subtrees_retest_{i}.tsv"), sep="\t")
             
             ## define consensus CNVs again
@@ -945,13 +964,10 @@ def run_spacenumbat(
             log.info('Using fixed consensus CNVs')
             segs_consensus = segs_consensus_fix
              
-            bulk_subtrees = utils.classify_alleles(
-                utils.annot_theta_mle(
-                utils.annot_consensus(
-                    bulk_subtrees, 
-                    segs_consensus)
-                ))
-    
+            bulk_subtrees = utils.annot_consensus(bulk_subtrees, 
+                                                  segs_consensus)
+            if not exp_only:
+                bulk_subtrees = utils.classify_alleles(utils.annot_theta_mle(bulk_subtrees))
     
         # retest on clones
         clones = {k:v for k, v in clones.items() if v['size'] > min_cells}
@@ -987,7 +1003,9 @@ def run_spacenumbat(
                                                 ncores = ncores,
                                                 verbose = verbose,
                                                 retest = False,
-                                                exp_only=exp_only)
+                                                exp_only=exp_only,
+                                                logphi_min=logphi_min,
+                                                expression_likelihood_weight=expression_likelihood_weight,)
         
         bulk_clones = operations.retest_bulks(bulks = bulk_clones,
                                               segs_consensus = segs_consensus,
@@ -997,7 +1015,9 @@ def run_spacenumbat(
                                               min_LLR = min_LLR,
                                               diploid_chroms = diploid_chroms,
                                               ncores = ncores,
-                                              exp_only=exp_only)
+                                              exp_only=exp_only,
+                                              logphi_min=logphi_min,
+                                              expression_likelihood_weight=expression_likelihood_weight,)
         
         bulk_clones.to_csv(os.path.join(out_dir, f"bulk_clones_{i}.tsv"), sep="\t")
     
@@ -1039,6 +1059,7 @@ def run_spacenumbat(
                                            ncores=ncores,
                                            verbose=verbose,
                                            use_pbar=use_pbar,
+                                           exp_only=exp_only,
                                            logphi_min=logphi_min,
                                            expression_likelihood_weight=expression_likelihood_weight,)
         
@@ -1182,7 +1203,9 @@ def run_spacenumbat(
                                             ncores=ncores, 
                                             verbose=verbose, 
                                             retest=False,
-                                            exp_only=exp_only)
+                                            exp_only=exp_only,
+                                            logphi_min=logphi_min,
+                                            expression_likelihood_weight=expression_likelihood_weight,)
     
     bulk_clones = operations.retest_bulks(bulks=bulk_clones, 
                                           segs_consensus=segs_consensus, 
@@ -1192,7 +1215,9 @@ def run_spacenumbat(
                                           min_LLR=min_LLR, 
                                           diploid_chroms=diploid_chroms, 
                                           ncores=ncores,
-                                          exp_only=exp_only)
+                                          exp_only=exp_only,
+                                          logphi_min=logphi_min,
+                                          expression_likelihood_weight=expression_likelihood_weight,)
     
     final_bulk_clones_saving_path = os.path.join(out_dir, "bulk_clones_final.tsv")
     bulk_clones.to_csv(final_bulk_clones_saving_path, sep="\t")

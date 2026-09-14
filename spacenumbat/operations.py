@@ -597,6 +597,7 @@ def retest_bulks(
                            run_hmm=False, 
                            exclude_neu=exclude_neu, 
                            ncores=ncores,
+                           exp_only=exp_only,
                            logphi_min=logphi_min,
                            expression_likelihood_weight=expression_likelihood_weight)
 
@@ -1999,6 +2000,10 @@ def get_joint_post(
             "LLR_y",
             }],
         ]
+    
+    # carry rna_only states
+    if "cnv_states" in segs_consensus.columns:
+        segment_columns.append("cnv_states")
 
     segs_sel = segs_consensus.loc[:, segment_columns].copy()
 
