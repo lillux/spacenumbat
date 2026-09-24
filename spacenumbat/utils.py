@@ -622,7 +622,7 @@ def get_allele_bulk(
 
     # Sum AD and DP grouped by SNP attributes.
     df_allele = df_allele.groupby(['snp_id', 'CHROM', 'POS', 'cM', 'REF', 'ALT', 'GT', 'gene'],
-                                    sort=False, as_index=False, dropna=False).sum(['AD', 'DP'])
+                                    sort=False, as_index=False, dropna=False)[['AD', 'DP']].sum()
     
     df_allele['AR'] = df_allele.AD / df_allele.DP
     df_allele = df_allele.sort_values(['CHROM', 'POS'], key=natsort.natsort_keygen())
