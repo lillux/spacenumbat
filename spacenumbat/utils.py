@@ -1418,9 +1418,7 @@ def get_segs_neu(bulks: pd.DataFrame) -> pd.DataFrame:
     neu = bulks[bulks['cnv_state'] == 'neu'].copy()
     
     neu = neu.groupby(['sample','seg','CHROM'], sort=False, as_index=False, observed=True)
-    segs_neu = neu.min('POS').loc[:, ['sample', 'seg', 'CHROM', 'POS']]
-    segs_neu = segs_neu.rename({'POS': 'seg_start'}, axis=1)    
-    segs_neu['seg_end'] = neu.max('POS').loc[:,'POS']
+    segs_neu = neu.agg(seg_start=('POS', 'min'), seg_end=('POS', 'max'))
     segs_neu = segs_neu.dropna()
     
     ## Use PyRanges to reduce intervals (PyRanges uses 0-based, end-exclusive coordinates).
