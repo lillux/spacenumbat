@@ -18,7 +18,7 @@ from spacenumbat import (utils, diagnostics, clustering,
                          operations, plot, spatial_utils,
                          tree, phylo)
 from spacenumbat.preprocessing import multiome_unpaired
-from spacenumbat._log import configure, get_logger
+from spacenumbat._log import configure, get_logger, _log_value
 from spacenumbat.genome import GenomeSpec, canonical_chromosome
 
 
@@ -740,10 +740,22 @@ def run_spacenumbat(
     # Prepare parameter log
     log_lines = [
         "",
-        f"Spacenumbat version: {spacenumbat.__version__}",
+        f"SpaceNumbat version: {spacenumbat.__version__}",
         "Running under parameters:",
+    
+        # Analysis mode
+        f"mode = {mode}",
+        f"evidence_mode = {evidence_mode}",
+        f"expression_only = {exp_only}",
+    
+        # Genome
         f"genome = {genome}",
-        f"out_dir = {out_dir}",
+        f"chrom_size_fai_path = {chrom_size_fai_path}",
+        f"include_x = {include_x}",
+        f"include_y = {include_y}",
+        f"analysis_chromosomes = {list(genome_spec.analysis_chromosomes)}",
+    
+        # Main model
         f"max_iter = {max_iter}",
         f"max_nni = {max_nni}",
         f"t = {t}",
@@ -752,49 +764,91 @@ def run_spacenumbat(
         f"alpha = {alpha}",
         f"eps = {eps}",
         f"max_entropy = {max_entropy}",
+    
+        # Initial clustering
         f"init_k = {init_k}",
         f"clustering_window = {clustering_window}",
         f"min_cells = {min_cells}",
+        f"random_init = {random_init}",
+    
+        # Phylogeny
         f"tau = {tau}",
-        f"nu = {nu}",
         f"max_cost = {max_cost}",
         f"n_cut = {n_cut}",
+        f"skip_nj = {skip_nj}",
+        f"p_min = {p_min}",
+        f"check_convergence = {check_convergence}",
+    
+        # HMM / segmentation
+        f"nu = {nu}",
         f"min_depth = {min_depth}",
         f"min_genes = {min_genes}",
         f"min_overlap = {min_overlap}",
-        f"use_loh = {'auto' if use_loh is None else use_loh}",
-        f"segs_loh = {'None' if segs_loh is None else 'Given'}",
-        f"call_clonal_loh = {call_clonal_loh}",
-        f"segs_consensus_fix = {'None' if segs_consensus_fix is None else 'Given'}",
-        f"exclude_neu = {exclude_neu}",
         f"common_diploid = {common_diploid}",
-        f"diploid_chroms = {'None' if diploid_chroms is None else 'Given'}",
-        f"skip_nj = {skip_nj}",
-        f"random_init = {random_init}",
+        f"diploid_chroms = {_log_value(diploid_chroms)}",
+        f"exclude_neu = {exclude_neu}",
+    
+        # RNA-only likelihood
+        f"logphi_min = {logphi_min}",
+        f"expression_likelihood_weight = {expression_likelihood_weight}",
+    
+        # LOH / multiallelic
+        f"use_loh = {'auto' if use_loh is None else use_loh}",
+        f"segs_loh = {_log_value(segs_loh)}",
+        f"call_clonal_loh = {call_clonal_loh}",
+        f"segs_consensus_fix = {_log_value(segs_consensus_fix)}",
         f"multi_allelic = {multi_allelic}",
-        f"p_multi = {('auto(1-alpha)' if p_multi is None else p_multi)}",
-        f"p_min = {p_min}",
-        f"check_convergence = {check_convergence}",
-        f"plot_results = {plot_results}",
-        f"ncores = {ncores}",
-        f"ncores_nni = {ncores_nni}",
-        f"use_pbar = {use_pbar}",
-        f"Filter HLA region = {filter_hla}",
-        f"Filtering custom chromosomal region = {'None' if filter_segments_df is None else 'Given'}",
+        f"p_multi = {'auto(1-alpha)' if p_multi is None else p_multi}",
+    
+        # Genomic filtering
+        f"filter_hla_hg38 = {filter_hla_hg38}",
+        f"filter_hla_effective = {filter_hla}",
+        f"filter_chromosome_segments = {_log_value(filter_segments_df)}",
+    
+        # Spatial
         f"spatial = {spatial}",
         f"spatial_method = {spatial_method}",
         f"spatial_decay = {spatial_decay}",
-        f"spatial_method_kwargs = {'None' if spatial_method_kwargs is None else 'Given'}",
+        f"spatial_method_kwargs = {_log_value(spatial_method_kwargs)}",
         f"connectivity_key = {connectivity_key}",
         f"distance_key = {distance_key}",
-        f"evidence_mode = {evidence_mode}",
-        f"logphi_min = {logphi_min}",
-        f"expression_likelihood_weight = {expression_likelihood_weight}",
+    
+        # Binning / multiome
+        f"binning = {binning}",
+        f"bin_size = {bin_size}",
+        f"custom_binning = {_log_value(custom_binning)}",
+        f"min_num_fragments = {min_num_fragments}",
+        f"max_cells_per_modality = {max_cells_per_modality}",
+        f"preprocessing_seed = {preprocessing_seed}",
+    
+        # File-based inputs
+        f"rna_mtx_path = {rna_mtx_path}",
+        f"rna_barcodes_path = {rna_barcodes_path}",
+        f"rna_features_path = {rna_features_path}",
+        f"atac_fragments_path = {atac_fragments_path}",
+        f"atac_barcodes_path = {atac_barcodes_path}",
+        f"atac_reference = {_log_value(atac_reference)}",
+        f"cell_manifest = {_log_value(cell_manifest)}",
+        f"snap_chrom_sizes = {_log_value(snap_chrom_sizes)}",
+    
+        # Runtime
+        f"ncores = {ncores}",
+        f"ncores_nni = {ncores_nni}",
+        f"use_pbar = {use_pbar}",
+        f"verbose = {verbose}",
+        f"plot_results = {plot_results}",
+        f"out_dir = {out_dir}",
+    
+        # Effective input
+        "",
         "Input metrics:",
-        f"{count_mat.shape[0]} cells",
-        ]
-
-    log.info('\n'.join(log_lines))
+        f"count_mat = {count_mat.shape[0]} cells x {count_mat.shape[1]} features",
+        f"reference = {lambdas_ref.shape}",
+        f"annotation = {gtf.shape[0]} features",
+        f"allele_counts = {'disabled' if df_allele is None else df_allele.shape}",
+    ]
+    
+    log.info("\n".join(str(x) for x in log_lines))
     
     # Call clonal loss of heterozygosity inference if requested
     if call_clonal_loh:

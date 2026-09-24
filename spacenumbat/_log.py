@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 from logging.config import dictConfig
 from typing import Optional, Union
+import os
 
 
 _DEFAULT_FMT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -149,4 +150,13 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     return logging.getLogger(name)
 
 
+## for main.py logging
 
+def _log_value(x):
+    if x is None:
+        return "None"
+    if isinstance(x, (str, os.PathLike, int, float, bool, list, tuple, dict)):
+        return x
+    if hasattr(x, "shape"):
+        return f"{type(x).__name__}(shape={x.shape})"
+    return type(x).__name__
