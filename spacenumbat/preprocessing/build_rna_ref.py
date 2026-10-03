@@ -3,8 +3,7 @@
 
 The algorithm is a RNA adaptation of SpaceNumbat's build_atac_ref.py:
 donor/context/type pseudobulks, within-family subtype compression, a context
-information test, and equal-donor robust final profiles. There is deliberately
-no requested reference count and no post-hoc compatibility compressor.
+information test, and equal-donor robust final profiles.
 """
 
 from __future__ import annotations
