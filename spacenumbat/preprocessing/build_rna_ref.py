@@ -1,24 +1,17 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Oct  3 13:33:16 2026
-
-@author: carlino.calogero
-
-Donor-balanced RNA references for SpaceNumbat (Python >=3.10).
+##!/usr/bin/env python3
+"""Donor-balanced RNA references for SpaceNumbat (Python >=3.10).
 
 Input: AnnData cells x genes containing raw counts, including backed .X.
 Output: genes x profiles, matching the in-memory layout of data.ref_hca.
-Only numpy, pandas and scipy are imported; AnnData/SpaceNumbat are optional
-until reading an h5ad or obtaining the default hg38 annotation, respectively.
 
 JSD ratios are empirical compression criteria, NOT equivalence-test p-values.
 Defaults need calibration on held-out normal donors and CNA-positive controls.
 """
 
-#from __future__ import annotations
+from __future__ import annotations
 
 import argparse
+import heapq
 import hashlib
 import itertools
 import json
@@ -33,7 +26,7 @@ from scipy import sparse
 from scipy.special import rel_entr
 
 log = logging.getLogger(__name__)
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 UPSTREAM_COMMIT = "987b112694f41fc0c2b19b1e0f492392b76bd73c"
 
 
@@ -284,7 +277,8 @@ def _aggregate_counts(adata, metadata, projection, *, layer, chunk_size,
                       min_cell_counts, min_cell_genes, max_pct_counts_mt,
                       memmap_path):
     """Read raw counts in contiguous cell chunks; only pseudobulks are dense."""
-    by = ["assay", "compartment", "family", "label", "context", "donor"]
+    by = ["assay", "compartment", "compression_group", "family", "label",
+          "context", "donor"]
     selected = metadata["_keep"].to_numpy(bool)
     tuples = pd.MultiIndex.from_frame(metadata.loc[selected, by])
     selected_codes, groups = pd.factorize(tuples, sort=True)
@@ -347,6 +341,430 @@ def _fingerprint(frame):
     return hashlib.sha256(pd.util.hash_pandas_object(frame, index=True).values.tobytes()).hexdigest()
 
 
+def _json_union(values):
+    """Union JSON lists while tolerating scalar legacy manifest fields."""
+    result = set()
+    for value in values:
+        try:
+            decoded = json.loads(value) if isinstance(value, str) else value
+        except json.JSONDecodeError:
+            decoded = value
+        if isinstance(decoded, list):
+            for item in decoded:
+                # Contexts are themselves lists and therefore unhashable.
+                result.add(json.dumps(item, sort_keys=True, ensure_ascii=False))
+        elif pd.notna(decoded):
+            result.add(json.dumps(decoded, sort_keys=True, ensure_ascii=False))
+    return json.dumps([json.loads(item) for item in sorted(result)], ensure_ascii=False)
+
+
+def annotate_manifest_compression_groups(
+    manifest,
+    obs,
+    *,
+    cell_type_col="free_annotation",
+    compression_group_col="broad_cell_class",
+    family_mapping=None,
+    protect_curated_families=True,
+):
+    """Add biological compression groups to a pre-v0.2 reference manifest.
+
+    This lets an already-built reference be compacted without rereading the
+    count matrix. A leaf label must map unambiguously to one broad group in
+    `obs`; ambiguous or absent mappings receive a reference-specific group and
+    therefore cannot merge silently. Curated family boundaries take priority.
+
+    Returns annotated_manifest, audit.
+    """
+    required = {cell_type_col, compression_group_col}
+    missing = required - set(obs.columns)
+    if missing:
+        raise ValueError(f"obs is missing compression fields: {sorted(missing)}")
+    if "reference" not in manifest or "original_types" not in manifest:
+        raise ValueError("manifest needs reference and original_types columns.")
+    families = FAMILY_MAPPING if family_mapping is None else {
+        _label(k): str(v) for k, v in family_mapping.items()}
+    valid_rows = _valid(obs[cell_type_col]) & _valid(obs[compression_group_col])
+    pairs = pd.DataFrame({
+        "label": obs.loc[valid_rows, cell_type_col].astype("string").map(_label),
+        "group": obs.loc[valid_rows, compression_group_col].astype("string").str.strip(),
+    }).drop_duplicates()
+    label_groups = pairs.groupby("label", observed=True).group.apply(
+        lambda x: tuple(sorted(set(map(str, x)))))
+    result = manifest.copy()
+    groups = []
+    audit = []
+    for _, row in result.iterrows():
+        labels = [_label(x) for x in json.loads(row.original_types)]
+        curated = {families[x] for x in labels if x in families}
+        if protect_curated_families and len(curated) == 1 and all(x in families for x in labels):
+            group = next(iter(curated))
+            reason = "curated_family"
+        else:
+            candidates = {value for label in labels for value in label_groups.get(label, ())}
+            unambiguous = all(len(label_groups.get(label, ())) == 1 for label in labels)
+            if unambiguous and len(candidates) == 1:
+                group = next(iter(candidates))
+                reason = "broad_group"
+            else:
+                group = f"unresolved::{row.reference}"
+                reason = "missing_or_ambiguous_group"
+        groups.append(group)
+        audit.append({"reference": row.reference, "compression_group": group,
+                      "reason": reason, "original_types": row.original_types})
+    result["compression_group"] = groups
+    return result, pd.DataFrame(audit)
+
+
+def _compression_score(
+    left,
+    right,
+    profiles,
+    block_codes,
+    *,
+    max_information_loss,
+    max_information_ratio,
+    max_js,
+    max_pairwise_js,
+    max_block_log2,
+    min_expression,
+    min_block_genes,
+    source_noise=None,
+    global_noise=np.nan,
+    noise_floor=1e-8,
+):
+    """Score loss from replacing two clusters by one equal-leaf centroid.
+
+    `left` and `right` are tuples of original reference column indices. Each
+    original reference receives equal weight, so a tissue represented by many
+    atlas cells cannot dominate merely because it was sampled more deeply.
+    """
+    left_idx = np.asarray(left, dtype=int)
+    right_idx = np.asarray(right, dtype=int)
+    merged_idx = np.r_[left_idx, right_idx]
+    center_left = profiles[:, left_idx].mean(axis=1)
+    center_right = profiles[:, right_idx].mean(axis=1)
+    center = profiles[:, merged_idx].mean(axis=1)
+    center_left /= center_left.sum()
+    center_right /= center_right.sum()
+    center /= center.sum()
+    between_js = _js(center_left, center_right)
+    source_js = np.asarray([_js(profiles[:, i], center) for i in merged_idx])
+    pairwise_js = [_js(profiles[:, i], profiles[:, j])
+                   for i, j in itertools.combinations(merged_idx, 2)]
+    # Generalized JSD = I(source reference; gene identity) under a uniform
+    # source prior. This is the exact information discarded by representing
+    # all source distributions with their equal-weight centroid.
+    information_loss = float(np.mean([
+        rel_entr(profiles[:, i], center).sum() for i in merged_idx]))
+    max_source_js = float(source_js.max())
+    max_complete_link_js = float(max(pairwise_js, default=0.0))
+    noise_values = np.asarray([], dtype=float)
+    if source_noise is not None:
+        noise_values = np.asarray(source_noise, dtype=float)[merged_idx]
+        noise_values = noise_values[np.isfinite(noise_values)]
+    local_noise = float(np.median(noise_values)) if len(noise_values) else np.nan
+    noise_candidates = [x for x in (local_noise, global_noise) if np.isfinite(x)]
+    # Match the ATAC logic: a locally quiet family must not make a tiny
+    # cross-context difference look disproportionately large.
+    donor_noise = (max(*noise_candidates, noise_floor)
+                   if noise_candidates else np.nan)
+    information_ratio = (information_loss / donor_noise
+                         if np.isfinite(donor_noise) else np.nan)
+    block_values = []
+    n_blocks = []
+    for i in merged_idx:
+        value, n = _block_difference(
+            profiles[:, i], center, block_codes, min_expression, min_block_genes)
+        block_values.append(value)
+        n_blocks.append(n)
+    finite_blocks = [x for x in block_values if np.isfinite(x)]
+    max_block = max(finite_blocks) if finite_blocks else np.nan
+    failures = []
+    if information_loss > max_information_loss:
+        failures.append("information_loss")
+    if (max_information_ratio is not None and np.isfinite(information_ratio)
+            and information_ratio > max_information_ratio):
+        failures.append("donor_noise_ratio")
+    if max_source_js > max_js:
+        failures.append("source_js")
+    if max_pairwise_js is not None and max_complete_link_js > max_pairwise_js:
+        failures.append("complete_link_js")
+    if max_block_log2 is not None:
+        if not finite_blocks or min(n_blocks, default=0) == 0:
+            failures.append("insufficient_genomic_blocks")
+        elif max_block > max_block_log2:
+            failures.append("genomic_block_difference")
+    return {
+        "information_loss": information_loss,
+        "donor_noise_js": donor_noise,
+        "information_ratio": information_ratio,
+        "between_js": between_js,
+        "max_source_js": max_source_js,
+        "max_pairwise_js": max_complete_link_js,
+        "max_block_log2": max_block,
+        "n_sources": int(len(merged_idx)),
+        "mergeable": not failures,
+        "reason": ";".join(failures) or "similar",
+    }
+
+
+def compact_rna_reference(
+    reference,
+    manifest,
+    gene_gtf,
+    *,
+    target_references=64,
+    group_col="compression_group",
+    family_col="family",
+    max_information_loss=0.002,
+    max_information_ratio=2.0,
+    max_js=0.01,
+    max_pairwise_js=0.02,
+    max_block_log2=0.20,
+    donor_qc=None,
+    allow_cross_compartment=True,
+    cross_compartment_threshold_scale=1,
+    noise_floor=1e-8,
+    block_size=5_000_000,
+    min_block_genes=10,
+    min_block_expression=2e-6,
+):
+    """Greedily compress a SpaceNumbat RNA reference under biological gates.
+
+    References may merge only when assay and curated biological family agree.
+    Tissue and anatomy are evidence variables rather than hard boundaries.
+    Compartments may also differ by default, but cross-compartment candidates
+    use thresholds multiplied by `cross_compartment_threshold_scale`.
+
+    The target is soft: compression stops above it if no admissible merge
+    remains. The objective is generalized JSD—the mutual information between
+    source-reference identity and gene identity discarded by replacing the
+    sources with one centroid. Worst-source JSD, complete-link pairwise JSD,
+    donor-noise ratio, and genomic-block residuals protect against chaining,
+    tissue-specific programs, and CNA-like baselines.
+
+    This function can be used on an existing reference if its manifest has an
+    explicit biologically curated grouping column. It never infers biological
+    compatibility from expression similarity alone.
+
+    Returns compact_reference, compact_manifest, mapping, history, rejected.
+    """
+    if not isinstance(reference, pd.DataFrame) or reference.empty:
+        raise ValueError("reference must be a nonempty gene-by-profile DataFrame.")
+    if reference.columns.has_duplicates or reference.index.has_duplicates:
+        raise ValueError("reference gene and profile names must be unique.")
+    if not np.isfinite(reference.to_numpy(float)).all() or (reference < 0).any().any():
+        raise ValueError("reference must contain finite nonnegative values.")
+    column_sums = reference.sum(axis=0)
+    if (column_sums <= 0).any() or not np.isfinite(column_sums.to_numpy()).all():
+        bad = column_sums.index[(column_sums <= 0) | ~np.isfinite(column_sums)].tolist()
+        raise ValueError(f"Reference columns must have finite positive sums; invalid: {bad[:10]}")
+    reference = reference.div(column_sums, axis=1)
+    required = {"reference", "assay", "compartment", family_col}
+    if group_col is not None:
+        required.add(group_col)
+    missing = required - set(manifest.columns)
+    if missing:
+        raise ValueError(f"manifest is missing compression fields: {sorted(missing)}")
+    if set(reference.columns) != set(manifest["reference"]):
+        raise ValueError("manifest.reference must match reference columns exactly.")
+    if manifest.reference.duplicated().any():
+        raise ValueError("manifest must contain one row per reference.")
+    if target_references is None:
+        target_references = 1
+    if int(target_references) != target_references or target_references < 1:
+        raise ValueError("target_references must be a positive integer or None.")
+    for name, value in {"max_information_loss": max_information_loss,
+                        "max_js": max_js,
+                        "min_block_expression": min_block_expression}.items():
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and nonnegative.")
+    if max_block_log2 is not None and (not np.isfinite(max_block_log2) or max_block_log2 < 0):
+        raise ValueError("max_block_log2 must be None or finite and nonnegative.")
+    for name, value in {"max_information_ratio": max_information_ratio,
+                        "max_pairwise_js": max_pairwise_js}.items():
+        if value is not None and (not np.isfinite(value) or value < 0):
+            raise ValueError(f"{name} must be None or finite and nonnegative.")
+    if (not np.isfinite(cross_compartment_threshold_scale)
+            or not 0 < cross_compartment_threshold_scale <= 1):
+        raise ValueError("cross_compartment_threshold_scale must be in (0, 1].")
+    if not np.isfinite(noise_floor) or noise_floor <= 0:
+        raise ValueError("noise_floor must be finite and positive.")
+    gene_gtf = gene_gtf.set_index("gene").loc[reference.index].reset_index()
+    block_keys = pd.MultiIndex.from_arrays([
+        gene_gtf.CHROM.astype(str),
+        pd.to_numeric(gene_gtf.gene_start, errors="raise").astype(np.int64) // block_size,
+    ])
+    block_codes, _ = pd.factorize(block_keys, sort=False)
+    profiles = reference.to_numpy(float)
+    meta = manifest.set_index("reference").loc[reference.columns]
+    if not _valid(meta[family_col]).all():
+        raise ValueError("Every reference needs a non-missing biological family.")
+    keys = [(str(row.assay), str(row[family_col])) +
+            (() if allow_cross_compartment else (str(row.compartment),))
+            for _, row in meta.iterrows()]
+    source_noise = np.full(reference.shape[1], np.nan, dtype=float)
+    global_noise = np.nan
+    if donor_qc is not None and len(donor_qc):
+        donor_qc = pd.DataFrame(donor_qc).copy()
+        needed = {"reference", "js_to_consensus"}
+        if not needed.issubset(donor_qc.columns):
+            raise ValueError("donor_qc needs reference and js_to_consensus columns.")
+        values = pd.to_numeric(donor_qc.js_to_consensus, errors="coerce")
+        valid_noise = np.isfinite(values) & (values >= 0)
+        donor_qc = donor_qc.loc[valid_noise].assign(js_to_consensus=values[valid_noise])
+        noise_by_reference = donor_qc.groupby("reference").js_to_consensus.median()
+        source_noise = np.asarray([
+            noise_by_reference.get(name, np.nan) for name in reference.columns], dtype=float)
+        if len(donor_qc):
+            global_noise = max(float(donor_qc.js_to_consensus.median()), noise_floor)
+    clusters = {i: (i,) for i in range(reference.shape[1])}
+    cluster_keys = {i: keys[i] for i in clusters}
+    active = set(clusters)
+    heap = []
+    serial = itertools.count()
+    rejected = []
+
+    def add_candidate(i, j):
+        if cluster_keys[i] != cluster_keys[j]:
+            return
+        merged_sources = tuple(sorted(clusters[i] + clusters[j]))
+        rows = meta.iloc[list(merged_sources)]
+        compartments = sorted(set(rows.compartment.astype(str)))
+        cross_compartment = len(compartments) > 1
+        scale = cross_compartment_threshold_scale if cross_compartment else 1.0
+        tissues = json.loads(_json_union(rows.tissues)) if "tissues" in rows else []
+        contexts = json.loads(_json_union(rows.contexts)) if "contexts" in rows else []
+        score = _compression_score(
+            clusters[i], clusters[j], profiles, block_codes,
+            max_information_loss=max_information_loss * scale,
+            max_information_ratio=(None if max_information_ratio is None
+                                   else max_information_ratio * scale),
+            max_js=max_js * scale,
+            max_pairwise_js=(None if max_pairwise_js is None
+                             else max_pairwise_js * scale),
+            max_block_log2=(None if max_block_log2 is None
+                            else max_block_log2 * scale),
+            min_expression=min_block_expression,
+            min_block_genes=min_block_genes,
+            source_noise=source_noise,
+            global_noise=global_noise,
+            noise_floor=noise_floor)
+        score.update({
+            "cross_compartment": cross_compartment,
+            "threshold_scale": scale,
+            "n_tissues": len(tissues),
+            "n_contexts": len(contexts),
+            "compartments": json.dumps(compartments),
+        })
+        # Inadmissible candidates are retained in diagnostics but do not enter
+        # the priority queue, avoiding repeated evaluation.
+        if score["mergeable"]:
+            heapq.heappush(heap, (score["information_loss"], score["max_pairwise_js"],
+                                  next(serial), i, j, score))
+        else:
+            rejected.append({"left_cluster": json.dumps(clusters[i]),
+                             "right_cluster": json.dumps(clusters[j]), **score})
+
+    for i, j in itertools.combinations(sorted(active), 2):
+        add_candidate(i, j)
+    history = []
+    next_id = reference.shape[1]
+    while len(active) > target_references and heap:
+        _, _, _, i, j, score = heapq.heappop(heap)
+        if i not in active or j not in active:
+            continue
+        left, right = clusters[i], clusters[j]
+        merged = tuple(sorted(left + right))
+        k = next_id
+        next_id += 1
+        clusters[k] = merged
+        cluster_keys[k] = cluster_keys[i]
+        active.remove(i)
+        active.remove(j)
+        active.add(k)
+        history.append({
+            "step": len(history) + 1,
+            "left_sources": json.dumps([reference.columns[x] for x in left]),
+            "right_sources": json.dumps([reference.columns[x] for x in right]),
+            "n_references_after": len(active),
+            **score,
+        })
+        for other in sorted(active - {k}):
+            add_candidate(min(k, other), max(k, other))
+
+    compact_profiles = {}
+    compact_rows = []
+    mapping_rows = []
+    output_group_col = group_col or "compression_group"
+    for cluster_id in sorted(active, key=lambda x: clusters[x]):
+        sources = clusters[cluster_id]
+        source_names = [reference.columns[i] for i in sources]
+        rows = meta.loc[source_names]
+        center = profiles[:, np.asarray(sources)].mean(axis=1)
+        center /= center.sum()
+        if len(sources) == 1:
+            name = source_names[0]
+        else:
+            group = str(rows[family_col].iloc[0])
+            digest = hashlib.sha256(json.dumps(source_names).encode()).hexdigest()[:10]
+            name = f"compact::{group}::{digest}"
+        compact_profiles[name] = center
+        family = str(rows[family_col].iloc[0])
+        compartments = sorted(set(rows.compartment.astype(str)))
+        compression_groups = (sorted(set(rows[group_col].astype(str)))
+                              if group_col is not None else [family])
+        compact_group = (compression_groups[0] if len(compression_groups) == 1
+                         else f"mixed::{family}")
+        for source in source_names:
+            mapping_rows.append({"source_reference": source, "compact_reference": name,
+                                 "family": family,
+                                 "source_compartment": str(meta.loc[source, "compartment"]),
+                                 "compression_group": compact_group})
+        original_types = _json_union(rows.original_types) if "original_types" in rows else json.dumps([])
+        tissues = _json_union(rows.tissues) if "tissues" in rows else json.dumps([])
+        contexts = _json_union(rows.contexts) if "contexts" in rows else json.dumps([])
+        donors = _json_union(rows.donors) if "donors" in rows else json.dumps([])
+        donor_list = json.loads(donors)
+        context_list = json.loads(contexts)
+        compact_rows.append({
+            "reference": name,
+            "merged_type": (str(rows.merged_type.iloc[0])
+                            if len(sources) == 1 and "merged_type" in rows else family),
+            "assay": rows.assay.iloc[0],
+            "compartment": (compartments[0] if len(compartments) == 1
+                            else "pan_compartment"),
+            "compartments": json.dumps(compartments),
+            "family": family,
+            output_group_col: compact_group,
+            "compression_groups": json.dumps(compression_groups),
+            "original_types": original_types,
+            "tissues": tissues,
+            "contexts": contexts,
+            "donors": donors,
+            "n_donors": len(donor_list),
+            "n_contexts": len(context_list),
+            "n_cells": int(rows.n_cells.sum()) if "n_cells" in rows else np.nan,
+            "n_counts": float(rows.n_counts.sum()) if "n_counts" in rows else np.nan,
+            "entropy_nats": float(-np.sum(center * np.log(center))),
+            "consensus": "equal_source_reference_mean",
+            "source_references": json.dumps(source_names),
+            "n_source_references": len(source_names),
+        })
+    compact = pd.DataFrame(compact_profiles, index=reference.index)
+    compact.index.name = reference.index.name
+    compact_manifest = pd.DataFrame(compact_rows)
+    history_frame = pd.DataFrame(history)
+    rejected_frame = pd.DataFrame(rejected)
+    if len(compact.columns) > target_references:
+        log.warning(
+            "Compression stopped at %s profiles (soft target %s): no further "
+            "biologically allowed merge passed the information/CNA safeguards.",
+            len(compact.columns), target_references)
+    return compact, compact_manifest, pd.DataFrame(mapping_rows), history_frame, rejected_frame
+
+
 def build_rna_reference(
     adata,
     gtf=None,
@@ -361,6 +779,16 @@ def build_rna_reference(
     gene_col=None,
     layer=None,
     family_mapping=None,
+    compression_group_col="broad_cell_class",
+    protect_curated_families=True,
+    target_references=64,
+    compression_max_information_loss=0.002,
+    compression_max_information_ratio=2.0,
+    compression_max_js=0.01,
+    compression_max_pairwise_js=0.02,
+    compression_max_block_log2=0.20,
+    compression_allow_cross_compartment=True,
+    compression_cross_compartment_scale=1,
     exclude_cell_types=None,
     exclude_germline=True,
     cell_mask=None,
@@ -416,6 +844,25 @@ def build_rna_reference(
     cell_mask must be a positional bool array or an exactly aligned Series.
     No universal mitochondrial cutoff is imposed; apply tissue-aware QC.
 
+    Default second-stage compression
+    --------------------------------
+    target_references=64 enables biologically gated compression by default.
+    Set it to None to retain every conservative first-stage reference, or to
+    another positive integer for a different soft maximum (for example 48).
+    Candidate profiles must share assay and the same curated biological
+    family. Tissue and anatomy are not hard boundaries: references may become
+    pan-tissue when their residual information is no larger than the allowed
+    donor-calibrated and absolute thresholds. Compartments may also differ by
+    default, because the same functional population can receive inconsistent
+    compartment annotations across tissues; such candidates use thresholds
+    multiplied by compression_cross_compartment_scale (0.5 by default).
+
+    A merge is accepted only if generalized information loss, its ratio to
+    donor variability, worst-source JSD, complete-link pairwise JSD, and the
+    genomic-block residual all pass. The target is never forced across a
+    failed family, information, or CNA safeguard. compression_group_col is
+    retained for annotation and audit, not used as a substitute for family.
+
     Final estimator: sum labels within donor/context, normalize independently,
     average contexts within each donor, then average donors. consensus=
     'log_median' provides the ATAC-like alternative. prior_mass is the TOTAL
@@ -454,6 +901,26 @@ def build_rna_reference(
         raise ValueError("max_block_log2 must be None or finite and nonnegative.")
     if max_pct_counts_mt is not None and not 0 <= max_pct_counts_mt <= 100:
         raise ValueError("max_pct_counts_mt must be between 0 and 100.")
+    if target_references is not None and (target_references < 1 or int(target_references) != target_references):
+        raise ValueError("target_references must be None or a positive integer.")
+    for name, value in {
+        "compression_max_information_loss": compression_max_information_loss,
+        "compression_max_js": compression_max_js,
+    }.items():
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and nonnegative.")
+    if compression_max_block_log2 is not None and (
+            not np.isfinite(compression_max_block_log2) or compression_max_block_log2 < 0):
+        raise ValueError("compression_max_block_log2 must be None or finite and nonnegative.")
+    for name, value in {
+        "compression_max_information_ratio": compression_max_information_ratio,
+        "compression_max_pairwise_js": compression_max_pairwise_js,
+    }.items():
+        if value is not None and (not np.isfinite(value) or value < 0):
+            raise ValueError(f"{name} must be None or finite and nonnegative.")
+    if (not np.isfinite(compression_cross_compartment_scale)
+            or not 0 < compression_cross_compartment_scale <= 1):
+        raise ValueError("compression_cross_compartment_scale must be in (0, 1].")
     if adata.obs_names.has_duplicates:
         raise ValueError("Duplicate cell IDs: verify concatenation and avoid duplicated atlas cells.")
     if adata.var_names.has_duplicates:
@@ -464,7 +931,10 @@ def build_rna_reference(
         from spacenumbat.data import hg38
         gtf = hg38
     gtf, projection, feature_map = _gene_mapping(adata, gtf, gene_col)
+    compression_enabled = target_references is not None
     required = [donor_col, tissue_col, cell_type_col, compartment_col, assay_col]
+    if compression_enabled and compression_group_col is not None:
+        required.append(compression_group_col)
     if anatomy_col is not None:
         required.append(anatomy_col)
     if max_pct_counts_mt is not None:
@@ -487,6 +957,14 @@ def build_rna_reference(
                        for t, a in zip(meta.tissue, meta.anatomy)]
     families = FAMILY_MAPPING if family_mapping is None else {_label(k): str(v) for k, v in family_mapping.items()}
     meta["family"] = meta.label.map(families).fillna(meta.label)
+    if not compression_enabled or compression_group_col is None:
+        meta["compression_group"] = meta["family"].astype("string")
+    else:
+        broad_group = obs[compression_group_col].astype("string").str.strip()
+        meta["compression_group"] = broad_group
+        if protect_curated_families:
+            curated = meta.label.isin(families)
+            meta.loc[curated, "compression_group"] = meta.loc[curated, "family"]
     if not _valid(meta.family).all():
         # Missing original labels are removed below; invalid explicit family values are errors.
         bad = meta.loc[_valid(obs[cell_type_col]) & ~_valid(meta.family), "label"].unique()
@@ -495,6 +973,8 @@ def build_rna_reference(
     keep = np.ones(adata.n_obs, dtype=bool)
     for key in [donor_col, tissue_col, cell_type_col, compartment_col, assay_col]:
         keep &= _valid(obs[key]).to_numpy(bool)
+    if compression_enabled and compression_group_col is not None:
+        keep &= _valid(obs[compression_group_col]).to_numpy(bool)
     if cell_mask is not None:
         if isinstance(cell_mask, pd.Series) and not cell_mask.index.equals(obs.index):
             raise ValueError("cell_mask Series index must exactly match adata.obs_names.")
@@ -521,7 +1001,7 @@ def build_rna_reference(
         max_pct_counts_mt=max_pct_counts_mt, memmap_path=memmap_path)
     pb["status"] = "used"
     pb.loc[(pb.n_cells < min_cells) | (pb.n_counts < min_counts), "status"] = "low_pseudobulk_depth_or_cells"
-    by = ["assay", "compartment", "family", "label", "context"]
+    by = ["assay", "compartment", "compression_group", "family", "label", "context"]
     supported = pb[pb.status.eq("used")].groupby(by, observed=True).donor.transform("nunique")
     pb.loc[supported.index[supported < min_donors], "status"] = "insufficient_donors"
     good_rows = np.flatnonzero(pb.status.eq("used").to_numpy())
@@ -627,6 +1107,7 @@ def build_rna_reference(
             pb.loc[members.index, "reference"] = ref_name
             manifest.append(dict(reference=ref_name, merged_type=merged_type,
                                  assay=assay, compartment=members.compartment.iloc[0],
+                                 compression_group=members.compression_group.iloc[0],
                                  family=members.family.iloc[0],
                                  original_types=json.dumps(sorted(members.label.unique())),
                                  tissues=json.dumps(sorted({x[0] for x in parsed})),
@@ -642,6 +1123,37 @@ def build_rna_reference(
                                      js_to_consensus=_js(profile, reference)))
     reference = pd.DataFrame(references, index=pd.Index(gtf.gene, name="gene"), dtype=np.float64)
     manifest = pd.DataFrame(manifest)
+    n_references_before_compression = reference.shape[1]
+    precompression_manifest = manifest.copy()
+    compression_map = pd.DataFrame()
+    compression_history = pd.DataFrame()
+    compression_rejected = pd.DataFrame()
+    if target_references is not None and reference.shape[1] > target_references:
+        reference, manifest, compression_map, compression_history, compression_rejected = compact_rna_reference(
+            reference=reference,
+            manifest=manifest,
+            gene_gtf=gtf,
+            target_references=target_references,
+            group_col="compression_group",
+            family_col="family",
+            max_information_loss=compression_max_information_loss,
+            max_information_ratio=compression_max_information_ratio,
+            max_js=compression_max_js,
+            max_pairwise_js=compression_max_pairwise_js,
+            max_block_log2=compression_max_block_log2,
+            donor_qc=pd.DataFrame(donor_qc),
+            allow_cross_compartment=compression_allow_cross_compartment,
+            cross_compartment_threshold_scale=compression_cross_compartment_scale,
+            noise_floor=noise_floor,
+            block_size=block_size,
+            min_block_genes=min_block_genes,
+            min_block_expression=min_block_expression,
+        )
+        ref_map = compression_map.set_index("source_reference").compact_reference
+        pb["reference_precompression"] = pb["reference"]
+        pb["reference"] = pb["reference_precompression"].map(ref_map)
+        for row in donor_qc:
+            row["compact_reference"] = ref_map.get(row["reference"], row["reference"])
     if reference.empty or reference.columns.has_duplicates:
         raise RuntimeError("No valid unique reference profiles were produced.")
     if not np.isfinite(reference.to_numpy()).all() or (reference <= 0).any().any():
@@ -661,6 +1173,8 @@ def build_rna_reference(
                 excluded_cell_types=sorted(excluded), versions=versions,
                 n_input_cells=int(adata.n_obs), n_input_genes=int(adata.n_vars),
                 n_genes=int(reference.shape[0]), n_references=int(reference.shape[1]),
+                n_references_before_compression=int(n_references_before_compression),
+                compression_target_reached=bool(target_references is None or reference.shape[1] <= target_references),
                 cell_qc=cell_qc, gene_annotation_sha256=_fingerprint(gtf),
                 selected_metadata_sha256=_fingerprint(meta),
                 input_counts_fingerprint="not computed; record source h5ad checksums separately",
@@ -669,7 +1183,12 @@ def build_rna_reference(
     diagnostics = dict(pseudobulk_qc=pb, metadata_qc=metadata_audit,
                        feature_mapping=feature_map, subtype_mapping=pd.DataFrame(type_records),
                        pair_scores=pd.DataFrame(pair_records), merge_history=pd.DataFrame(history_records),
-                       profile_donor_qc=pd.DataFrame(donor_qc), run_info=info)
+                       profile_donor_qc=pd.DataFrame(donor_qc),
+                       precompression_manifest=precompression_manifest,
+                       reference_compression_map=compression_map,
+                       compression_history=compression_history,
+                       compression_rejected=compression_rejected,
+                       run_info=info)
     log.info("Finished: %s genes x %s profiles; %s reliable pseudobulks.", *reference.shape, len(good_rows))
     result = (reference, manifest, gtf)
     return (*result, diagnostics) if return_diagnostics else result
@@ -678,7 +1197,7 @@ def build_rna_reference(
 def save_rna_reference(reference, manifest, gene_gtf, diagnostics, output_dir):
     """Write ref_hca-compatible TSV and audit tables to a NEW directory.
 
-    ref_rna.tsv has the same implicit index header as ref_hca.tsv:
+    ref_rna.tsv intentionally has the same implicit index header as ref_hca.tsv:
     pd.read_csv(path, sep='\\t') and pd.read_csv(path, sep='\\t', index_col=0)
     both produce a numeric gene-indexed DataFrame. No annotation columns are
     mixed into the reference matrix. Other tables have explicit headers.
@@ -711,6 +1230,25 @@ def _main():
     parser.add_argument("--anatomy-col")
     parser.add_argument("--layer")
     parser.add_argument("--family-json", help="Explicit label-to-family mapping replacing the defaults")
+    parser.add_argument("--compression-group-col", default="broad_cell_class",
+                        help="Biological gate for compacting; use NONE for conservative family only")
+    parser.add_argument("--target-references", type=int, default=64,
+                        help="Soft compact-reference target (default: 64)")
+    parser.add_argument("--no-compress-reference", action="store_true",
+                        help="Disable the default compacting stage and retain all conservative profiles")
+    parser.add_argument("--compression-max-information-loss", type=float, default=0.002)
+    parser.add_argument("--compression-max-information-ratio", type=float, default=2.0,
+                        help="Maximum information loss relative to donor variability")
+    parser.add_argument("--compression-max-js", type=float, default=0.01)
+    parser.add_argument("--compression-max-pairwise-js", type=float, default=0.02,
+                        help="Complete-link JSD cap across every source pair")
+    parser.add_argument("--compression-max-block-log2", type=float, default=0.20)
+    parser.add_argument("--same-compartment-only", action="store_true",
+                        help="Disallow otherwise eligible cross-compartment family merges")
+    parser.add_argument("--cross-compartment-threshold-scale", type=float, default=0.5,
+                        help="Multiplier applied to all cross-compartment merge limits")
+    parser.add_argument("--no-protect-curated-families", action="store_true",
+                        help="Use raw broad groups in audit metadata; the family gate still applies")
     parser.add_argument("--min-cells", type=int, default=50)
     parser.add_argument("--min-counts", type=int, default=50_000)
     parser.add_argument("--min-donors", type=int, default=2)
@@ -733,6 +1271,16 @@ def _main():
             assay_col=args.assay_col, cell_type_col=args.cell_type_col,
             gene_col=args.gene_col, anatomy_col=args.anatomy_col, layer=args.layer,
             family_mapping=json.loads(Path(args.family_json).read_text()) if args.family_json else None,
+            compression_group_col=None if args.compression_group_col == "NONE" else args.compression_group_col,
+            protect_curated_families=not args.no_protect_curated_families,
+            target_references=None if args.no_compress_reference else args.target_references,
+            compression_max_information_loss=args.compression_max_information_loss,
+            compression_max_information_ratio=args.compression_max_information_ratio,
+            compression_max_js=args.compression_max_js,
+            compression_max_pairwise_js=args.compression_max_pairwise_js,
+            compression_max_block_log2=args.compression_max_block_log2,
+            compression_allow_cross_compartment=not args.same_compartment_only,
+            compression_cross_compartment_scale=args.cross_compartment_threshold_scale,
             min_cells=args.min_cells, min_counts=args.min_counts, min_donors=args.min_donors,
             min_compare_donors=args.min_compare_donors, max_js=args.max_js,
             max_block_log2=args.max_block_log2, consensus=args.consensus,
@@ -745,3 +1293,5 @@ def _main():
 
 if __name__ == "__main__":
     _main()
+
+
