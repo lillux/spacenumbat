@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Build a donor-balanced scRNA reference with the ATAC reference algorithm.
 
-The algorithm is a RNA adaptation of build_atac_ref.py:
+The algorithm is a RNA adaptation of SpaceNumbat's build_atac_ref.py:
 donor/context/type pseudobulks, within-family subtype compression, a context
-information test, and equal-donor robust final profiles.
+information test, and equal-donor robust final profiles. There is deliberately
+no requested reference count and no post-hoc compatibility compressor.
 """
 
-#from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -487,11 +488,207 @@ def build_rna_reference(
     min_cell_genes=100, max_pct_counts_mt=None, chunk_size=8192,
     memmap_path=None, return_diagnostics=False,
 ):
-    """Construct an RNA reference using the scATAC builder's hierarchy.
+    """Build diploid RNA reference profiles with information tests.
 
-    Increase `subtype_ratio_threshold` to merge more labels within curated
-    families. Increase `tissue_ratio_threshold` to retain fewer context-specific
-    profiles. No requested reference count is used.
+    The function converts raw single-cell RNA counts into a gene-by-reference
+    probability matrix suitable for the RNA mode of SpaceNumbat.  Donors are
+    treated as the independent biological replicates.  Within each assay, the
+    procedure first merges statistically redundant annotations *only within a
+    curated biological family*, then decides whether each merged cell type
+    requires tissue/anatomy-specific reference profiles.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Cell-by-gene atlas. ``adata.X`` (or ``adata.layers[layer]``) must contain
+        finite, non-negative, integer-valued raw counts; normalized or
+        log-transformed expression is not accepted. Cell and feature identifiers
+        must be unique. The object is not modified.
+    gtf : pandas.DataFrame, optional
+        Gene annotation with columns ``gene``, ``CHROM``, ``gene_start``, and
+        ``gene_end``. A ``gene_ensembl`` column is used when present. If omitted,
+        ``spacenumbat.data.hg38`` is used. Only autosomal genes (chromosomes
+        1--22) represented in both ``adata`` and the annotation are retained.
+    donor_col : str, default: "donor"
+        Column in ``adata.obs`` identifying biological donors. Donors, rather
+        than cells, define replicate profiles and the information-noise scale.
+    tissue_col : str, default: "tissue"
+        Column in ``adata.obs`` containing tissue labels.
+    cell_type_col : str, default: "free_annotation"
+        Column in ``adata.obs`` containing the input cell-type annotation to be
+        compressed. Labels are normalized to lower-case, whitespace-collapsed
+        strings before mapping and comparison.
+    assay_col : str, default: "method"
+        Column in ``adata.obs`` containing the library protocol. Assays are
+        analyzed independently so that protocol effects cannot drive merges.
+        Common 10x and Smart-seq spellings are normalized to ``"10x"`` and
+        ``"smartseq2"``, respectively.
+    assays : sequence of str or None, default: ("10x",)
+        Assays to retain after protocol-name normalization. Pass ``None`` to use
+        every assay present. Profiles from different assays are never pooled.
+    anatomy_col : str or None, default: None
+        Optional ``adata.obs`` column defining anatomy within tissue. If set,
+        contexts are ``"<tissue>::<anatomy>"``; missing anatomy is encoded as
+        ``"NA"``. If ``None``, tissue alone defines context.
+    gene_col : str or None, default: None
+        Column in ``adata.var`` containing gene symbols or Ensembl identifiers.
+        By default, ``adata.var_names`` is used. Version suffixes are removed
+        from Ensembl identifiers, and multiple input features mapping to the
+        same gene are summed.
+    layer : str or None, default: None
+        AnnData layer containing raw counts. ``None`` uses ``adata.X``.
+    family_mapping : mapping of str to str or None, default: None
+        Additional or replacement label-to-family assignments, keyed by the
+        normalized values of ``cell_type_col``. These entries update the bundled
+        biological-family map. Labels without a mapping form singleton families;
+        therefore they cannot merge with biologically unrelated labels.
+    exclude_cell_types : iterable of str or None, default: None
+        Extra normalized labels to discard in addition to the bundled exclusions
+        for composite, overly broad, cycling, germline/meiotic, and anucleate
+        annotations. This argument extends rather than replaces the defaults.
+    min_cells : int, default: 50
+        Minimum cells required in each donor-by-context-by-cell-type pseudobulk.
+        Applied before subtype merging and again after re-aggregation.
+    min_counts : int, default: 50000
+        Minimum mapped autosomal counts required per pseudobulk, before and after
+        subtype merging.
+    min_donors : int, default: 2
+        Minimum distinct donors required for an emitted reference profile.
+    min_context_donors : int, default: 2
+        Minimum donors required for a context to participate in the context
+        information test. If fewer than two contexts qualify, a pan-context
+        profile is retained. When a split is selected, only qualifying contexts
+        are emitted as separate profiles.
+    subtype_ratio_threshold : float, default: 1.5
+        Maximum subtype information-to-noise ratio accepted for agglomerative
+        merging within a biological family. The numerator is the weighted
+        Jensen--Shannon divergence between candidate subtype profiles in shared
+        contexts; the denominator is within-subtype donor divergence. Larger
+        values merge more annotations. This ratio is an empirical decision
+        statistic, not a p-value.
+    tissue_ratio_threshold : float, default: 2.0
+        Context information-to-noise ratio above which a merged cell type is
+        split into context-specific references. The numerator is generalized
+        Jensen--Shannon divergence among context consensuses and the denominator
+        is donor variability. Larger values produce fewer context-specific
+        references and therefore stronger compression.
+    noise_floor : float, default: 1e-8
+        Positive lower bound on the donor-noise denominator. This prevents
+        unstable ratios when donor profiles are nearly identical.
+    prior_mass : float, default: 1.0
+        Total mass of the symmetric Dirichlet prior used when converting donor
+        pseudobulks to gene probabilities. It prevents zero probabilities while
+        remaining independent of the number of retained genes.
+    eps : float, default: 1e-12
+        Positive numerical offset used by the log-space robust donor consensus.
+    min_cell_counts : int, default: 100
+        Minimum mapped autosomal raw counts required for an individual cell.
+    min_cell_genes : int, default: 100
+        Minimum number of detected mapped autosomal genes required per cell.
+    max_pct_counts_mt : float or None, default: None
+        Optional upper bound for ``adata.obs["pct_counts_mt"]``. No mitochondrial
+        percentage filter is applied when ``None``.
+    chunk_size : int, default: 8192
+        Number of cells processed per block while mapping features and building
+        pseudobulks. Lower this value to reduce peak working memory.
+    memmap_path : path-like or None, default: None
+        Optional path for the dense float64 pseudobulk-by-gene work matrix. The
+        path must not already exist and is not a resumable cache. If ``None``,
+        the matrix is held in memory.
+    return_diagnostics : bool, default: False
+        If ``True``, append a diagnostics dictionary to the returned tuple.
+
+    Returns
+    -------
+    reference : pandas.DataFrame
+        Gene-by-reference matrix. Columns are strictly positive transcriptional
+        probability profiles and each column sums to one. This is the reference
+        matrix passed to the RNA SpaceNNumBAT pipeline.
+    manifest : pandas.DataFrame
+        One row per reference column, including the emitted reference name,
+        merged cell type, biological family, assay, scope (``"pan_context"`` or
+        ``"context"``), contributing contexts/tissues/donors, support counts,
+        source annotations, and context information statistics.
+    gene_gtf : pandas.DataFrame
+        Annotation for the expressed autosomal genes in ``reference``, ordered
+        genomically and suitable for downstream RNA CNA inference.
+    diagnostics : dict, optional
+        Returned only when ``return_diagnostics=True``. Contains
+        ``cell_type_map``, ``merge_history``, ``context_tests``,
+        ``initial_pseudobulk_qc``, ``merged_pseudobulk_qc``,
+        ``global_donor_noise``, ``feature_mapping``, and ``run_info``.
+
+    Raises
+    ------
+    ValueError
+        If counts are not raw non-negative integers, required metadata or gene
+        annotation is missing, parameters are invalid, or filtering leaves
+        insufficient genes, pseudobulks, or reference profiles.
+    FileExistsError
+        If ``memmap_path`` already exists.
+    RuntimeError
+        If reference names collide or final profiles fail positivity, finiteness,
+        or normalization checks.
+
+    Notes
+    -----
+    The algorithm mirrors the hierarchy of ``build_atac_ref.py``:
+
+    1. Construct donor-by-context-by-annotation raw-count pseudobulks.
+    2. Agglomerate annotations within each curated family while conditional
+       subtype information does not exceed donor noise by
+       ``subtype_ratio_threshold``.
+    3. Rebuild and re-filter pseudobulks after every accepted label mapping.
+    4. Emit context-specific profiles only when context information exceeds
+       donor noise by ``tissue_ratio_threshold``; otherwise pool contexts.
+    5. Form each final profile as the normalized median of donor probabilities
+       in log space after symmetric Dirichlet smoothing.
+
+    Labels from different tissues may merge because tissue is a conditioning
+    context rather than a hard biological boundary. Family membership prevents
+    cross-lineage merges, and the subsequent context test preserves reproducible
+    tissue/anatomy effects. Candidate labels with no shared context follow the
+    ATAC builder's provisional zero-information merge; the context test is then
+    responsible for retaining distinct context profiles when supported.
+
+    There is deliberately no requested reference count: the number of columns
+    is determined by biological-family constraints, donor variability, data
+    support, and the two information-ratio thresholds. To obtain fewer columns,
+    first increase ``subtype_ratio_threshold`` and/or
+    ``tissue_ratio_threshold`` and inspect ``merge_history`` and
+    ``context_tests``. Do not use ``min_donors`` or pseudobulk QC thresholds as
+    primary compression controls because they remove weakly supported biology.
+
+    The atlas should contain non-malignant samples appropriate for use as a
+    diploid baseline. Normal-tissue annotation alone does not prove copy-number
+    neutrality; donor- and tissue-level QC remains the caller's responsibility.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from spacenumbat.preprocessing.build_rna_ref import build_rna_reference
+    >>> ref_rna, manifest, gene_gtf, diagnostics = build_rna_reference(
+    ...     adata_full,
+    ...     gtf=spacenumbat.data.hg38,
+    ...     donor_col="donor",
+    ...     tissue_col="tissue",
+    ...     cell_type_col="free_annotation",
+    ...     assay_col="method",
+    ...     assays=("10x",),
+    ...     anatomy_col=None,
+    ...     min_cells=50,
+    ...     min_counts=50_000,
+    ...     min_donors=2,
+    ...     subtype_ratio_threshold=1.5,
+    ...     tissue_ratio_threshold=2.0,
+    ...     return_diagnostics=True,
+    ... )
+    >>> ref_rna.shape[0] == gene_gtf.shape[0]
+    True
+    >>> ref_rna.columns.tolist() == manifest["reference"].tolist()
+    True
+    >>> bool(np.allclose(ref_rna.sum(axis=0), 1.0))
+    True
     """
     if gtf is None:
         from spacenumbat.data import hg38
