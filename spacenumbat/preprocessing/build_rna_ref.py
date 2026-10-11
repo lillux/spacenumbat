@@ -352,8 +352,14 @@ def _aggregate_counts(adata, metadata, projection, *, layer, chunk_size,
     qc = {"metadata_selected": int(selected.sum()), "passed_count_qc": 0,
           "failed_count_qc": 0}
     matrix = adata.X if layer is None else adata.layers[layer]
-    for start in range(0, adata.n_obs, chunk_size):
-        end = min(start + chunk_size, adata.n_obs)
+    # ``None`` deliberately selects a single full-matrix block.  This changes
+    # peak memory and loop overhead only; grouping and QC semantics are shared
+    # with the chunked path.
+    if chunk_size is not None and (chunk_size < 1 or int(chunk_size) != chunk_size):
+        raise ValueError("chunk_size must be a positive integer or None.")
+    block_size = max(adata.n_obs, 1) if chunk_size is None else int(chunk_size)
+    for start in range(0, adata.n_obs, block_size):
+        end = min(start + block_size, adata.n_obs)
         use = codes[start:end] >= 0
         if not use.any():
             continue
@@ -587,9 +593,13 @@ def build_rna_reference(
     max_pct_counts_mt : float or None, default: None
         Optional upper bound for ``adata.obs["pct_counts_mt"]``. No mitochondrial
         percentage filter is applied when ``None``.
-    chunk_size : int, default: 8192
+    chunk_size : int or None, default: 8192
         Number of cells processed per block while mapping features and building
-        pseudobulks. Lower this value to reduce peak working memory.
+        pseudobulks. Lower values reduce peak working memory, whereas larger
+        values reduce Python, slicing, sparse-multiplication and accumulation
+        overhead. Pass ``None`` to process all cells in one block. Chunk size is
+        an execution parameter and does not change filtering, grouping or the
+        intended reference estimate.
     memmap_path : path-like or None, default: None
         Optional path for the dense float64 pseudobulk-by-gene work matrix. The
         path must not already exist and is not a resumable cache. If ``None``,
@@ -698,10 +708,12 @@ def build_rna_reference(
         raise ValueError(f"AnnData has no layer {layer!r}.")
     for name, value in {"min_cells": min_cells, "min_counts": min_counts,
                         "min_donors": min_donors, "min_context_donors": min_context_donors,
-                        "min_cell_counts": min_cell_counts, "min_cell_genes": min_cell_genes,
-                        "chunk_size": chunk_size}.items():
+                        "min_cell_counts": min_cell_counts,
+                        "min_cell_genes": min_cell_genes}.items():
         if value < 1 or int(value) != value:
             raise ValueError(f"{name} must be a positive integer.")
+    if chunk_size is not None and (chunk_size < 1 or int(chunk_size) != chunk_size):
+        raise ValueError("chunk_size must be a positive integer or None.")
     for name, value in {"subtype_ratio_threshold": subtype_ratio_threshold,
                         "tissue_ratio_threshold": tissue_ratio_threshold,
                         "noise_floor": noise_floor, "prior_mass": prior_mass,
@@ -941,5 +953,6 @@ def _main():
 
 if __name__ == "__main__":
     _main()
+
 
 
