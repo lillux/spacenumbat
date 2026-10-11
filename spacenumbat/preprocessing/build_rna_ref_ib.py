@@ -1,10 +1,8 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Donor-aware conditional information-bottleneck RNA reference builder.
 
 This module replaces the greedy pairwise JSD subtype-merging stage in
 ``build_rna_ref.py`` with a formal conditional information bottleneck (CIB).
-It uses deterministic Blahut--Arimoto updates:
+It deliberately uses deterministic Blahut--Arimoto updates rather than Pyro:
 the input label, compressed label, context and gene are finite categorical
 variables, so the required expectations can be evaluated exactly.
 
@@ -20,16 +18,18 @@ the minimized rate--distortion objective is
 
 Donor pseudobulks are normalized independently before model fitting. Thus a
 donor contributes one probability profile rather than a weight proportional
-to its cell or read count. A beta grid can be selected by held-out-donor
-predictive cross-entropy. The most compressed solution whose validation loss
-is within ``max_excess_nll`` nats/count of the uncompressed reference is used.
+to its cell or read count. A beta grid is selected by held-out-donor prediction
+in the same robust log-ratio geometry used to construct the emitted reference.
+Validation combines equal-chromosome clr reconstruction with equal-window
+multiscale genomic-track losses, and candidate matrices are screened in the
+Gauss--Newton geometry of SpaceNumbat's log-mixture fit.
 
 The public ``build_rna_reference_ib`` function mirrors ``build_rna_reference``
 and returns a SpaceNumbat-compatible gene-by-reference matrix, manifest, gene
 annotation and optional diagnostics.
 """
 
-#from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
@@ -40,11 +40,12 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from scipy.linalg import helmert
 from scipy.special import logsumexp
 
 
 log = logging.getLogger(__name__)
-__version__ = "1.0.0"
+__version__ = "2.1.0"
 
 
 @dataclass
@@ -95,6 +96,14 @@ class IBSelection:
     curve: pd.DataFrame
 
 
+@dataclass(frozen=True)
+class _GenomeGeometry:
+    """Precomputed weights and windows for genome-aware validation."""
+
+    gene_weights: np.ndarray
+    windows: tuple[tuple[tuple[np.ndarray, ...], ...], ...]
+
+
 def _check_counts(counts: np.ndarray) -> np.ndarray:
     counts = np.asarray(counts, dtype=np.float64)
     if counts.ndim != 2 or counts.shape[0] == 0 or counts.shape[1] < 2:
@@ -113,6 +122,208 @@ def _normalize_counts(counts: np.ndarray, prior_mass: float) -> np.ndarray:
         raise ValueError("prior_mass must be finite and positive.")
     depth = counts.sum(axis=1, keepdims=True)
     return (counts + prior_mass / counts.shape[1]) / (depth + prior_mass)
+
+
+def _clr(profiles: np.ndarray, eps: float) -> np.ndarray:
+    """Centered log-ratio transform of positive compositions."""
+    logged = np.log(np.maximum(np.asarray(profiles, dtype=np.float64), eps))
+    return logged - logged.mean(axis=-1, keepdims=True)
+
+
+def _aitchison_huber_center(
+    profiles: np.ndarray,
+    *,
+    eps: float,
+    huber_delta: float,
+    max_iter: int = 100,
+    tol: float = 1e-8,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Robust center under radial Huber loss in clr space."""
+    profiles = np.asarray(profiles, dtype=np.float64)
+    if profiles.ndim != 2 or profiles.shape[0] == 0:
+        raise ValueError("profiles must be a non-empty donor-by-gene matrix.")
+    if not np.isfinite(huber_delta) or huber_delta <= 0:
+        raise ValueError("huber_delta must be finite and positive.")
+    clr = _clr(profiles, eps)
+    center = clr.mean(axis=0)
+    weights = np.ones(len(clr), dtype=np.float64)
+    for _ in range(max_iter):
+        radius = np.sqrt(np.mean(np.square(clr - center), axis=1))
+        weights = np.minimum(1.0, huber_delta / np.maximum(radius, eps))
+        updated = np.average(clr, axis=0, weights=weights)
+        updated -= updated.mean()
+        if np.max(np.abs(updated - center)) <= tol:
+            center = updated
+            break
+        center = updated
+    reference = np.exp(center - center.max())
+    reference /= reference.sum()
+    return reference, weights
+
+
+def _donor_center(
+    counts: np.ndarray,
+    obs: pd.DataFrame,
+    *,
+    donor_col: str,
+    prior_mass: float,
+    eps: float,
+    huber_delta: float,
+) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """Pool repeated donor rows and compute their robust Aitchison center."""
+    counts = _check_counts(counts)
+    codes, donors = pd.factorize(obs[donor_col].astype(str), sort=True)
+    grouping = sparse.csr_matrix(
+        (np.ones(len(codes)), (codes, np.arange(len(codes)))),
+        shape=(len(donors), len(codes)),
+    )
+    profiles = _normalize_counts(np.asarray(grouping @ counts), prior_mass)
+    center, weights = _aitchison_huber_center(
+        profiles, eps=eps, huber_delta=huber_delta
+    )
+    return center, list(map(str, donors)), weights
+
+
+def _fit_group_centers(
+    counts: np.ndarray,
+    obs: pd.DataFrame,
+    group_cols: Sequence[str],
+    *,
+    donor_col: str,
+    prior_mass: float,
+    eps: float,
+    huber_delta: float,
+) -> dict[tuple[str, ...], np.ndarray]:
+    """Fit one donor-balanced robust center for every metadata group."""
+    centers = {}
+    grouper = group_cols[0] if len(group_cols) == 1 else list(group_cols)
+    for key, idx in obs.groupby(grouper, sort=True).indices.items():
+        key = (str(key),) if len(group_cols) == 1 else tuple(map(str, key))
+        idx = np.asarray(idx)
+        centers[key] = _donor_center(
+            counts[idx],
+            obs.iloc[idx].reset_index(drop=True),
+            donor_col=donor_col,
+            prior_mass=prior_mass,
+            eps=eps,
+            huber_delta=huber_delta,
+        )[0]
+    return centers
+
+
+def _make_genome_geometry(
+    chromosomes: Sequence[str], window_sizes: Sequence[int]
+) -> _GenomeGeometry:
+    """Give every chromosome and every window within it equal total weight."""
+    chrom = np.asarray(chromosomes, dtype=str)
+    if chrom.ndim != 1 or len(chrom) < 2:
+        raise ValueError("gene_chrom must identify at least two genes.")
+    sizes = tuple(sorted({int(x) for x in window_sizes}))
+    if not sizes or any(x < 1 for x in sizes):
+        raise ValueError("window_sizes must contain positive integers.")
+    levels = list(dict.fromkeys(chrom))
+    chromosome_indices = tuple(np.flatnonzero(chrom == value) for value in levels)
+    weights = np.zeros(len(chrom), dtype=np.float64)
+    for index in chromosome_indices:
+        weights[index] = 1.0 / (len(levels) * len(index))
+    windows = tuple(
+        tuple(
+            tuple(index[start : start + size] for start in range(0, len(index), size))
+            for index in chromosome_indices
+        )
+        for size in sizes
+    )
+    return _GenomeGeometry(gene_weights=weights, windows=windows)
+
+
+def _genome_loss(
+    observed: np.ndarray,
+    predicted: np.ndarray,
+    geometry: _GenomeGeometry,
+    *,
+    eps: float,
+    multiscale_weight: float,
+) -> tuple[float, float, float]:
+    """Equal-chromosome clr loss plus equal-window genomic-track loss."""
+    residual = _clr(observed, eps) - _clr(predicted, eps)
+    clr_loss = float(np.sum(geometry.gene_weights * np.square(residual)))
+    scale_losses = []
+    for scale in geometry.windows:
+        chromosome_losses = [
+            np.mean([float(np.mean(residual[index])) ** 2 for index in windows])
+            for windows in scale
+        ]
+        scale_losses.append(float(np.mean(chromosome_losses)))
+    multiscale_loss = float(np.mean(scale_losses))
+    return (
+        clr_loss + multiscale_weight * multiscale_loss,
+        clr_loss,
+        multiscale_loss,
+    )
+
+
+def _likelihood_collinearity(
+    references: np.ndarray,
+    gene_weights: np.ndarray,
+    names: Sequence[str] | None = None,
+) -> tuple[dict[str, float], pd.DataFrame]:
+    """Assess references in the local geometry of log(R @ pi)."""
+    matrix = np.asarray(references, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[0] != len(gene_weights):
+        raise ValueError("references must be a gene-by-reference matrix.")
+    n_reference = matrix.shape[1]
+    if n_reference == 0:
+        raise ValueError("At least one reference is required.")
+    if names is None:
+        names = [str(i) for i in range(n_reference)]
+    mixture = matrix.mean(axis=1)
+    weighted_precision = gene_weights / np.square(np.maximum(mixture, 1e-300))
+    gram = matrix.T @ (weighted_precision[:, None] * matrix)
+    diagonal = np.sqrt(np.maximum(np.diag(gram), 1e-300))
+    cosine = np.clip(gram / np.outer(diagonal, diagonal), -1.0, 1.0)
+    pairs = [
+        {"reference_a": names[i], "reference_b": names[j], "weighted_cosine": cosine[i, j]}
+        for i in range(n_reference)
+        for j in range(i + 1, n_reference)
+    ]
+    pair_frame = pd.DataFrame(pairs).sort_values(
+        "weighted_cosine", ascending=False, ignore_index=True
+    ) if pairs else pd.DataFrame(
+        columns=["reference_a", "reference_b", "weighted_cosine"]
+    )
+    if n_reference == 1:
+        return {
+            "n_references": 1,
+            "min_eigenvalue": np.nan,
+            "max_eigenvalue": np.nan,
+            "condition_number": 1.0,
+            "effective_rank": 1.0,
+            "mean_log_eigenvalue": np.nan,
+            "max_pairwise_cosine": np.nan,
+        }, pair_frame
+    basis = helmert(n_reference, full=False).T
+    eigenvalues = np.linalg.eigvalsh(basis.T @ gram @ basis)
+    largest = float(eigenvalues[-1])
+    smallest = float(max(eigenvalues[0], 0.0))
+    threshold = largest * np.finfo(float).eps * max(n_reference, 2)
+    condition = np.inf if smallest <= threshold else largest / smallest
+    positive = eigenvalues[eigenvalues > threshold]
+    if len(positive):
+        normalized = positive / positive.sum()
+        effective_rank = float(np.exp(-np.sum(normalized * np.log(normalized))))
+        mean_log_eigenvalue = float(np.mean(np.log(positive)))
+    else:
+        effective_rank = 0.0
+        mean_log_eigenvalue = -np.inf
+    return {
+        "n_references": n_reference,
+        "min_eigenvalue": smallest,
+        "max_eigenvalue": largest,
+        "condition_number": float(condition),
+        "effective_rank": effective_rank,
+        "mean_log_eigenvalue": mean_log_eigenvalue,
+        "max_pairwise_cosine": float(pair_frame.weighted_cosine.max()),
+    }, pair_frame
 
 
 def _softmax_rows(logits: np.ndarray) -> np.ndarray:
@@ -478,7 +689,35 @@ def fit_conditional_information_bottleneck(
     return best
 
 
-def _predictive_nll(
+def _hard_reference_matrix(
+    model: ConditionalIBResult,
+    counts: np.ndarray,
+    obs: pd.DataFrame,
+    *,
+    label_col: str,
+    donor_col: str,
+    prior_mass: float,
+    eps: float,
+    huber_delta: float,
+) -> np.ndarray:
+    """Refit hard CIB clusters with the deployed robust donor center."""
+    fitted = obs.reset_index(drop=True).copy()
+    mapping = dict(zip(model.labels, model.hard_assignment))
+    fitted["_cluster"] = fitted[label_col].astype(str).map(mapping).astype(str)
+    centers = _fit_group_centers(
+        counts,
+        fitted,
+        ["_cluster"],
+        donor_col=donor_col,
+        prior_mass=prior_mass,
+        eps=eps,
+        huber_delta=huber_delta,
+    )
+    cluster_ids = sorted(map(int, fitted._cluster.unique()))
+    return np.column_stack([centers[(str(i),)] for i in cluster_ids])
+
+
+def _predictive_loss(
     model: ConditionalIBResult,
     train_counts: np.ndarray,
     train_obs: pd.DataFrame,
@@ -490,67 +729,115 @@ def _predictive_nll(
     donor_col: str,
     prior_mass: float,
     eps: float,
-) -> tuple[float, float, int]:
-    """Candidate and uncompressed held-out cross-entropy in nats/count."""
-    problem = _build_problem(
+    huber_delta: float,
+    geometry: _GenomeGeometry,
+    multiscale_weight: float,
+) -> dict[str, float]:
+    """Held-out robust log-ratio losses for compressed and full labels."""
+    train = train_obs.reset_index(drop=True).copy()
+    mapping = dict(zip(model.labels, model.hard_assignment))
+    train["_cluster"] = train[label_col].astype(str).map(mapping).astype(str)
+    candidate_context = _fit_group_centers(
         train_counts,
-        train_obs,
-        label_col=label_col,
-        context_col=context_col,
+        train,
+        ["_cluster", context_col],
         donor_col=donor_col,
         prior_mass=prior_mass,
-        labels=model.labels,
-        contexts=model.contexts,
+        eps=eps,
+        huber_delta=huber_delta,
     )
-    label_index = {x: i for i, x in enumerate(model.labels)}
-    context_index = {x: i for i, x in enumerate(model.contexts)}
-    candidate_loss = 0.0
-    baseline_loss = 0.0
-    total = 0
+    candidate_pan = _fit_group_centers(
+        train_counts,
+        train,
+        ["_cluster"],
+        donor_col=donor_col,
+        prior_mass=prior_mass,
+        eps=eps,
+        huber_delta=huber_delta,
+    )
+    baseline_context = _fit_group_centers(
+        train_counts,
+        train,
+        [label_col, context_col],
+        donor_col=donor_col,
+        prior_mass=prior_mass,
+        eps=eps,
+        huber_delta=huber_delta,
+    )
+    baseline_pan = _fit_group_centers(
+        train_counts,
+        train,
+        [label_col],
+        donor_col=donor_col,
+        prior_mass=prior_mass,
+        eps=eps,
+        huber_delta=huber_delta,
+    )
+    totals = {
+        "candidate": 0.0,
+        "candidate_clr": 0.0,
+        "candidate_multiscale": 0.0,
+        "baseline": 0.0,
+        "baseline_clr": 0.0,
+        "baseline_multiscale": 0.0,
+        "n_profiles": 0,
+    }
 
     validation_labels = validation_obs[label_col].astype(str).to_numpy()
     validation_contexts = validation_obs[context_col].astype(str).to_numpy()
     for row, label, context in zip(
         np.asarray(validation_counts, float), validation_labels, validation_contexts
     ):
-        if label not in label_index:
+        if label not in mapping:
             continue
-        li = label_index[label]
-        if (
-            context in context_index
-            and problem["support"][:, context_index[context]].sum() > 0
-        ):
-            ci = context_index[context]
-            prediction = model.q_cluster_given_label[li] @ model.decoder[:, ci, :]
-            baseline = (
-                problem["profile"][li, ci]
-                if problem["support"][li, ci] > 0
-                else problem["pan_label_profile"][li]
-            )
-        else:
-            prediction = model.q_cluster_given_label[li] @ model.decoder_pan_context
-            baseline = problem["pan_label_profile"][li]
-        depth = int(np.sum(row))
-        if depth <= 0:
+        cluster = str(mapping[label])
+        prediction = candidate_context.get(
+            (cluster, context), candidate_pan[(cluster,)]
+        )
+        baseline = baseline_context.get((label, context), baseline_pan[(label,)])
+        if np.sum(row) <= 0:
             continue
-        candidate_loss -= float(row @ np.log(np.maximum(prediction, eps)))
-        baseline_loss -= float(row @ np.log(np.maximum(baseline, eps)))
-        total += depth
-    return candidate_loss, baseline_loss, total
+        observed = _normalize_counts(row[None, :], prior_mass)[0]
+        candidate = _genome_loss(
+            observed,
+            prediction,
+            geometry,
+            eps=eps,
+            multiscale_weight=multiscale_weight,
+        )
+        uncompressed = _genome_loss(
+            observed,
+            baseline,
+            geometry,
+            eps=eps,
+            multiscale_weight=multiscale_weight,
+        )
+        for prefix, values in (("candidate", candidate), ("baseline", uncompressed)):
+            totals[prefix] += values[0]
+            totals[f"{prefix}_clr"] += values[1]
+            totals[f"{prefix}_multiscale"] += values[2]
+        totals["n_profiles"] += 1
+    return totals
 
 
 def select_information_bottleneck(
     counts: np.ndarray,
     obs: pd.DataFrame,
     *,
+    gene_chrom: Sequence[str],
     betas: Sequence[float] = (0.5, 1, 2, 4, 8, 16, 32, 64),
     label_col: str = "label",
     context_col: str = "context",
     donor_col: str = "donor",
     prior_mass: float = 1.0,
     n_folds: int = 3,
-    max_excess_nll: float = 1e-3,
+    max_excess_loss: float = 1e-2,
     min_retained_fraction: float = 0.98,
+    window_sizes: Sequence[int] = (51, 101, 201),
+    multiscale_weight: float = 1.0,
+    huber_delta: float = 1.5,
+    max_condition_number: float = 1e6,
+    min_eigenvalue: float = 1e-4,
     n_restarts: int = 3,
     max_iter: int = 1000,
     tol: float = 1e-9,
@@ -558,13 +845,13 @@ def select_information_bottleneck(
     eps: float = 1e-12,
     random_state: int = 0,
 ) -> IBSelection:
-    """Select compression using donor-blocked validation.
+    """Select CIB compression using deployment-aligned donor validation.
 
     The selected model is the solution with the fewest hard clusters whose
-    held-out loss is within ``max_excess_nll`` nats/count of the uncompressed
-    label-by-context reference and whose in-sample retained information is at
-    least ``min_retained_fraction``. If no candidate satisfies both safeguards,
-    the candidate with the smallest held-out excess loss is selected.
+    held-out genome-aware log-ratio loss is within ``max_excess_loss`` of the
+    uncompressed robust reference, whose retained information is at least
+    ``min_retained_fraction``, and whose likelihood-geometry condition number
+    and minimum eigenvalue satisfy the requested identifiability bounds.
     """
     counts = _check_counts(counts)
     obs = obs.reset_index(drop=True).copy()
@@ -573,8 +860,17 @@ def select_information_bottleneck(
     betas = sorted({float(x) for x in betas})
     if not betas or any(not np.isfinite(x) or x <= 0 for x in betas):
         raise ValueError("betas must contain finite positive values.")
-    if max_excess_nll < 0 or not 0 < min_retained_fraction <= 1:
+    if max_excess_loss < 0 or not 0 < min_retained_fraction <= 1:
         raise ValueError("Invalid model-selection tolerances.")
+    if not np.isfinite(multiscale_weight) or multiscale_weight < 0:
+        raise ValueError("multiscale_weight must be finite and non-negative.")
+    if not np.isfinite(max_condition_number) or max_condition_number <= 1:
+        raise ValueError("max_condition_number must be finite and greater than one.")
+    if not np.isfinite(min_eigenvalue) or min_eigenvalue < 0:
+        raise ValueError("min_eigenvalue must be finite and non-negative.")
+    geometry = _make_genome_geometry(gene_chrom, window_sizes)
+    if len(geometry.gene_weights) != counts.shape[1]:
+        raise ValueError("gene_chrom and counts must contain the same number of genes.")
 
     if n_folds < 1:
         raise ValueError("n_folds must be positive.")
@@ -587,9 +883,15 @@ def select_information_bottleneck(
     rows = []
 
     for beta_index, beta in enumerate(betas):
-        candidate_loss = 0.0
-        baseline_loss = 0.0
-        total = 0
+        totals = {
+            "candidate": 0.0,
+            "candidate_clr": 0.0,
+            "candidate_multiscale": 0.0,
+            "baseline": 0.0,
+            "baseline_clr": 0.0,
+            "baseline_multiscale": 0.0,
+            "n_profiles": 0,
+        }
         valid_folds = 0
         for fold_index, held_out in enumerate(folds):
             validation = obs[donor_col].astype(str).isin(held_out).to_numpy()
@@ -615,7 +917,7 @@ def select_information_bottleneck(
                     labels=labels,
                     contexts=contexts,
                 )
-                cand, base, depth = _predictive_nll(
+                fold_losses = _predictive_loss(
                     model,
                     counts[training],
                     obs.loc[training].reset_index(drop=True),
@@ -626,13 +928,15 @@ def select_information_bottleneck(
                     donor_col=donor_col,
                     prior_mass=prior_mass,
                     eps=eps,
+                    huber_delta=huber_delta,
+                    geometry=geometry,
+                    multiscale_weight=multiscale_weight,
                 )
             except ValueError:
                 continue
-            candidate_loss += cand
-            baseline_loss += base
-            total += depth
-            valid_folds += int(depth > 0)
+            for key in totals:
+                totals[key] += fold_losses[key]
+            valid_folds += int(fold_losses["n_profiles"] > 0)
 
         full_model = fit_conditional_information_bottleneck(
             counts,
@@ -651,12 +955,26 @@ def select_information_bottleneck(
             labels=labels,
             contexts=contexts,
         )
-        if total:
-            validation_nll = candidate_loss / total
-            baseline_nll = baseline_loss / total
-            excess = validation_nll - baseline_nll
+        hard_references = _hard_reference_matrix(
+            full_model,
+            counts,
+            obs,
+            label_col=label_col,
+            donor_col=donor_col,
+            prior_mass=prior_mass,
+            eps=eps,
+            huber_delta=huber_delta,
+        )
+        collinearity, _ = _likelihood_collinearity(
+            hard_references, geometry.gene_weights
+        )
+        n_profiles = int(totals["n_profiles"])
+        if n_profiles:
+            values = {key: totals[key] / n_profiles for key in totals if key != "n_profiles"}
+            excess = values["candidate"] - values["baseline"]
         else:
-            validation_nll = baseline_nll = excess = np.nan
+            values = {key: np.nan for key in totals if key != "n_profiles"}
+            excess = np.nan
         rows.append(
             {
                 "beta": beta,
@@ -667,48 +985,79 @@ def select_information_bottleneck(
                 "source_information": full_model.source_information,
                 "retained_information": full_model.retained_information,
                 "retained_fraction": full_model.retained_fraction,
-                "validation_nll": validation_nll,
-                "uncompressed_validation_nll": baseline_nll,
-                "excess_validation_nll": excess,
+                "validation_loss": values["candidate"],
+                "validation_clr_loss": values["candidate_clr"],
+                "validation_multiscale_loss": values["candidate_multiscale"],
+                "uncompressed_validation_loss": values["baseline"],
+                "uncompressed_clr_loss": values["baseline_clr"],
+                "uncompressed_multiscale_loss": values["baseline_multiscale"],
+                "excess_validation_loss": excess,
+                "condition_number": collinearity["condition_number"],
+                "min_eigenvalue": collinearity["min_eigenvalue"],
+                "effective_rank": collinearity["effective_rank"],
+                "max_pairwise_cosine": collinearity["max_pairwise_cosine"],
                 "valid_folds": valid_folds,
+                "validation_profiles": n_profiles,
                 "converged": full_model.converged,
             }
         )
 
     curve = pd.DataFrame(rows)
-    has_cv = curve.excess_validation_nll.notna()
+    has_cv = curve.excess_validation_loss.notna()
+    identifiable = (curve.n_clusters == 1) | (
+        (curve.condition_number <= max_condition_number)
+        & (curve.min_eigenvalue >= min_eigenvalue)
+    )
     eligible = (
         has_cv
-        & (curve.excess_validation_nll <= max_excess_nll)
+        & (curve.excess_validation_loss <= max_excess_loss)
         & (curve.retained_fraction >= min_retained_fraction)
+        & identifiable
     )
     if eligible.any():
         selected_index = (
             curve.loc[eligible]
             .sort_values(
-                ["n_clusters", "rate", "excess_validation_nll", "beta"],
-                ascending=[True, True, True, True],
+                ["n_clusters", "rate", "excess_validation_loss", "condition_number", "beta"],
+                ascending=[True, True, True, True, True],
             )
             .index[0]
         )
     elif has_cv.any():
-        selected_index = (
-            curve.loc[has_cv]
-            .sort_values(
-                ["excess_validation_nll", "n_clusters", "retained_fraction"],
-                ascending=[True, True, False],
-            )
-            .index[0]
-        )
+        retained = curve.retained_fraction >= min_retained_fraction
+        constrained = has_cv & retained & identifiable
+        if constrained.any():
+            pool = curve.loc[constrained]
+            order = [
+                "excess_validation_loss",
+                "n_clusters",
+                "condition_number",
+            ]
+            ascending = [True, True, True]
+        else:
+            valid_geometry = has_cv & identifiable
+            pool = curve.loc[valid_geometry] if valid_geometry.any() else curve.loc[has_cv]
+            order = [
+                "retained_fraction",
+                "excess_validation_loss",
+                "condition_number",
+                "n_clusters",
+            ]
+            ascending = [False, True, True, True]
+        selected_index = pool.sort_values(order, ascending=ascending).index[0]
     else:
-        eligible = curve.retained_fraction >= min_retained_fraction
-        pool = curve.loc[eligible] if eligible.any() else curve
-        selected_index = (
-            pool.sort_values(
-                ["n_clusters", "retained_fraction", "rate"],
-                ascending=[True, False, True],
-            ).index[0]
+        eligible = (
+            (curve.retained_fraction >= min_retained_fraction) & identifiable
         )
+        if eligible.any():
+            pool = curve.loc[eligible]
+            order = ["n_clusters", "retained_fraction", "rate"]
+            ascending = [True, False, True]
+        else:
+            pool = curve.loc[identifiable] if identifiable.any() else curve
+            order = ["retained_fraction", "n_clusters", "rate"]
+            ascending = [False, True, True]
+        selected_index = pool.sort_values(order, ascending=ascending).index[0]
     selected_beta = float(curve.loc[selected_index, "beta"])
     selected_beta_index = betas.index(selected_beta)
     selected_model = fit_conditional_information_bottleneck(
@@ -761,8 +1110,13 @@ def build_rna_reference_ib(
     memmap_path=None,
     ib_betas: Sequence[float] = (0.5, 1, 2, 4, 8, 16, 32, 64),
     ib_validation_folds: int = 3,
-    ib_max_excess_nll: float = 1e-3,
+    ib_max_excess_loss: float = 1e-2,
     ib_min_retained_fraction: float = 0.98,
+    genomic_window_sizes: Sequence[int] = (51, 101, 201),
+    genomic_multiscale_weight: float = 1.0,
+    center_huber_delta: float = 1.5,
+    ib_max_condition_number: float = 1e6,
+    ib_min_eigenvalue: float = 1e-4,
     ib_restarts: int = 3,
     ib_max_iter: int = 1000,
     ib_tol: float = 1e-9,
@@ -815,17 +1169,17 @@ def build_rna_reference_ib(
        a Dirichlet-smoothed gene-probability distribution. Donor profiles are
        averaged within label and context, so donors rather than individual
        cells are the biological replicates.
-    5. Within every assay and biological family, fit the CIB over
-       ``ib_betas``. For each beta, donor-blocked validation compares the
-       compressed predictor with the corresponding uncompressed
-       label-by-context predictor.
-    6. Select the solution with the fewest hard clusters that both retains at
-       least ``ib_min_retained_fraction`` of ``I(L; G | C)`` and increases
-       held-out negative log likelihood by no more than
-       ``ib_max_excess_nll`` nats per count. Ties favor lower information rate,
-       then lower validation loss. If no candidate satisfies both constraints,
-       the best held-out predictive solution is used. If donor folds cannot be
-       evaluated, selection falls back to the empirical rate--distortion curve.
+    5. Within every assay and biological family, fit the formal CIB over
+       ``ib_betas``. The CIB is a candidate generator; its KL decoder is not
+       emitted as the final reference.
+    6. Refit every hard candidate with a robust Aitchison/Huber donor center.
+       Donor-blocked validation compares this deployed estimator with an
+       uncompressed reference using equal-chromosome clr error and
+       equal-window genomic-track error at every requested window scale.
+       Candidates must retain ``ib_min_retained_fraction`` of
+       ``I(L; G | C)`` and satisfy likelihood-geometry identifiability bounds.
+       Among candidates whose excess validation loss is at most
+       ``ib_max_excess_loss``, the solution with the fewest clusters is chosen.
     7. Collapse numerically equivalent bottleneck codewords and convert the
        soft posterior ``q(Z | L)`` to a hard label mapping. Labels without an
        initial QC-passing pseudobulk are retained in a parent-family fallback
@@ -838,10 +1192,10 @@ def build_rna_reference_ib(
        Emit context-specific references when the context-information ratio
        exceeds ``tissue_ratio_threshold``; otherwise emit one pan-context
        reference.
-    10. Construct each final reference by normalizing donors independently,
-        taking the component-wise median in log-probability space, exponentiating
-        and renormalizing. Every retained donor therefore contributes equally
-        to the final profile, irrespective of its cell or library count.
+    10. Construct each final reference with the same robust Aitchison/Huber
+        donor center used during validation. Huber weights limit the influence
+        of atypical donors while donor-level normalization prevents cell or
+        library depth from determining the center.
 
     Parameters
     ----------
@@ -943,9 +1297,9 @@ def build_rna_reference_ib(
         zero probabilities and stabilizes KL divergences without making the
         total prior strength depend on the number of genes.
     eps : float, default: 1e-12
-        Numerical lower bound used in logarithms, KL calculations and the final
-        log-median consensus. It should be positive and much smaller than
-        biologically meaningful gene probabilities.
+        Numerical lower bound used in logarithms, KL calculations, clr
+        transforms and likelihood-geometry diagnostics. It should be positive
+        and much smaller than biologically meaningful gene probabilities.
     min_cell_counts : int, default: 100
         Minimum mapped autosomal raw counts required for an individual cell
         before it contributes to a pseudobulk.
@@ -984,19 +1338,37 @@ def build_rna_reference_ib(
         is evaluable, selection uses the full-data rate--distortion curve rather
         than held-out likelihood. Values of 3--5 are generally appropriate;
         the number cannot exceed the practical donor support of rare labels.
-    ib_max_excess_nll : float, default: 1e-3
-        Largest permitted increase in held-out negative log likelihood, in
-        natural-log units per raw count, relative to an uncompressed
-        label-by-context predictor. Smaller values are more conservative. A
-        negative value observed in diagnostics means that compression improved
-        held-out prediction through shrinkage, although the argument itself
-        must be non-negative.
+    ib_max_excess_loss : float, default: 0.01
+        Largest permitted increase in held-out deployment loss relative to the
+        uncompressed robust reference. The loss is the equal-chromosome mean
+        squared clr error plus ``genomic_multiscale_weight`` times the mean
+        equal-window genomic-track error. Every held-out donor pseudobulk has
+        equal weight. Smaller values are more conservative.
     ib_min_retained_fraction : float, default: 0.98
         Minimum acceptable fraction of conditional label--gene information:
         ``I(Z; G | C) / I(L; G | C)``. Must lie in ``(0, 1]``. Values near one
         protect subtle transcriptomic subtypes; lower values permit stronger
         compression. For a conservative reference, consider 0.99 together with
-        a stricter ``ib_max_excess_nll``.
+        a stricter ``ib_max_excess_loss``.
+    genomic_window_sizes : sequence of int, default: ``(51, 101, 201)``
+        Positive numbers of consecutive genes used for multiscale validation.
+        Windows are created separately within each chromosome. Chromosomes
+        receive equal total weight, as do windows within a chromosome, so gene-
+        rich chromosomes cannot dominate model selection.
+    genomic_multiscale_weight : float, default: 1.0
+        Non-negative multiplier applied to the mean multiscale genomic-track
+        loss before it is added to the clr reconstruction loss.
+    center_huber_delta : float, default: 1.5
+        Huber transition in root-mean-square clr units. Donors closer than this
+        threshold receive unit weight; more distant donors receive weights
+        inversely proportional to their clr distance from the current center.
+    ib_max_condition_number : float, default: 1e6
+        Largest accepted condition number of the candidate reference matrix in
+        the local Gauss--Newton geometry of ``log(R @ pi)`` at an equal mixture.
+    ib_min_eigenvalue : float, default: 1e-4
+        Smallest accepted eigenvalue in the simplex tangent space. This
+        absolute E-optimality bound detects nearly identical pairs even when a
+        one-dimensional tangent space has condition number one.
     ib_restarts : int, default: 3
         Number of initializations used for each beta and validation fold. The
         lowest CIB objective is retained. The objective is non-convex, so more
@@ -1058,13 +1430,19 @@ def build_rna_reference_ib(
         - ``ib_models``: selected beta, rate, distortion, source information,
           retained information, retained fraction, hard/effective cluster counts
           and convergence status for every modeled assay--family pair;
-        - ``ib_curves``: complete beta-wise rate--distortion and held-out
-          prediction curve. ``selected`` marks the chosen row;
+        - ``ib_curves``: complete beta-wise rate--distortion, genome-aware
+          held-out loss and likelihood-geometry identifiability curve;
+          ``selected`` marks the chosen row;
         - ``context_tests``: downstream pan-context versus context-specific
           decisions;
         - ``initial_pseudobulk_qc`` and ``merged_pseudobulk_qc``: support and QC
           status before and after compression;
         - ``global_donor_noise``: assay-specific empirical donor JSD;
+        - ``reference_collinearity``: global Gauss--Newton condition number,
+          tangent-space eigenvalues, effective rank and maximum pairwise
+          weighted cosine for the emitted reference matrix;
+        - ``reference_collinearity_pairs``: the 100 most collinear emitted
+          reference pairs in the same likelihood-weighted geometry;
         - ``feature_mapping``: input-feature-to-gene mapping and mapping status;
         - ``run_info``: algorithm version, dimensions, thresholds, random seed,
           cell-QC summary and family-map checksum.
@@ -1087,8 +1465,13 @@ def build_rna_reference_ib(
     -----
     This procedure is donor-balanced but not a complete hierarchical generative
     model. Inter-donor variation is handled through independent donor profiles,
-    blocked validation, empirical donor-noise estimates and a robust final
+    blocked validation, empirical donor-noise estimates and a robust clr-space
     consensus; no explicit donor random-effect distribution is fitted.
+
+    The formal KL-CIB is retained as a candidate generator. Candidate selection
+    and final estimation instead use a task-aware log-ratio geometry. The
+    multiscale addition therefore makes the complete pipeline a genome-aware
+    conditional rate--distortion procedure, rather than a pure CIB optimizer.
 
     ``beta`` is a Lagrange multiplier, not a probability, p-value or direct
     requested cluster count. The final number of references emerges from the
@@ -1147,8 +1530,10 @@ def build_rna_reference_ib(
     ...     min_donors=2,
     ...     ib_betas=(1, 2, 4, 8, 16, 32, 64, 128),
     ...     ib_validation_folds=5,
-    ...     ib_max_excess_nll=5e-4,
+    ...     ib_max_excess_loss=5e-3,
     ...     ib_min_retained_fraction=0.99,
+    ...     genomic_window_sizes=(51, 101, 201),
+    ...     center_huber_delta=1.5,
     ...     ib_restarts=5,
     ...     random_state=42,
     ...     return_diagnostics=True,
@@ -1171,13 +1556,14 @@ def build_rna_reference_ib(
 
     >>> selected = diagnostics["ib_curves"].query("selected")
     >>> selected[["assay", "family", "beta", "n_clusters",
-    ...           "retained_fraction", "excess_validation_nll"]]
+    ...           "retained_fraction", "excess_validation_loss",
+    ...           "condition_number"]]
     >>> uncertain = diagnostics["cell_type_map"].query(
     ...     "assignment_probability < 0.9"
     ... )
 
-    A negative ``excess_validation_nll`` indicates that the compressed model
-    predicted held-out donor counts better than the uncompressed reference.
+    A negative ``excess_validation_loss`` indicates that the compressed model
+    predicted held-out donor log-ratio profiles better than the uncompressed reference.
     Such improvement is consistent with beneficial shrinkage, but should still
     be confirmed using independent diploid target data and downstream
     SpaceNumbat residual and false-positive CNA metrics.
@@ -1191,7 +1577,6 @@ def build_rna_reference_ib(
         _gene_mapping,
         _global_donor_noise,
         _label,
-        _robust_donor_consensus,
         _test_context_information,
         _valid,
     )
@@ -1204,6 +1589,40 @@ def build_rna_reference_ib(
         raise ValueError("Cell and feature identifiers must be unique.")
     if layer is not None and layer not in adata.layers:
         raise ValueError(f"AnnData has no layer {layer!r}.")
+    for name, value in {
+        "min_cells": min_cells,
+        "min_counts": min_counts,
+        "min_donors": min_donors,
+        "min_context_donors": min_context_donors,
+        "min_cell_counts": min_cell_counts,
+        "min_cell_genes": min_cell_genes,
+        "ib_validation_folds": ib_validation_folds,
+        "ib_restarts": ib_restarts,
+        "ib_max_iter": ib_max_iter,
+    }.items():
+        if value < 1 or int(value) != value:
+            raise ValueError(f"{name} must be a positive integer.")
+    for name, value in {
+        "tissue_ratio_threshold": tissue_ratio_threshold,
+        "noise_floor": noise_floor,
+        "prior_mass": prior_mass,
+        "eps": eps,
+        "center_huber_delta": center_huber_delta,
+        "ib_tol": ib_tol,
+        "ib_decoder_prior": ib_decoder_prior,
+    }.items():
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive.")
+    if not np.isfinite(genomic_multiscale_weight) or genomic_multiscale_weight < 0:
+        raise ValueError("genomic_multiscale_weight must be finite and non-negative.")
+    if not np.isfinite(ib_max_excess_loss) or ib_max_excess_loss < 0:
+        raise ValueError("ib_max_excess_loss must be finite and non-negative.")
+    if not 0 < ib_min_retained_fraction <= 1:
+        raise ValueError("ib_min_retained_fraction must lie in (0, 1].")
+    if not np.isfinite(ib_max_condition_number) or ib_max_condition_number <= 1:
+        raise ValueError("ib_max_condition_number must be finite and greater than one.")
+    if not np.isfinite(ib_min_eigenvalue) or ib_min_eigenvalue < 0:
+        raise ValueError("ib_min_eigenvalue must be finite and non-negative.")
     required = [donor_col, tissue_col, cell_type_col, assay_col]
     if anatomy_col is not None:
         required.append(anatomy_col)
@@ -1302,14 +1721,20 @@ def build_rna_reference_ib(
                 selected = select_information_bottleneck(
                     family_counts,
                     family_obs,
+                    gene_chrom=gene_gtf.CHROM.astype(str).to_numpy(),
                     betas=ib_betas,
                     label_col="label",
                     context_col="context",
                     donor_col="donor",
                     prior_mass=prior_mass,
                     n_folds=ib_validation_folds,
-                    max_excess_nll=ib_max_excess_nll,
+                    max_excess_loss=ib_max_excess_loss,
                     min_retained_fraction=ib_min_retained_fraction,
+                    window_sizes=genomic_window_sizes,
+                    multiscale_weight=genomic_multiscale_weight,
+                    huber_delta=center_huber_delta,
+                    max_condition_number=ib_max_condition_number,
+                    min_eigenvalue=ib_min_eigenvalue,
                     n_restarts=ib_restarts,
                     max_iter=ib_max_iter,
                     tol=ib_tol,
@@ -1323,6 +1748,7 @@ def build_rna_reference_ib(
                 curve.insert(0, "assay", assay)
                 ib_curve_rows.append(curve)
                 model = selected.model
+                chosen = selected.curve.loc[selected.curve.selected].iloc[0]
                 ib_model_rows.append(
                     {
                         "assay": assay,
@@ -1336,6 +1762,11 @@ def build_rna_reference_ib(
                         "source_information": model.source_information,
                         "retained_information": model.retained_information,
                         "retained_fraction": model.retained_fraction,
+                        "validation_loss": chosen.validation_loss,
+                        "excess_validation_loss": chosen.excess_validation_loss,
+                        "condition_number": chosen.condition_number,
+                        "min_eigenvalue": chosen.min_eigenvalue,
+                        "effective_rank": chosen.effective_rank,
                         "converged": model.converged,
                     }
                 )
@@ -1459,11 +1890,13 @@ def build_rna_reference_ib(
                 output_groups = [("pan_context", "pan_context", type_counts, type_obs)]
 
             for scope, context, group_counts, group_obs in output_groups:
-                reference, donors_in_reference = _robust_donor_consensus(
+                reference, donors_in_reference, donor_weights = _donor_center(
                     group_counts,
                     group_obs.reset_index(drop=True),
+                    donor_col="donor",
                     prior_mass=prior_mass,
                     eps=eps,
+                    huber_delta=center_huber_delta,
                 )
                 if len(donors_in_reference) < min_donors:
                     continue
@@ -1490,6 +1923,10 @@ def build_rna_reference_ib(
                         "tissues": json.dumps(tissues),
                         "donors": json.dumps(sorted(donors_in_reference)),
                         "n_donors": len(donors_in_reference),
+                        "effective_donors": float(
+                            np.square(donor_weights.sum())
+                            / np.square(donor_weights).sum()
+                        ),
                         "n_cells": int(group_obs.n_cells.sum()),
                         "n_counts": float(group_obs.n_counts.sum()),
                         "source_cell_types": json.dumps(
@@ -1510,6 +1947,21 @@ def build_rna_reference_ib(
         raise RuntimeError("Reference profiles must be finite and positive.")
     if not np.allclose(reference.sum(axis=0), 1.0, atol=1e-12):
         raise RuntimeError("Reference normalization failed.")
+    genome_geometry = _make_genome_geometry(
+        gene_gtf.CHROM.astype(str).to_numpy(), genomic_window_sizes
+    )
+    reference_collinearity, collinearity_pairs = _likelihood_collinearity(
+        reference.to_numpy(),
+        genome_geometry.gene_weights,
+        names=reference.columns.tolist(),
+    )
+    reference_collinearity["passes_condition_bound"] = bool(
+        reference_collinearity["condition_number"] <= ib_max_condition_number
+    )
+    reference_collinearity["passes_min_eigenvalue"] = bool(
+        reference.shape[1] == 1
+        or reference_collinearity["min_eigenvalue"] >= ib_min_eigenvalue
+    )
     manifest = pd.DataFrame(manifest_rows)
     diagnostics = {
         "cell_type_map": pd.DataFrame(mapping_rows),
@@ -1525,10 +1977,12 @@ def build_rna_reference_ib(
             else pd.DataFrame()
         ),
         "global_donor_noise": pd.DataFrame(noise_rows),
+        "reference_collinearity": pd.DataFrame([reference_collinearity]),
+        "reference_collinearity_pairs": collinearity_pairs.head(100),
         "feature_mapping": feature_map,
         "run_info": {
             "builder_version": __version__,
-            "algorithm": "donor_aware_conditional_information_bottleneck",
+            "algorithm": "genome_aware_conditional_rate_distortion_bottleneck",
             "n_input_cells": int(adata.n_obs),
             "n_input_genes": int(adata.n_vars),
             "n_genes": int(reference.shape[0]),
@@ -1536,8 +1990,13 @@ def build_rna_reference_ib(
             "cell_qc": cell_qc,
             "ib_betas": list(map(float, ib_betas)),
             "ib_validation_folds": ib_validation_folds,
-            "ib_max_excess_nll": ib_max_excess_nll,
+            "ib_max_excess_loss": ib_max_excess_loss,
             "ib_min_retained_fraction": ib_min_retained_fraction,
+            "genomic_window_sizes": list(map(int, genomic_window_sizes)),
+            "genomic_multiscale_weight": genomic_multiscale_weight,
+            "center_huber_delta": center_huber_delta,
+            "ib_max_condition_number": ib_max_condition_number,
+            "ib_min_eigenvalue": ib_min_eigenvalue,
             "tissue_ratio_threshold": tissue_ratio_threshold,
             "random_state": random_state,
             "family_mapping_sha256": hashlib.sha256(
@@ -1556,5 +2015,3 @@ __all__ = [
     "select_information_bottleneck",
     "build_rna_reference_ib",
 ]
-
-
