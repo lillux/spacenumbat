@@ -757,7 +757,7 @@ def build_rna_reference_ib(
     min_cell_counts: int = 100,
     min_cell_genes: int = 100,
     max_pct_counts_mt: float | None = None,
-    chunk_size: int = 8192,
+    chunk_size: int | None = 8192,
     memmap_path=None,
     ib_betas: Sequence[float] = (0.5, 1, 2, 4, 8, 16, 32, 64),
     ib_validation_folds: int = 3,
@@ -956,10 +956,14 @@ def build_rna_reference_ib(
         Optional maximum value of ``adata.obs["pct_counts_mt"]``. When set,
         cells with missing, non-numeric or larger mitochondrial percentages are
         excluded. No mitochondrial filter is applied when ``None``.
-    chunk_size : int, default: 8192
+    chunk_size : int or None, default: 8192
         Number of cells processed in each block during feature projection,
         cell-level QC and pseudobulk construction. Reducing this value lowers
-        transient sparse-matrix memory at the cost of additional iterations.
+        transient sparse-matrix memory at the cost of additional slicing,
+        sparse-multiplication and accumulation overhead. Larger values can be
+        faster when sufficient memory is available. Pass ``None`` to process
+        all cells in one block. This affects execution strategy and peak memory,
+        not the intended statistical estimator or information-bottleneck model.
     memmap_path : path-like or None, default: None
         Optional path for the dense float64 initial pseudobulk-by-gene count
         matrix. The path must not already exist and is not a resumable cache.
@@ -1089,7 +1093,8 @@ def build_rna_reference_ib(
     ``beta`` is a Lagrange multiplier, not a probability, p-value or direct
     requested cluster count. The final number of references emerges from the
     rate--distortion curve, biological-family constraints, donor support,
-    context decisions and post-compression QC.
+    context decisions and post-compression QC. There is intentionally no
+    ``target_references`` parameter.
 
     The CIB objective is non-convex. Blahut--Arimoto iterations converge to a
     self-consistent stationary solution, not necessarily the unique global
@@ -1098,13 +1103,13 @@ def build_rna_reference_ib(
 
     Conditioning on context allows labels observed in different tissues to
     share a compressed code when context itself explains their expression
-    difference. Labels without a shared context are not automatically 
-    declared identical: their compatibility is evaluated through 
-    the learned context-conditioned decoders and pooled decoder prior.
-    Nevertheless, annotations perfectly confounded with context
+    difference. Unlike the former zero-score rule, labels without a shared
+    context are not automatically declared identical: their compatibility is
+    evaluated through the learned context-conditioned decoders and pooled
+    decoder prior. Nevertheless, annotations perfectly confounded with context
     remain only weakly identifiable and should be inspected manually.
 
-    The final context-splitting stage uses the Jensen--Shannon
+    The final context-splitting stage still uses the Jensen--Shannon
     information-to-donor-noise rule from :func:`build_rna_reference`. Thus CIB
     controls cell-type compression, while context granularity is controlled by
     ``tissue_ratio_threshold``.
@@ -1551,4 +1556,5 @@ __all__ = [
     "select_information_bottleneck",
     "build_rna_reference_ib",
 ]
+
 
