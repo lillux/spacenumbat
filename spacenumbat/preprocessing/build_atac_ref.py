@@ -4,961 +4,908 @@
 Created on Sat Aug 29 16:21:05 2026
 
 @author: carlino.calogero
-
-Build a donor-balanced scRNA reference with the ATAC reference algorithm.
-
-The algorithm is a RNA adaptation of SpaceNumbat's build_atac_ref.py:
-donor/context/type pseudobulks, within-family subtype compression, a context
-information test, and equal-donor robust final profiles.
 """
 
-#from __future__ import annotations
-
-import argparse
-import hashlib
 import itertools
-import json
-import logging
-from pathlib import Path
-import re
 
 import numpy as np
 import pandas as pd
-from scipy import sparse
-from scipy.special import rel_entr
+import scipy.sparse as sp
 
 
-log = logging.getLogger(__name__)
-__version__ = "1.0.0"
+# Biological merge families
+#
+# These define which atlas labels are ALLOWED to merge.
+# This does NOT force the merge, JSD + donor variability decide.
 
+FAMILY_MAPPING = {
 
-def _label(value):
-    return re.sub(r"\s+", " ", str(value).strip()).casefold()
+    # Fibroblasts
+    "Fibroblast (General)": "Fibroblast",
+    "Cardiac Fibroblasts": "Fibroblast",
+    "Fibroblast (Peripheral Nerve)": "Fibroblast",
+    "Fibroblast (Sk Muscle Associated)": "Fibroblast",
+    "Fibroblast (Epithelial)": "Fibroblast",
+    "Fibroblast (Gastrointestinal)": "Fibroblast",
+    "Fibroblast (Liver Adrenal)": "Fibroblast",
 
+    # Pericytes
+    "Pericyte (General) 1": "Pericyte",
+    "Pericyte (General) 2": "Pericyte",
+    "Pericyte (General) 3": "Pericyte",
+    "Pericyte (General) 4": "Pericyte",
+    "Cardiac Pericyte 1": "Pericyte",
+    "Cardiac Pericyte 2": "Pericyte",
+    "Cardiac Pericyte 3": "Pericyte",
+    "Cardiac Pericyte 4": "Pericyte",
+    "Pericyte (Esophageal Muscularis)": "Pericyte",
 
-def _assay(value):
-    value = _label(value)
-    if value in {"10x", "10x genomics", "10x chromium", "10xgenomics"}:
-        return "10x"
-    if value in {"smartseq", "smartseq2", "smart-seq", "smart-seq2", "ss2"}:
-        return "smartseq2"
-    return value
+    # Vascular smooth muscle
+    "Vascular Smooth Muscle 1": "Vascular Smooth Muscle",
+    "Vascular Smooth Muscle 2": "Vascular Smooth Muscle",
 
+    # Smooth muscle
+    "Smooth Muscle (General)": "Smooth Muscle",
+    "Smooth Muscle (Esophageal Muscularis) 1": "Smooth Muscle",
+    "Smooth Muscle (Esophageal Muscularis) 2": "Smooth Muscle",
+    "Smooth Muscle (Esophageal Muscularis) 3": "Smooth Muscle",
+    "Smooth Muscle (Esophageal Mucosal)": "Smooth Muscle",
+    "Smooth Muscle (Colon) 1": "Smooth Muscle",
+    "Smooth Muscle (Colon) 2": "Smooth Muscle",
+    "Smooth Muscle (General Gastrointestinal)": "Smooth Muscle",
+    "Smooth Muscle (GE Junction)": "Smooth Muscle",
+    "Smooth Muscle (Vaginal)": "Smooth Muscle",
+    "Smooth Muscle (Uterine)": "Smooth Muscle",
 
-def _valid(series):
-    value = series.astype("string").str.strip()
-    return value.notna() & ~value.str.casefold().isin({"", "na", "nan", "none"})
+    # General endothelial
+    "Endothelial Cell (General) 1": "Endothelial",
+    "Endothelial Cell (General) 2": "Endothelial",
+    "Endothelial Cell (General) 3": "Endothelial",
 
+    # Macrophage
+    "Macrophage (General)": "Macrophage",
+    "Macrophage (General,Alveolar)": "Macrophage",
 
-# Curated permissions to compare/merge, based on the supplied free_annotation
-# vocabulary. Membership permits a statistical comparison; it never forces a
-# merge. Unlisted labels remain singleton families.
-_FAMILIES = {
-    "CD4 T": [
-        "cd4-positive, alpha-beta t cell", "activated cd4-positive, alpha-beta t cell",
-        "naive thymus-derived cd4-positive, alpha-beta t cell",
-        "cd4-positive, alpha-beta memory t cell", "cd4-positive memory t cell",
-        "cd4-positive helper t cell", "effector cd4-positive, alpha-beta t cell",
-        "cd4-positive, alpha-beta cytotoxic t cell",
-    ],
-    "CD8 T": [
-        "cd8-positive, alpha-beta t cell", "activated cd8-positive, alpha-beta t cell",
-        "naive thymus-derived cd8-positive, alpha-beta t cell", "naive cd8-positive t cell",
-        "cd8-positive, alpha-beta memory t cell", "cd8-positive cytotoxic t cell",
-        "effector cd8-positive, alpha-beta t cell",
-        "cd8-positive, alpha-beta cytokine secreting effector t cell",
-        "cd8+, alpha-beta cytokine secreting effector t cell",
-    ],
-    "Treg": ["regulatory t cell", "naive regulatory t cell",
-             "cd4-positive, cd25-positive, alpha-beta regulatory t cell"],
-    "T follicular helper": ["t follicular helper cell"],
-    "Gamma-delta T": ["gamma-delta t cell"],
-    "NKT": ["mature nk t cell", "nk t cell", "type i nk t cell"],
-    "NK": [
-        "natural killer cell", "nk cell", "mature natural killer cell",
-        "immature natural killer cell", "pre-natural killer cell",
-        "proliferating nk cell", "uterine nk cell", "cox6a2+ nk cell", "cd160+ nk cell",
-    ],
-    "B": ["b cell", "naive b cell", "memory b cell"],
-    "Plasma": ["plasma cell", "antibody secreting cell"],
-    "Monocyte": ["monocyte", "classical monocyte", "intermediate monocyte",
-                 "non-classical monocyte"],
-    "Macrophage": [
-        "macrophage", "macrophage of small intestine", "colon macrophage",
-        "testicular macrophage (cd163+)", "tissue-resident macrophage", "muscle macrophage",
-    ],
-    "Dendritic": [
-        "dendritic cell", "myeloid dendritic cell", "conventional dendritic cell",
-        "cdc1", "cdc2", "cd1c-positive myeloid dendritic cell",
-        "cd141-positive myeloid dendritic cell", "plasmacytoid dendritic cell",
-    ],
-    "Neutrophil": ["neutrophil", "nampt neutrophil", "cd24 neutrophil"],
-    "Mast": ["mast cell"],
-    "Basophil": ["basophil"],
-    "ILC": ["innate lymphoid cell", "kit+ lymphocyte"],
-    "Thymocyte": ["thymocyte", "cd4-positive, alpha-beta thymocyte",
-                  "cd8-positive, alpha-beta thymocyte"],
-    "Hematopoietic progenitor": [
-        "hematopoietic stem cell", "hematopoietic precursor cell",
-        "myeloid progenitor", "common myeloid progenitor",
-    ],
-    "Erythroid": ["erythrocyte", "erythroid progenitor cell", "erythroid lineage cell"],
-    "Platelet": ["platelet"],
-    "Microglia": ["microglial cell", "retina - microglia"],
-    "Langerhans": ["langerhans cell"],
-    "Fibroblast": [
-        "fibroblast", "fibroblast of breast", "cd34+ fibroblasts", "alveolar fibroblast",
-        "adventitial fibroblast", "fibroblast of cardiac tissue",
-        "thymic fibroblast type 1", "thymic fibroblast type 2",
-        "endometrial stromal fibroblast", "uterine fibroblast",
-        "myometrial fibroblast", "stromal fibroblasts", "hepatic stellate cell",
-        "stellate_fibroblast",
-    ],
-    "Ovarian stroma": ["stromal cell of ovary", "theca cell"],
-    "Myofibroblast": ["myofibroblast cell"],
-    "Pericyte": ["pericyte", "mural cell", "adventitial cell"],
-    "Smooth muscle": [
-        "smooth muscle cell", "vascular associated smooth muscle cell",
-        "airway smooth muscle cell", "myometrial smooth muscle", "peritubular myoid cell",
-    ],
-    "Vascular endothelium": [
-        "endothelial cell", "vascular endothelial cell", "blood vessel endothelial cell",
-        "endothelial cell of vascular tree", "cardiac endothelial cell",
-        "endothelial cell of arteriole", "endothelial cell of venule",
-        "capillary endothelial cell", "vein endothelial cell", "arterial endothelial cell",
-        "endothelial cell of artery", "venous capillary endothelial cell",
-        "capillary aerocyte", "retinal blood vessel endothelial cell", "colon endothelial cell",
-    ],
-    "Lymphatic endothelium": ["endothelial cell of lymphatic vessel"],
-    "Mesothelial": ["mesothelial cell"],
-    "Mesenchymal progenitor": ["mesenchymal stem cell",
-                               "mesenchymal stem cell of adipose tissue",
-                               "stromal cell", "connective tissue cell"],
-    "Adipocyte": ["fat cell"],
-    "Skeletal muscle": ["muscle cell", "fast muscle cell", "slow muscle cell",
-                        "tongue muscle cell", "orbicularis oculi muscle"],
-    "Cardiac muscle": ["atrial cardiac muscle cell", "ventricular cardiac muscle cell"],
-    "Muscle satellite": ["skeletal muscle satellite stem cell"],
-    "Tendon": ["tendon cell"],
-    "Interstitial Cajal": ["interstitial cell of cajal"],
-    "Schwann": ["schwann cell"],
-    "Glial": ["glial cell", "enteroglial cell"],
-    "Neuron": ["neuron"],
-    "Prostate luminal": ["luminal epithelial cell", "ltf+ epithelial cell",
-                         "cpe high luminal epithelial cell", "cpe low luminal epithelial cell"],
-    "Prostate basal": ["basal epithelial cell", "intermediate basal-hillock epithelial cell",
-                       "hillock epithelial cell", "intermediate hillock-club epithelial cell"],
-    "Club": ["club cell", "pigr high club epithelial cell", "scgb3a1 high club epithelial cell"],
-    "Intestinal enterocyte": [
-        "enterocyte of epithelium proper of small intestine",
-        "enterocyte of epithelium proper of ileum",
-        "enterocyte of epithelium proper of duodenum",
-        "enterocyte of epithelium proper of jejunum",
-        "enterocyte of epithelium of large intestine", "mature enterocyte",
-        "crypt top colonocyte", "best4+ intestinal epithelial cell",
-    ],
-    "Intestinal goblet": ["small intestine goblet cell", "large intestine goblet cell",
-                          "goblet cell"],
-    "Paneth": ["paneth cell of epithelium of small intestine", "paneth cell of colon"],
-    "Intestinal stem/TA": [
-        "intestinal crypt stem cell of small intestine",
-        "intestinal crypt stem cell of large intestine",
-        "transit amplifying cell of small intestine", "transit amplifying cell of colon",
-    ],
-    "Intestinal tuft": ["intestinal tuft cell", "tuft cell of colon"],
-    "Enteroendocrine": ["enteroendocrine cell", "enteroendocrine cell of small intestine",
-                        "enterochromaffin-like cell", "type l enteroendocrine cell"],
-    "Mammary basal": ["basal cell"],
-    "Mammary luminal": [
-        "secretory luminal epithelial cell of mammary gland",
-        "hr positive luminal epithelial cell of mammary gland",
-        "progenitor cell of mammary luminal epithelium",
-    ],
-    "Pancreatic duct": ["pancreatic ductal cell"],
-    "Pancreatic acinar": ["pancreatic acinar cell"],
-    "Pancreatic alpha": ["pancreatic a cell"],
-    "Pancreatic beta": ["type b pancreatic cell"],
-    "Pancreatic delta": ["pancreatic d cell"],
-    "Pancreatic PP": ["pancreatic pp cell"],
-    "Pancreatic stellate": ["pancreatic stellate cell"],
-    "Hepatocyte": ["hepatocyte"],
-    "Cholangiocyte": ["biliary epithelial cell", "intrahepatic cholangiocyte"],
-    "Urothelial": ["bladder urothelial cell", "basal bladder urothelial cell",
-                   "intermediate bladder urothelial cell", "luminal bladder urothelial cell"],
-    "Airway ciliated": ["lung ciliated cell", "ciliated columnar cell of tracheobronchial tree",
-                        "ciliated epithelial cell"],
-    "Airway goblet": ["respiratory goblet cell", "tracheal goblet cell", "mucus secreting cell"],
-    "Airway serous": ["serous cell of epithelium of bronchus",
-                      "serous cell of epithelium of trachea"],
-    "Ionocyte": ["ionocyte", "pulmonary ionocyte"],
-    "Alveolar type I": ["type i pneumocyte"],
-    "Alveolar type II": ["type ii pneumocyte"],
-    "Keratinocyte": ["krt epithelial", "stratified squamous epithelial cell",
-                     "corneal and limbal epithelium"],
-    "Sebocyte": ["sebum secreting cell", "sebocytes"],
-    "Melanocyte": ["melanocyte"],
-    "Salivary acinar": ["acinar cell of salivary gland",
-                        "sero-mucinous acinar cell of salivary gland",
-                        "serous acinar cell of salivary gland",
-                        "mucinous acinar cell of salivary gland"],
-    "Salivary duct": ["duct epithelial cell", "striated duct epithelial cell",
-                      "intercalated duct cell of salivary gland",
-                      "interlobular duct cell of salivary gland"],
-    "Myoepithelial": ["myoepithelial cell"],
-    "Uterine epithelium": ["epithelial cell of uterus", "unciliated epithelium"],
-    "Thymic epithelium": ["medullary thymic epithelial cell",
-                          "neuro-medullary thymic epithelial cell",
-                          "myo-medullary thymic epithelial cell"],
-    "Retinal photoreceptor": ["retina - photoreceptor cell", "eye photoreceptor cell"],
-    "Muller glia": ["retina - muller glia", "mueller cell"],
-    "Retinal neuron": ["retinal bipolar neuron", "retina - horizontal cell",
-                       "retina - ganglion cell"],
-    "Retinal pigment epithelium": ["retinal pigment epithelial cell"],
-    "Radial glia": ["radial glia progenitor cell", "radial glial cell"],
-    "Corneal epithelium": ["corneal epithelial cell", "conjunctival epithelial cell"],
-    "Corneal stroma": ["keratocyte", "limbal stromal cell",
-                       "cornea - mesenchymal cell - stromal keratinocytes"],
-    "Lacrimal": ["lacrimal gland functional unit cell"],
-    "Vestibular support": ["supporting cell of vestibular epithelium", "vestibular dark cell"],
-    "Ovarian granulosa": ["granulosa cell"],
-    "Ovarian epithelium": ["ovarian surface epithelial cell", "glandular epithelial cell"],
-    "Cycling epithelial": ["cycling epithelial cell"],
+    # Closely related numbered populations
+    "Pancreatic Alpha Cell 1": "Pancreatic Alpha",
+    "Pancreatic Alpha Cell 2": "Pancreatic Alpha",
+
+    "Pancreatic Beta Cell 1": "Pancreatic Beta",
+    "Pancreatic Beta Cell 2": "Pancreatic Beta",
+
+    "Mammary Luminal Epithelial Cell 1": "Mammary Luminal Epithelial",
+    "Mammary Luminal Epithelial Cell 2": "Mammary Luminal Epithelial",
+
+    "Keratinocyte 1": "Keratinocyte",
+    "Keratinocyte 2": "Keratinocyte",
+
+    "Astrocyte 1": "Astrocyte",
+    "Astrocyte 2": "Astrocyte",
 }
 
-FAMILY_MAPPING = {_label(cell_type): family for family, cell_types in _FAMILIES.items()
-                  for cell_type in cell_types}
+
+# Cosmetic names only. These do not define merge families.
+CLEAN_NAMES = {
+    "T Lymphocyte 1 (CD8+)": "CD8 T",
+    "T lymphocyte 2 (CD4+)": "CD4 T",
+    "Naive T cell": "Naive T",
+    "Natural Killer T Cell": "NKT",
+    "Memory B Cell": "Memory B",
+    "Plasma Cell": "Plasma",
+    "Mast Cell": "Mast",
+}
 
 
-EXCLUDE_CELL_TYPES = {_label(x) for x in {
-    "t cells-b cell-nk cell", "epithelial and mesenchymal population",
-    "schwann cell or melanocyte", "melanocyte or limbal stem cell",
-    "smooth muscle_pericyte", "myofibroblast cell and pericyte",
-    "Monocyte_Macrophage", "theca_stroma", "follicle", "cycling cell",
-    "cycling epithelial cell", "proliferating nk cell", "erythrocyte", "platelet",
-    "immune cell", "myeloid cell", "hematopoietic cell", "leukocyte", "lymphocyte",
-    "myeloid leukocyte", "granulocyte", "epithelial cell", "glandular cell",
-    "kidney epithelial cell", "salivary gland cell", "male germ cell",
-    "round spermatid", "elongating spermatid", "spermatid", "spermatocyte",
-    "Mixed population of spermatocytes", "pachytene spermatocyte",
-    "preleptotene spermatocytes", "leptotene_zygotene spermatocyte",
-    "diplotene spermatocyte", "spermatogonium", "spermatogonial stem cell", "oocyte",
-}}
+# Composite populations that should not define a diploid baseline.
+EXCLUDE_CELL_TYPES = {
+    "Alverolar Type 2,Immune",
+    "CNS,Enteric Neuron",
+}
 
 
-def _gene_mapping(adata, gtf, gene_col):
-    required = {"gene", "CHROM", "gene_start", "gene_end"}
-    missing = required - set(gtf.columns)
-    if missing:
-        raise ValueError(f"gtf is missing {sorted(missing)}")
-    gtf = gtf.copy()
-    gtf["gene"] = gtf.gene.astype(str)
-    gtf["CHROM"] = gtf.CHROM.astype(str).str.replace(r"^chr", "", regex=True)
-    gtf = gtf[gtf.CHROM.isin({str(i) for i in range(1, 23)})].copy()
-    for column in ["gene_start", "gene_end"]:
-        gtf[column] = pd.to_numeric(gtf[column], errors="raise").astype(np.int64)
-    gtf = gtf.drop_duplicates()
-    if gtf.gene.duplicated().any():
-        raise ValueError("gtf must contain one unambiguous row per gene.")
-    gtf = (gtf.assign(_chrom=gtf.CHROM.astype(int))
-           .sort_values(["_chrom", "gene_start", "gene_end"], kind="stable")
-           .drop(columns="_chrom").reset_index(drop=True))
-    aliases = {gene: gene for gene in gtf.gene}
-    if "gene_ensembl" in gtf:
-        ensembl = gtf.gene_ensembl.astype("string").str.replace(r"\.\d+$", "", regex=True)
-        for identifier, symbol in zip(ensembl, gtf.gene):
-            if pd.notna(identifier):
-                aliases[str(identifier)] = symbol
-    if gene_col is not None and gene_col not in adata.var:
-        raise ValueError(f"adata.var lacks gene_col={gene_col!r}")
-    source = (pd.Series(adata.var_names.astype(str), dtype="string") if gene_col is None
-              else adata.var[gene_col].astype("string").reset_index(drop=True))
-    source = source.str.replace(r"^(ENSG\d+)\.\d+$", r"\1", regex=True)
-    mapped = source.map(aliases)
-    feature_map = pd.DataFrame({"input_feature": np.asarray(adata.var_names, str),
-                                "input_identifier": source, "gene": mapped})
-    feature_map["status"] = np.where(mapped.notna(), "mapped", "unmapped_or_non_autosomal")
-    feature_map["n_input_columns_for_gene"] = mapped.map(mapped.value_counts()).fillna(0).astype(int)
-    gtf = gtf[gtf.gene.isin(mapped.dropna())].reset_index(drop=True)
-    if len(gtf) < 2:
-        raise ValueError("Fewer than two autosomal genes matched the reference annotation.")
-    rows = np.flatnonzero(mapped.notna())
-    cols = pd.Index(gtf.gene).get_indexer(mapped.iloc[rows])
-    projection = sparse.csr_matrix((np.ones(len(rows)), (rows, cols)),
-                                   shape=(adata.n_vars, len(gtf)))
-    return gtf, projection, feature_map
 
+# Basic aggregation
 
-def _prob(counts, prior_mass):
-    counts = np.asarray(counts, dtype=np.float64)
-    depth = counts.sum(axis=1, keepdims=True)
-    if np.any(depth <= 0):
-        raise ValueError("A pseudobulk contains zero mapped counts.")
-    return (counts + prior_mass / counts.shape[1]) / (depth + prior_mass)
+def _aggregate_rows(X, obs, by):
+    """Sum rows of a sparse matrix according to metadata groups."""
 
-
-def _kl(p, q):
-    return float(rel_entr(p, q).sum())
-
-
-def _js(p, q, weight=0.5):
-    p = np.asarray(p, float); p /= p.sum()
-    q = np.asarray(q, float); q /= q.sum()
-    center = weight * p + (1.0 - weight) * q
-    return max(0.0, weight * _kl(p, center) + (1.0 - weight) * _kl(q, center))
-
-
-def _generalized_js(profiles, weights=None):
-    profiles = np.asarray(profiles, float)
-    profiles /= profiles.sum(axis=1, keepdims=True)
-    n_profiles = profiles.shape[0]
-    weights = (np.full(n_profiles, 1 / n_profiles) if weights is None
-               else np.asarray(weights, float))
-    weights /= weights.sum()
-    center = np.sum(weights[:, None] * profiles, axis=0)
-    return float(sum(w * _kl(p, center) for w, p in zip(weights, profiles)))
-
-
-def _pairwise_js(profiles):
-    return [_js(profiles[i], profiles[j])
-            for i, j in itertools.combinations(range(len(profiles)), 2)]
-
-
-def _aggregate_rows(counts, obs, by):
     keys = pd.MultiIndex.from_frame(obs[by].astype("string"))
-    codes, groups = pd.factorize(keys, sort=True)
-    group_matrix = sparse.csr_matrix((np.ones(len(codes)), (codes, np.arange(len(codes)))),
-                                     shape=(len(groups), len(codes)))
-    aggregated = np.asarray(group_matrix @ np.asarray(counts, float))
-    result = groups.to_frame(index=False); result.columns = by
-    weights = obs.n_cells.to_numpy(float) if "n_cells" in obs else np.ones(len(obs))
-    result["n_cells"] = np.bincount(codes, weights=weights).astype(int)
-    result["n_counts"] = aggregated.sum(axis=1)
-    return aggregated, result
+    codes, groups = pd.factorize(keys, sort=False,)
+    G = sp.csr_matrix((np.ones(len(codes), dtype=np.float64), (codes, np.arange(len(codes)))),
+                      shape=(len(groups), len(codes)))
 
+    X_agg = (G @ X).tocsr()
 
-def _aggregate_counts(adata, metadata, projection, *, layer, chunk_size,
-                      min_cell_counts, min_cell_genes, max_pct_counts_mt, memmap_path):
-    by = ["assay", "context", "family", "label", "donor"]
-    selected = metadata._keep.to_numpy(bool)
-    keys = pd.MultiIndex.from_frame(metadata.loc[selected, by])
-    selected_codes, groups = pd.factorize(keys, sort=True)
-    pb_obs = groups.to_frame(index=False); pb_obs.columns = by
-    codes = np.full(adata.n_obs, -1, dtype=np.int64); codes[selected] = selected_codes
-    shape = (len(groups), projection.shape[1])
-    if memmap_path is None:
-        counts = np.zeros(shape, dtype=np.float64)
+    obs_agg = groups.to_frame(index=False)
+    obs_agg.columns = by
+
+    if "n_cells" in obs:
+        weights = obs["n_cells"].to_numpy(dtype=float)
     else:
-        memmap_path = Path(memmap_path)
-        if memmap_path.exists():
-            raise FileExistsError(f"Refusing to overwrite {memmap_path}")
-        memmap_path.parent.mkdir(parents=True, exist_ok=True)
-        counts = np.lib.format.open_memmap(memmap_path, mode="w+", dtype=np.float64, shape=shape)
-        counts[:] = 0
-    n_cells = np.zeros(len(groups), dtype=np.int64)
-    qc = {"metadata_selected": int(selected.sum()), "passed_count_qc": 0,
-          "failed_count_qc": 0}
-    matrix = adata.X if layer is None else adata.layers[layer]
-    # ``None`` deliberately selects a single full-matrix block.  This changes
-    # peak memory and loop overhead only; grouping and QC semantics are shared
-    # with the chunked path.
-    if chunk_size is not None and (chunk_size < 1 or int(chunk_size) != chunk_size):
-        raise ValueError("chunk_size must be a positive integer or None.")
-    block_size = max(adata.n_obs, 1) if chunk_size is None else int(chunk_size)
-    for start in range(0, adata.n_obs, block_size):
-        end = min(start + block_size, adata.n_obs)
-        use = codes[start:end] >= 0
-        if not use.any():
-            continue
-        x = sparse.csr_matrix(matrix[start:end, :])[use].astype(np.float64)
-        if x.data.size and (not np.isfinite(x.data).all() or np.any(x.data < 0)
-                            or np.any(np.abs(x.data - np.rint(x.data)) > 1e-6)):
-            raise ValueError("Selected expression values must be finite nonnegative raw integers.")
-        x = (x @ projection).tocsr()
-        total = np.asarray(x.sum(axis=1)).ravel()
-        good = (total >= min_cell_counts) & (x.getnnz(axis=1) >= min_cell_genes) & (total > 0)
-        if max_pct_counts_mt is not None:
-            mt = pd.to_numeric(adata.obs.iloc[start:end].loc[use, "pct_counts_mt"],
-                               errors="coerce").to_numpy()
-            good &= np.isfinite(mt) & (mt <= max_pct_counts_mt)
-        qc["passed_count_qc"] += int(good.sum()); qc["failed_count_qc"] += int((~good).sum())
-        batch_codes = codes[start:end][use][good]
-        if not len(batch_codes):
-            continue
-        active, inverse = np.unique(batch_codes, return_inverse=True)
-        grouping = sparse.csr_matrix((np.ones(len(inverse)), (inverse, np.arange(len(inverse)))),
-                                     shape=(len(active), len(inverse)))
-        counts[active] += (grouping @ x[good]).toarray()
-        n_cells[active] += np.bincount(inverse, minlength=len(active))
-    pb_obs["n_cells"] = n_cells; pb_obs["n_counts"] = np.asarray(counts.sum(axis=1)).ravel()
-    return counts, pb_obs, qc
+        weights = np.ones(len(obs))
+
+    obs_agg["n_cells"] = np.bincount(codes, weights=weights,).astype(int)
+    obs_agg["n_fragments"] = np.asarray(X_agg.sum(axis=1)).ravel()
+
+    return X_agg, obs_agg
 
 
-def _donor_profiles(counts, obs, prior_mass):
-    donor_counts, donor_obs = _aggregate_rows(counts, obs.reset_index(drop=True), ["donor"])
-    return _prob(donor_counts, prior_mass), donor_obs
+def _normalize_rows(X):
+    """Convert count pseudobulks into probability distributions."""
+
+    depth = np.asarray(X.sum(axis=1)).ravel().astype(float)
+
+    if np.any(depth <= 0):
+        raise ValueError("A pseudobulk contains zero fragments.")
+
+    return X.multiply(1.0 / depth[:, None]).toarray()
 
 
-def _global_donor_noise(counts, obs, prior_mass, noise_floor):
-    values = []
-    for _, idx in obs.groupby(["label", "context"], sort=False).indices.items():
-        profiles, _ = _donor_profiles(counts[np.asarray(idx)], obs.iloc[idx], prior_mass)
-        values.extend(_pairwise_js(profiles))
-    return max(float(np.median(values)), noise_floor) if values else noise_floor
+def _donor_profiles(X, obs, donor_col):
+    """
+    Aggregate rows belonging to the same donor and normalize each donor
+    independently.
+    """
+
+    X_donor, donor_obs = _aggregate_rows(X,
+                                         obs.reset_index(drop=True),
+                                         [donor_col])
+    P = _normalize_rows(X_donor)
+
+    return P, donor_obs
 
 
-def _within_context_donor_noise(counts, obs, prior_mass):
-    values = []
-    for _, idx in obs.groupby("context", sort=False).indices.items():
-        profiles, _ = _donor_profiles(counts[np.asarray(idx)], obs.iloc[idx], prior_mass)
-        values.extend(_pairwise_js(profiles))
-    return float(np.median(values)) if values else np.nan
+# Information-theoretic distances
+
+def _kl_divergence(p, q):
+    """KL divergence in natural-log units (nats)."""
+
+    mask = p > 0
+
+    return float(np.sum(p[mask]* np.log(p[mask] / q[mask])))
 
 
-def _subtype_pair_score(counts, obs, cluster_a, cluster_b, *, prior_mass,
-                        fallback_noise, noise_floor):
-    mask_a = obs.label.isin(cluster_a); mask_b = obs.label.isin(cluster_b)
-    shared = sorted(set(obs.loc[mask_a, "context"]) & set(obs.loc[mask_b, "context"]))
-    if not shared:
-        return {"between_js": 0.0, "donor_noise": fallback_noise, "ratio": 0.0,
-                "shared_contexts": 0, "reason": "no_shared_context"}
-    between, weights, donor_noise = [], [], []
-    for context in shared:
-        a = (mask_a & obs.context.eq(context)).to_numpy()
-        b = (mask_b & obs.context.eq(context)).to_numpy()
-        pa, _ = _donor_profiles(counts[a], obs.loc[a], prior_mass)
-        pb, _ = _donor_profiles(counts[b], obs.loc[b], prior_mass)
-        weight = len(pa) / (len(pa) + len(pb))
-        between.append(_js(pa.mean(axis=0), pb.mean(axis=0), weight=weight))
-        weights.append(min(len(pa), len(pb)))
-        donor_noise.extend(_pairwise_js(pa)); donor_noise.extend(_pairwise_js(pb))
-    noise = max(float(np.median(donor_noise)) if donor_noise else fallback_noise, noise_floor)
-    between_js = float(np.average(between, weights=weights))
-    return {"between_js": between_js, "donor_noise": noise,
-            "ratio": between_js / noise, "shared_contexts": len(shared), "reason": "observed"}
-
-
-def _agglomerate_family(counts, obs, labels, family, *, prior_mass,
-                        global_noise, ratio_threshold, noise_floor):
-    clusters = [frozenset([label]) for label in sorted(labels)]
-    family_noise = _within_context_donor_noise(counts, obs, prior_mass)
-    if not np.isfinite(family_noise):
-        family_noise = global_noise
-    history = []
-    while len(clusters) > 1:
-        candidates = []
-        for i, j in itertools.combinations(range(len(clusters)), 2):
-            score = _subtype_pair_score(counts, obs, clusters[i], clusters[j],
-                                        prior_mass=prior_mass, fallback_noise=family_noise,
-                                        noise_floor=noise_floor)
-            candidates.append((score["ratio"], i, j, score))
-        ratio, i, j, score = min(candidates, key=lambda item: item[0])
-        if ratio > ratio_threshold:
-            break
-        left, right = clusters[i], clusters[j]; merged = left | right
-        history.append({"family": family, "left": json.dumps(sorted(left)),
-                        "right": json.dumps(sorted(right)),
-                        "merged": json.dumps(sorted(merged)), **score})
-        clusters = [c for k, c in enumerate(clusters) if k not in (i, j)] + [merged]
-    return sorted(clusters, key=lambda cluster: sorted(cluster)), history
-
-
-def _test_context_information(counts, obs, *, min_context_donors, prior_mass,
-                              global_noise, ratio_threshold, noise_floor):
-    profiles, weights, eligible, donor_noise = [], [], [], []
-    for context, idx in obs.groupby("context", sort=True).indices.items():
-        donor_profiles, donor_obs = _donor_profiles(counts[np.asarray(idx)], obs.iloc[idx],
-                                                    prior_mass)
-        if len(donor_obs) < min_context_donors:
-            continue
-        consensus = donor_profiles.mean(axis=0); consensus /= consensus.sum()
-        profiles.append(consensus); weights.append(len(donor_obs)); eligible.append(str(context))
-        donor_noise.extend(_pairwise_js(donor_profiles))
-    if len(eligible) < 2:
-        return {"split": False, "context_js": np.nan, "donor_noise": np.nan,
-                "ratio": np.nan, "eligible_contexts": eligible}
-    context_js = _generalized_js(np.vstack(profiles), weights)
-    local_noise = float(np.median(donor_noise)) if donor_noise else global_noise
-    noise = max(local_noise, global_noise, noise_floor); ratio = context_js / noise
-    return {"split": bool(ratio > ratio_threshold), "context_js": context_js,
-            "donor_noise": noise, "ratio": ratio, "eligible_contexts": eligible}
-
-
-def _robust_donor_consensus(counts, obs, *, prior_mass, eps):
-    profiles, donor_obs = _donor_profiles(counts, obs, prior_mass)
-    reference = np.exp(np.median(np.log(profiles + eps), axis=0)); reference /= reference.sum()
-    return reference, donor_obs.donor.astype(str).tolist()
-
-
-def build_rna_reference(
-    adata, gtf=None, *, donor_col="donor", tissue_col="tissue",
-    cell_type_col="free_annotation", assay_col="method", assays=("10x",),
-    anatomy_col=None, gene_col=None, layer=None, family_mapping=None,
-    exclude_cell_types=None, min_cells=50, min_counts=50_000, min_donors=2,
-    min_context_donors=2, subtype_ratio_threshold=1.5, tissue_ratio_threshold=2.0,
-    noise_floor=1e-8, prior_mass=1.0, eps=1e-12, min_cell_counts=100,
-    min_cell_genes=100, max_pct_counts_mt=None, chunk_size=8192,
-    memmap_path=None, return_diagnostics=False,
-):
-    """Build diploid RNA reference profiles with information tests.
-
-    The function converts raw single-cell RNA counts into a gene-by-reference
-    probability matrix suitable for the RNA mode of SpaceNumbat.  Donors are
-    treated as the independent biological replicates.  Within each assay, the
-    procedure first merges statistically redundant annotations *only within a
-    curated biological family*, then decides whether each merged cell type
-    requires tissue/anatomy-specific reference profiles.
+def _js_divergence(p, q, weight=0.5):
+    """
+    Weighted Jensen-Shannon divergence.
 
     Parameters
     ----------
-    adata : anndata.AnnData
-        Cell-by-gene atlas. ``adata.X`` (or ``adata.layers[layer]``) must contain
-        finite, non-negative, integer-valued raw counts; normalized or
-        log-transformed expression is not accepted. Cell and feature identifiers
-        must be unique. The object is not modified.
-    gtf : pandas.DataFrame, optional
-        Gene annotation with columns ``gene``, ``CHROM``, ``gene_start``, and
-        ``gene_end``. A ``gene_ensembl`` column is used when present. If omitted,
-        ``spacenumbat.data.hg38`` is used. Only autosomal genes (chromosomes
-        1--22) represented in both ``adata`` and the annotation are retained.
-    donor_col : str, default: "donor"
-        Column in ``adata.obs`` identifying biological donors. Donors, rather
-        than cells, define replicate profiles and the information-noise scale.
-    tissue_col : str, default: "tissue"
-        Column in ``adata.obs`` containing tissue labels.
-    cell_type_col : str, default: "free_annotation"
-        Column in ``adata.obs`` containing the input cell-type annotation to be
-        compressed. Labels are normalized to lower-case, whitespace-collapsed
-        strings before mapping and comparison.
-    assay_col : str, default: "method"
-        Column in ``adata.obs`` containing the library protocol. Assays are
-        analyzed independently so that protocol effects cannot drive merges.
-        Common 10x and Smart-seq spellings are normalized to ``"10x"`` and
-        ``"smartseq2"``, respectively.
-    assays : sequence of str or None, default: ("10x",)
-        Assays to retain after protocol-name normalization. Pass ``None`` to use
-        every assay present. Profiles from different assays are never pooled.
-    anatomy_col : str or None, default: None
-        Optional ``adata.obs`` column defining anatomy within tissue. If set,
-        contexts are ``"<tissue>::<anatomy>"``; missing anatomy is encoded as
-        ``"NA"``. If ``None``, tissue alone defines context.
-    gene_col : str or None, default: None
-        Column in ``adata.var`` containing gene symbols or Ensembl identifiers.
-        By default, ``adata.var_names`` is used. Version suffixes are removed
-        from Ensembl identifiers, and multiple input features mapping to the
-        same gene are summed.
-    layer : str or None, default: None
-        AnnData layer containing raw counts. ``None`` uses ``adata.X``.
-    family_mapping : mapping of str to str or None, default: None
-        Additional or replacement label-to-family assignments, keyed by the
-        normalized values of ``cell_type_col``. These entries update the bundled
-        biological-family map. Labels without a mapping form singleton families;
-        therefore they cannot merge with biologically unrelated labels.
-    exclude_cell_types : iterable of str or None, default: None
-        Extra normalized labels to discard in addition to the bundled exclusions
-        for composite, overly broad, cycling, germline/meiotic, and anucleate
-        annotations. This argument extends rather than replaces the defaults.
-    min_cells : int, default: 50
-        Minimum cells required in each donor-by-context-by-cell-type pseudobulk.
-        Applied before subtype merging and again after re-aggregation.
-    min_counts : int, default: 50000
-        Minimum mapped autosomal counts required per pseudobulk, before and after
-        subtype merging.
-    min_donors : int, default: 2
-        Minimum distinct donors required for an emitted reference profile.
-    min_context_donors : int, default: 2
-        Minimum donors required for a context to participate in the context
-        information test. If fewer than two contexts qualify, a pan-context
-        profile is retained. When a split is selected, only qualifying contexts
-        are emitted as separate profiles.
-    subtype_ratio_threshold : float, default: 1.5
-        Maximum subtype information-to-noise ratio accepted for agglomerative
-        merging within a biological family. The numerator is the weighted
-        Jensen--Shannon divergence between candidate subtype profiles in shared
-        contexts; the denominator is within-subtype donor divergence. Larger
-        values merge more annotations. This ratio is an empirical decision
-        statistic, not a p-value.
-    tissue_ratio_threshold : float, default: 2.0
-        Context information-to-noise ratio above which a merged cell type is
-        split into context-specific references. The numerator is generalized
-        Jensen--Shannon divergence among context consensuses and the denominator
-        is donor variability. Larger values produce fewer context-specific
-        references and therefore stronger compression.
-    noise_floor : float, default: 1e-8
-        Positive lower bound on the donor-noise denominator. This prevents
-        unstable ratios when donor profiles are nearly identical.
-    prior_mass : float, default: 1.0
-        Total mass of the symmetric Dirichlet prior used when converting donor
-        pseudobulks to gene probabilities. It prevents zero probabilities while
-        remaining independent of the number of retained genes.
-    eps : float, default: 1e-12
-        Positive numerical offset used by the log-space robust donor consensus.
-    min_cell_counts : int, default: 100
-        Minimum mapped autosomal raw counts required for an individual cell.
-    min_cell_genes : int, default: 100
-        Minimum number of detected mapped autosomal genes required per cell.
-    max_pct_counts_mt : float or None, default: None
-        Optional upper bound for ``adata.obs["pct_counts_mt"]``. No mitochondrial
-        percentage filter is applied when ``None``.
-    chunk_size : int or None, default: 8192
-        Number of cells processed per block while mapping features and building
-        pseudobulks. Lower values reduce peak working memory, whereas larger
-        values reduce Python, slicing, sparse-multiplication and accumulation
-        overhead. Pass ``None`` to process all cells in one block. Chunk size is
-        an execution parameter and does not change filtering, grouping or the
-        intended reference estimate.
-    memmap_path : path-like or None, default: None
-        Optional path for the dense float64 pseudobulk-by-gene work matrix. The
-        path must not already exist and is not a resumable cache. If ``None``,
-        the matrix is held in memory.
-    return_diagnostics : bool, default: False
-        If ``True``, append a diagnostics dictionary to the returned tuple.
+    weight
+        Prior probability assigned to p.
+    """
+
+    p = np.asarray(p, dtype=float)
+    q = np.asarray(q, dtype=float)
+
+    p /= p.sum()
+    q /= q.sum()
+
+    m = weight * p + (1.0 - weight) * q
+
+    return (weight * _kl_divergence(p, m) + (1.0 - weight) * _kl_divergence(q, m))
+
+
+def _generalized_js(P, weights=None):
+    """
+    Generalized Jensen-Shannon divergence among multiple distributions.
+
+    This corresponds to the information carried by the group label about
+    the genomic-bin distribution.
+    """
+
+    P = np.asarray(P, dtype=float)
+    P /= P.sum(axis=1, keepdims=True,)
+    n = P.shape[0]
+
+    if weights is None:
+        weights = np.full(n, 1.0 / n)
+
+    weights = np.asarray(weights, dtype=float)
+    weights /= weights.sum()
+    mean_profile = np.sum(weights[:, None] * P, axis=0)
+
+    return float(sum(w * _kl_divergence(p, mean_profile) for w, p in zip(weights, P)))
+
+
+def _pairwise_js(P):
+    """All pairwise JSD values between rows of P."""
+
+    return [_js_divergence(P[i], 
+                           P[j]) for i, j in itertools.combinations(range(P.shape[0]),
+                                                                    2)]
+
+
+# Donor noise
+
+def _within_tissue_donor_noise(
+    X,
+    obs,
+    donor_col,
+    tissue_col,
+    ):
+    """
+    Estimate donor variability while holding tissue constant.
+    """
+
+    values = []
+
+    for _, idx in obs.groupby(tissue_col, sort=False).indices.items():
+
+        idx = np.asarray(idx)
+        P, _ = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col)
+        values.extend(_pairwise_js(P))
+
+    if not values:
+        return np.nan
+
+    return float(np.median(values))
+
+
+def _global_donor_noise(
+    X,
+    obs,
+    donor_col,
+    tissue_col,
+    type_col,
+    noise_floor,
+    ):
+    """
+    Estimate global technical/biological donor noise from comparisons
+    where both cell type and tissue are held constant.
+    """
+
+    values = []
+
+    groups = obs.groupby([type_col, tissue_col], sort=False).indices
+
+    for _, idx in groups.items():
+
+        idx = np.asarray(idx)
+        P, _ = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col)
+        values.extend(_pairwise_js(P))
+
+    if not values:
+        return noise_floor
+
+    return max(float(np.median(values)), noise_floor)
+
+
+# Subtype merging
+# Compare candidate subtypes only within tissues shared by both groups:
+#
+#          I(bin ; subtype | tissue, family)
+
+def _subtype_pair_score(
+    X,
+    obs,
+    cluster_a,
+    cluster_b,
+    type_col,
+    donor_col,
+    tissue_col,
+    fallback_noise,
+    noise_floor,
+    ):
+    """
+    Compare two subtype clusters after conditioning on tissue.
+
+    A ratio <= ~1 means the subtype difference is no larger than
+    donor-to-donor variability.
+    """
+
+    mask_a = obs[type_col].isin(cluster_a)
+    mask_b = obs[type_col].isin(cluster_b)
+
+    tissues_a = set(obs.loc[mask_a, tissue_col])
+    tissues_b = set(obs.loc[mask_b, tissue_col])
+    shared_tissues = sorted(tissues_a & tissues_b)
+
+    # When there are no shared tissue subtype effect cannot be separated from tissue.
+    # In this case collapse cell labels and allow the tissue test to decide later.
+    if not shared_tissues:
+        return {"between_js": 0.0,
+                "donor_noise": fallback_noise,
+                "ratio": 0.0,
+                "shared_tissues": 0,
+                "reason": "no_shared_tissue"}
+
+    between = []
+    weights = []
+    donor_noise = []
+
+    for tissue in shared_tissues:
+
+        a = (mask_a & obs[tissue_col].eq(tissue)).to_numpy()
+        b = (mask_b & obs[tissue_col].eq(tissue)).to_numpy()
+
+        if not np.any(a) or not np.any(b):
+            continue
+
+        Pa, _ = _donor_profiles(X[a], obs.loc[a].reset_index(drop=True), donor_col)
+        Pb, _ = _donor_profiles(X[b], obs.loc[b].reset_index(drop=True), donor_col)
+        ref_a = Pa.mean(axis=0)
+        ref_b = Pb.mean(axis=0)
+        w = Pa.shape[0] / (Pa.shape[0] + Pb.shape[0])
+        between.append(_js_divergence(ref_a, ref_b, weight=w))
+
+        # Give more importance to comparisons supported by more donors.
+        weights.append(min(Pa.shape[0], Pb.shape[0]))
+        donor_noise.extend(_pairwise_js(Pa))
+        donor_noise.extend(_pairwise_js(Pb))
+
+    if not between:
+        return {"between_js": 0.0,
+                "donor_noise": fallback_noise,
+                "ratio": 0.0,
+                "shared_tissues": 0,
+                "reason": "insufficient_overlap"}
+
+    between_js = np.average(between, weights=weights)
+
+    if donor_noise:
+        noise = float(np.median(donor_noise))
+    else:
+        noise = fallback_noise
+
+    noise = max(noise, noise_floor)
+
+    return {"between_js": float(between_js),
+            "donor_noise": float(noise),
+            "ratio": float(between_js / noise),
+            "shared_tissues": len(shared_tissues),
+            "reason": "observed"}
+
+
+def _agglomerate_family(
+    X,
+    obs,
+    labels,
+    family,
+    type_col,
+    donor_col,
+    tissue_col,
+    global_noise,
+    ratio_threshold,
+    noise_floor,
+    ):
+    """
+    Agglomerative information-bottleneck-like compression.
+
+    Repeatedly merge the pair whose conditional JSD is smallest relative
+    to donor noise.
+    """
+
+    clusters = [frozenset([label]) for label in sorted(labels)]
+
+    family_mask = obs[type_col].isin(labels).to_numpy()
+
+    if np.any(family_mask):
+        family_noise = _within_tissue_donor_noise(
+            X[family_mask],
+            obs.loc[family_mask].reset_index(drop=True),
+            donor_col,
+            tissue_col)
+    else:
+        family_noise = np.nan
+
+    if not np.isfinite(family_noise):
+        family_noise = global_noise
+
+    history = []
+
+    while len(clusters) > 1:
+
+        candidates = []
+
+        for i, j in itertools.combinations(range(len(clusters)), 2):
+
+            score = _subtype_pair_score(
+                X=X,
+                obs=obs,
+                cluster_a=clusters[i],
+                cluster_b=clusters[j],
+                type_col=type_col,
+                donor_col=donor_col,
+                tissue_col=tissue_col,
+                fallback_noise=family_noise,
+                noise_floor=noise_floor,
+            )
+
+            candidates.append((score["ratio"], i, j, score))
+
+        ratio, i, j, score = min(candidates, key=lambda x: x[0])
+
+        # The remaining subtype distinction carries more information
+        # than permitted by donor-level variability.
+        if ratio > ratio_threshold:
+            break
+
+        left = clusters[i]
+        right = clusters[j]
+        merged = left | right
+
+        history.append({"family": family,
+                        "left": ";".join(sorted(left)),
+                        "right": ";".join(sorted(right)),
+                        "merged": ";".join(sorted(merged)),
+                        **score})
+
+        clusters = [cluster for k, cluster in enumerate(clusters) if k not in (i, j)]
+        clusters.append(merged)
+
+    return clusters, history
+
+
+# Tissue information
+
+def _test_tissue_information(
+    X,
+    obs,
+    donor_col,
+    tissue_col,
+    min_tissue_donors,
+    global_noise,
+    ratio_threshold,
+    noise_floor,
+    ):
+    """
+    Test I(bin ; tissue | merged cell type).
+
+    A tissue split is retained only when:
+      1. at least two tissues have sufficient independent donors;
+      2. generalized tissue JSD exceeds donor variability.
+    """
+
+    tissue_profiles = []
+    tissue_weights = []
+    eligible_tissues = []
+    donor_noise = []
+
+    groups = obs.groupby(tissue_col, sort=True,).indices
+
+    for tissue, idx in groups.items():
+
+        idx = np.asarray(idx)
+        P, donor_obs = _donor_profiles(X[idx], obs.iloc[idx].reset_index(drop=True), donor_col)
+        n_donors = len(donor_obs)
+
+        if n_donors < min_tissue_donors:
+            continue
+
+        consensus = P.mean(axis=0)
+        consensus /= consensus.sum()
+        tissue_profiles.append(consensus)
+        tissue_weights.append(n_donors)
+        eligible_tissues.append(str(tissue))
+        donor_noise.extend(_pairwise_js(P))
+
+    if len(eligible_tissues) < 2:
+        return {"split": False,
+                "tissue_js": np.nan,
+                "donor_noise": np.nan,
+                "ratio": np.nan,
+                "eligible_tissues": eligible_tissues}
+
+    tissue_js = _generalized_js(np.vstack(tissue_profiles), weights=tissue_weights)
+
+    if donor_noise:
+        local_noise = float(np.median(donor_noise))
+    else:
+        local_noise = global_noise
+
+    # Conservative: do not allow an unusually quiet cell type to cause
+    # tiny tissue differences to become large ratios.
+    noise = max(local_noise, global_noise, noise_floor)
+    ratio = tissue_js / noise
+
+    return {"split": bool(ratio > ratio_threshold),
+            "tissue_js": float(tissue_js),
+            "donor_noise": float(noise),
+            "ratio": float(ratio),
+            "eligible_tissues": eligible_tissues}
+
+
+# Final reference estimator
+
+def _robust_donor_consensus(
+    X,
+    obs,
+    donor_col,
+    eps,
+    ):
+    """
+    Equal-donor robust reference.
+
+    Donors are normalized independently, then combined using the median
+    in log-probability space.
+    """
+
+    P, donor_obs = _donor_profiles(X, obs, donor_col)
+    log_P = np.log(P + eps)
+    center = np.median(log_P, axis=0)
+    reference = np.exp(center)
+
+    reference /= reference.sum()
+
+    return reference, len(donor_obs)
+
+
+# Bin annotation
+
+def _make_bin_gtf(features):
+
+    coords = pd.Series(features, dtype="string").str.extract(
+        r"^(?:chr)?([^:]+):(\d+)-(\d+)$")
+
+    if coords.isna().any().any():
+        raise ValueError("var_names must use chrN:start-end format.")
+
+    coords.columns = ["CHROM",
+                      "gene_start",
+                      "gene_end"]
+
+    coords["gene"] = np.asarray(features, dtype=str,)
+    coords["gene_start"] = coords["gene_start"].astype(np.int64)
+    coords["gene_end"] = coords["gene_end"].astype(np.int64)
+
+    return coords[["gene",
+                   "CHROM",
+                   "gene_start",
+                   "gene_end"]]
+
+
+# Main API
+
+def build_atac_reference(
+    adata,
+    donor_col="donor",
+    tissue_col="tissue_ref",
+    cell_type_col="cell_type",
+    life_stage_col="life_stage",
+    life_stage="Adult",
+    min_cells=50,
+    min_fragments=50_000,
+    min_donors=1,
+    min_tissue_donors=2,
+    subtype_ratio_threshold=1.5,
+    tissue_ratio_threshold=2.0,
+    noise_floor=1e-8,
+    eps=1e-12,
+    return_diagnostics=False):
+    """
+    Construct a donor-balanced, information-theoretically compressed
+    normal scATAC reference for SpaceNumbat.
+
+    Subtype compression
+    -------------------
+    Atlas labels belonging to the same curated biological family are
+    agglomeratively merged when their conditional Jensen-Shannon
+    divergence:
+
+        I(bin ; subtype | tissue)
+
+    is no larger than `subtype_ratio_threshold` times donor variability.
+
+    Tissue splitting
+    ----------------
+    After subtype merging, tissue-specific references are generated only
+    when:
+
+        I(bin ; tissue | cell_type)
+
+    exceeds `tissue_ratio_threshold` times within-tissue donor variability.
 
     Returns
     -------
-    reference : pandas.DataFrame
-        Gene-by-reference matrix. Columns are strictly positive transcriptional
-        probability profiles and each column sums to one. This is the reference
-        matrix passed to the RNA SpaceNNumBAT pipeline.
-    manifest : pandas.DataFrame
-        One row per reference column, including the emitted reference name,
-        merged cell type, biological family, assay, scope (``"pan_context"`` or
-        ``"context"``), contributing contexts/tissues/donors, support counts,
-        source annotations, and context information statistics.
-    gene_gtf : pandas.DataFrame
-        Annotation for the expressed autosomal genes in ``reference``, ordered
-        genomically and suitable for downstream RNA CNA inference.
-    diagnostics : dict, optional
-        Returned only when ``return_diagnostics=True``. Contains
-        ``cell_type_map``, ``merge_history``, ``context_tests``,
-        ``initial_pseudobulk_qc``, ``merged_pseudobulk_qc``,
-        ``global_donor_noise``, ``feature_mapping``, and ``run_info``.
+    reference
+        Genomic-bin x reference-profile normalized DataFrame. Directly
+        usable as SpaceNumbat ``lambdas_ref``.
 
-    Raises
-    ------
-    ValueError
-        If counts are not raw non-negative integers, required metadata or gene
-        annotation is missing, parameters are invalid, or filtering leaves
-        insufficient genes, pseudobulks, or reference profiles.
-    FileExistsError
-        If ``memmap_path`` already exists.
-    RuntimeError
-        If reference names collide or final profiles fail positivity, finiteness,
-        or normalization checks.
+    manifest
+        Metadata describing final references.
 
-    Notes
-    -----
-    The algorithm mirrors the hierarchy of ``build_atac_ref.py``:
+    bin_gtf
+        Bin annotation compatible with current SpaceNumbat utilities.
 
-    1. Construct donor-by-context-by-annotation raw-count pseudobulks.
-    2. Agglomerate annotations within each curated family while conditional
-       subtype information does not exceed donor noise by
-       ``subtype_ratio_threshold``.
-    3. Rebuild and re-filter pseudobulks after every accepted label mapping.
-    4. Emit context-specific profiles only when context information exceeds
-       donor noise by ``tissue_ratio_threshold``; otherwise pool contexts.
-    5. Form each final profile as the normalized median of donor probabilities
-       in log space after symmetric Dirichlet smoothing.
-
-    Labels from different tissues may merge because tissue is a conditioning
-    context rather than a hard biological boundary. Family membership prevents
-    cross-lineage merges, and the subsequent context test preserves reproducible
-    tissue/anatomy effects. Candidate labels with no shared context follow the
-    ATAC builder's provisional zero-information merge; the context test is then
-    responsible for retaining distinct context profiles when supported.
-
-    There is deliberately no requested reference count: the number of columns
-    is determined by biological-family constraints, donor variability, data
-    support, and the two information-ratio thresholds. To obtain fewer columns,
-    first increase ``subtype_ratio_threshold`` and/or
-    ``tissue_ratio_threshold`` and inspect ``merge_history`` and
-    ``context_tests``. Do not use ``min_donors`` or pseudobulk QC thresholds as
-    primary compression controls because they remove weakly supported biology.
-
-    The atlas should contain non-malignant samples appropriate for use as a
-    diploid baseline. Normal-tissue annotation alone does not prove copy-number
-    neutrality; donor- and tissue-level QC remains the caller's responsibility.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from spacenumbat.preprocessing.build_rna_ref import build_rna_reference
-    >>> ref_rna, manifest, gene_gtf, diagnostics = build_rna_reference(
-    ...     adata_full,
-    ...     gtf=spacenumbat.data.hg38,
-    ...     donor_col="donor",
-    ...     tissue_col="tissue",
-    ...     cell_type_col="free_annotation",
-    ...     assay_col="method",
-    ...     assays=("10x",),
-    ...     anatomy_col=None,
-    ...     min_cells=50,
-    ...     min_counts=50_000,
-    ...     min_donors=2,
-    ...     subtype_ratio_threshold=1.5,
-    ...     tissue_ratio_threshold=2.0,
-    ...     return_diagnostics=True,
-    ... )
-    >>> ref_rna.shape[0] == gene_gtf.shape[0]
-    True
-    >>> ref_rna.columns.tolist() == manifest["reference"].tolist()
-    True
-    >>> bool(np.allclose(ref_rna.sum(axis=0), 1.0))
-    True
+    diagnostics
+        Returned only when ``return_diagnostics=True``. Contains subtype
+        mapping, merge history and tissue-information tests.
     """
-    if gtf is None:
-        from spacenumbat.data import hg38
-        gtf = hg38
-    if adata.obs_names.has_duplicates or adata.var_names.has_duplicates:
-        raise ValueError("Cell and feature identifiers must be unique.")
-    if layer is not None and layer not in adata.layers:
-        raise ValueError(f"AnnData has no layer {layer!r}.")
-    for name, value in {"min_cells": min_cells, "min_counts": min_counts,
-                        "min_donors": min_donors, "min_context_donors": min_context_donors,
-                        "min_cell_counts": min_cell_counts,
-                        "min_cell_genes": min_cell_genes}.items():
-        if value < 1 or int(value) != value:
-            raise ValueError(f"{name} must be a positive integer.")
-    if chunk_size is not None and (chunk_size < 1 or int(chunk_size) != chunk_size):
-        raise ValueError("chunk_size must be a positive integer or None.")
-    for name, value in {"subtype_ratio_threshold": subtype_ratio_threshold,
-                        "tissue_ratio_threshold": tissue_ratio_threshold,
-                        "noise_floor": noise_floor, "prior_mass": prior_mass,
-                        "eps": eps}.items():
-        if not np.isfinite(value) or value <= 0:
-            raise ValueError(f"{name} must be finite and positive.")
-    required = [donor_col, tissue_col, cell_type_col, assay_col]
-    if anatomy_col is not None:
-        required.append(anatomy_col)
-    if max_pct_counts_mt is not None:
-        required.append("pct_counts_mt")
-    missing = set(required) - set(adata.obs.columns)
+
+    # Validate metadata
+
+    required = [donor_col,
+                tissue_col,
+                cell_type_col,
+                life_stage_col]
+
+    missing = [column for column in required if column not in adata.obs.columns]
+
     if missing:
-        raise ValueError(f"Missing obs columns: {sorted(missing)}")
+        raise ValueError(f"Missing obs columns: {missing}")
 
-    gene_gtf, projection, feature_map = _gene_mapping(adata, gtf, gene_col)
-    obs = adata.obs; meta = pd.DataFrame(index=obs.index)
-    meta["donor"] = obs[donor_col].astype("string").str.strip()
-    meta["tissue"] = obs[tissue_col].astype("string").str.strip()
-    meta["label"] = obs[cell_type_col].astype("string").map(_label)
-    meta["assay"] = obs[assay_col].astype("string").map(_assay)
-    if anatomy_col is None:
-        meta["context"] = meta.tissue
+    if adata.var_names.has_duplicates:
+        raise ValueError("adata.var_names must be unique.")
+
+    obs = adata.obs.copy()
+    original_type = obs[cell_type_col].astype("string")
+
+    keep_cells = (
+        obs[donor_col].notna()
+        & obs[tissue_col].notna()
+        & original_type.notna()
+        & ~original_type.isin(EXCLUDE_CELL_TYPES)
+        )
+
+    if life_stage is not None:
+        keep_cells &= obs[life_stage_col].astype("string").eq(life_stage)
+
+    # Autosomal genomic bins
+    features_all = pd.Index(adata.var_names.astype(str))
+
+    chrom = pd.Series(features_all).str.extract(r"^(?:chr)?([^:]+):",expand=False)
+    keep_bins = chrom.isin({str(i) for i in range(1, 23)}).to_numpy()
+
+    cell_idx = np.flatnonzero(keep_cells.to_numpy())
+    bin_idx = np.flatnonzero(keep_bins)
+    features = features_all[keep_bins]
+
+    X = adata.X[cell_idx,:][:, bin_idx]
+
+    if sp.issparse(X):
+        X = X.tocsr()
     else:
-        anatomy = obs[anatomy_col].astype("string").fillna("NA").str.strip()
-        meta["context"] = meta.tissue.astype(str) + "::" + anatomy.astype(str)
-    families = dict(FAMILY_MAPPING)
-    if family_mapping is not None:
-        families.update({_label(k): str(v) for k, v in family_mapping.items()})
-    meta["family"] = meta.label.map(families).fillna(meta.label)
-    excluded = set(EXCLUDE_CELL_TYPES)
-    if exclude_cell_types is not None:
-        excluded |= {_label(x) for x in exclude_cell_types}
-    keep = (_valid(obs[donor_col]).to_numpy() & _valid(obs[tissue_col]).to_numpy() &
-            _valid(obs[cell_type_col]).to_numpy() & _valid(obs[assay_col]).to_numpy() &
-            ~meta.label.isin(excluded).to_numpy())
-    if assays is not None:
-        assays = {_assay(x) for x in assays}; keep &= meta.assay.isin(assays).to_numpy()
-    meta["_keep"] = keep
+        X = sp.csr_matrix(X)
 
-    counts, pb, cell_qc = _aggregate_counts(
-        adata, meta, projection, layer=layer, chunk_size=chunk_size,
-        min_cell_counts=min_cell_counts, min_cell_genes=min_cell_genes,
-        max_pct_counts_mt=max_pct_counts_mt, memmap_path=memmap_path)
-    expressed = counts.sum(axis=0) > 0; counts = counts[:, expressed]
-    gene_gtf = gene_gtf.loc[expressed].reset_index(drop=True)
-    if counts.shape[1] < 2:
-        raise ValueError("Fewer than two expressed autosomal genes remain.")
-    initial_good = ((pb.n_cells >= min_cells) & (pb.n_counts >= min_counts)).to_numpy()
-    pb["initial_qc_pass"] = initial_good
-    test_counts = counts[initial_good]; test_obs = pb.loc[initial_good].reset_index(drop=True)
+    if X.data.size and np.min(X.data) < 0:
+        raise ValueError("adata.X must contain raw non-negative fragment counts.")
+
+    obs = obs.iloc[cell_idx][[donor_col, tissue_col, cell_type_col]].copy().reset_index(drop=True)
+    obs["original_type"] = obs[cell_type_col].astype("string")
+
+    clean_type = obs["original_type"].map(CLEAN_NAMES).fillna(obs["original_type"])
+
+    obs["family"] = obs["original_type"].map(FAMILY_MAPPING).fillna(clean_type)
+    obs["n_cells"] = 1
+
+    # donor x tissue x original-type pseudobulk
+
+    pb_X, pb_obs = _aggregate_rows(X,
+                                   obs,
+                                   [donor_col,
+                                    tissue_col,
+                                    "original_type",
+                                    "family"])
+
+    # Pseudobulks reliable enough to participate in information tests.
+    good = ((pb_obs["n_cells"] >= min_cells) & (pb_obs["n_fragments"] >= min_fragments)).to_numpy()
+    test_X = pb_X[good]
+    test_obs = pb_obs.loc[good].reset_index(drop=True)
+
     if test_obs.empty:
-        raise ValueError("No donor/context/cell-type pseudobulks passed QC.")
+        raise ValueError("No pseudobulks passed QC.")
 
-    references, manifest_rows = {}, []
-    mapping_rows, merge_rows, context_rows, merged_qc_rows, noise_rows = [], [], [], [], []
-    assay_values = sorted(test_obs.assay.unique())
-    for assay in assay_values:
-        assay_mask = test_obs.assay.eq(assay).to_numpy()
-        assay_counts = test_counts[assay_mask]
-        assay_obs = test_obs.loc[assay_mask].reset_index(drop=True)
-        assay_all_obs = pb.loc[pb.assay.eq(assay)].reset_index(drop=True)
-        global_noise = _global_donor_noise(assay_counts, assay_obs, prior_mass, noise_floor)
-        noise_rows.append({"assay": assay, "global_donor_js": global_noise})
-        original_to_merged = {}
-        for family in sorted(assay_all_obs.family.unique()):
-            family_mask = assay_obs.family.eq(family).to_numpy()
-            family_counts = assay_counts[family_mask]
-            family_obs = assay_obs.loc[family_mask].reset_index(drop=True)
-            labels = sorted(assay_all_obs.loc[assay_all_obs.family.eq(family), "label"].unique())
-            if len(labels) == 1:
-                clusters, history = [frozenset(labels)], []
-            else:
-                clusters, history = _agglomerate_family(
-                    family_counts, family_obs, labels, family, prior_mass=prior_mass,
-                    global_noise=global_noise, ratio_threshold=subtype_ratio_threshold,
-                    noise_floor=noise_floor)
-            merge_rows.extend({"assay": assay, **row} for row in history)
-            if len(clusters) == 1:
-                named_clusters = [(clusters[0], family)]
-            else:
-                named_clusters = [(cluster, next(iter(cluster)) if len(cluster) == 1
-                                   else f"{family} group {index}")
-                                  for index, cluster in enumerate(clusters, start=1)]
-            for cluster, merged_type in named_clusters:
-                for label in cluster:
-                    original_to_merged[label] = merged_type
-                    mapping_rows.append({"assay": assay, "original_cell_type": label,
-                                         "family": family, "merged_cell_type": merged_type})
+    # Empirical donor-noise scale
 
-        source_mask = pb.assay.eq(assay).to_numpy()
-        source_obs = pb.loc[source_mask].copy().reset_index(drop=True)
-        source_counts = counts[source_mask]
-        source_obs["merged_type"] = source_obs.label.map(original_to_merged)
-        valid = source_obs.merged_type.notna().to_numpy()
-        merged_counts, merged_obs = _aggregate_rows(
-            source_counts[valid], source_obs.loc[valid].reset_index(drop=True),
-            ["context", "family", "merged_type", "donor"])
-        merged_good = ((merged_obs.n_cells >= min_cells) &
-                       (merged_obs.n_counts >= min_counts)).to_numpy()
-        merged_obs["qc_pass"] = merged_good; merged_obs["assay"] = assay
-        merged_qc_rows.append(merged_obs.copy())
-        merged_counts = merged_counts[merged_good]
-        merged_obs = merged_obs.loc[merged_good].reset_index(drop=True)
-        source_types = (pd.DataFrame([{"original": k, "merged": v}
-                                     for k, v in original_to_merged.items()])
-                        .groupby("merged").original.agg(list).to_dict())
+    global_noise = _global_donor_noise(
+        X=test_X,
+        obs=test_obs,
+        donor_col=donor_col,
+        tissue_col=tissue_col,
+        type_col="original_type",
+        noise_floor=noise_floor,
+    )
 
-        for merged_type, idx in merged_obs.groupby("merged_type", sort=True).indices.items():
-            idx = np.asarray(idx); type_counts = merged_counts[idx]
-            type_obs = merged_obs.iloc[idx].reset_index(drop=True)
-            family = str(type_obs.family.iloc[0])
-            result = _test_context_information(
-                type_counts, type_obs, min_context_donors=min_context_donors,
-                prior_mass=prior_mass, global_noise=global_noise,
-                ratio_threshold=tissue_ratio_threshold, noise_floor=noise_floor)
-            context_rows.append({"assay": assay, "cell_type": merged_type, "family": family,
-                                 "split": result["split"], "context_js": result["context_js"],
-                                 "donor_noise": result["donor_noise"], "ratio": result["ratio"],
-                                 "eligible_contexts": json.dumps(result["eligible_contexts"])})
-            groups = []
-            if result["split"]:
-                for context in result["eligible_contexts"]:
-                    mask = type_obs.context.astype(str).eq(context).to_numpy()
-                    groups.append(("context", context, type_counts[mask], type_obs.loc[mask]))
-            else:
-                groups.append(("pan_context", "pan_context", type_counts, type_obs))
-            for scope, context, group_counts, group_obs in groups:
-                reference, donors = _robust_donor_consensus(
-                    group_counts, group_obs.reset_index(drop=True), prior_mass=prior_mass, eps=eps)
-                if len(donors) < min_donors:
+    # Information-theoretic subtype merging
+
+    original_to_merged = {}
+    merge_history = []
+
+    all_families = sorted(pb_obs["family"].unique())
+
+    for family in all_families:
+
+        all_labels = sorted(pb_obs.loc[pb_obs["family"].eq(family),
+                                       "original_type"].unique())
+        family_test = test_obs["family"].eq(family).to_numpy()
+        family_X = test_X[family_test]
+        family_obs = test_obs.loc[family_test].reset_index(drop=True)
+
+        # Single annotation -> nothing to test.
+        if len(all_labels) == 1:
+
+            original = all_labels[0]
+            name = (CLEAN_NAMES.get(original,family))
+            original_to_merged[original] = name
+
+            continue
+
+        clusters, history = _agglomerate_family(
+            X=family_X,
+            obs=family_obs,
+            labels=all_labels,
+            family=family,
+            type_col="original_type",
+            donor_col=donor_col,
+            tissue_col=tissue_col,
+            global_noise=global_noise,
+            ratio_threshold=subtype_ratio_threshold,
+            noise_floor=noise_floor,
+        )
+
+        merge_history.extend(history)
+
+        # If everything collapsed, use the broad family name.
+        if len(clusters) == 1:
+
+            for original in clusters[0]:
+                original_to_merged[original] = family
+
+        else:
+
+            # Preserve genuinely distinct subclusters.
+            clusters = sorted(clusters, key=lambda x: sorted(x))
+
+            for i, cluster in enumerate(clusters, start=1):
+
+                if len(cluster) == 1:
+
+                    original = next(iter(cluster))
+                    name = CLEAN_NAMES.get(original, original)
+
+                else:
+                    name = f"{family} group {i}"
+
+                for original in cluster:
+                    original_to_merged[original] = name
+
+    # Reaggregate using the compressed cell-type assignments
+    pb_obs = pb_obs.copy()
+    pb_obs["merged_type"] = pb_obs["original_type"].map(original_to_merged)
+    valid = pb_obs["merged_type"].notna().to_numpy()
+    merged_X, merged_obs = _aggregate_rows(pb_X[valid],
+                                           pb_obs.loc[valid].reset_index(drop=True),
+                                           [donor_col,tissue_col,"merged_type"])
+
+    # QC AFTER merging. This lets several sparse original
+    # subtypes form a general subtype pseudobulk.
+    good = ((merged_obs["n_cells"] >= min_cells)
+            & (merged_obs["n_fragments"] >= min_fragments)).to_numpy()
+
+    merged_X = merged_X[good]
+    merged_obs = (merged_obs.loc[good].reset_index(drop=True))
+
+    # Test whether tissue adds information after cell-type merging
+    references = {}
+    manifest = []
+    tissue_tests = []
+
+    source_types = (
+        pd.DataFrame(
+            {"original_type": list(original_to_merged.keys()),
+             "merged_type": list(original_to_merged.values())}).groupby("merged_type")["original_type"].agg(list).to_dict())
+
+    groups = merged_obs.groupby("merged_type", sort=True).indices
+
+    for merged_type, idx in groups.items():
+
+        idx = np.asarray(idx)
+        type_X = merged_X[idx]
+        type_obs = (merged_obs.iloc[idx].reset_index(drop=True))
+
+        tissue_result = _test_tissue_information(
+            X=type_X,
+            obs=type_obs,
+            donor_col=donor_col,
+            tissue_col=tissue_col,
+            min_tissue_donors=min_tissue_donors,
+            global_noise=global_noise,
+            ratio_threshold=tissue_ratio_threshold,
+            noise_floor=noise_floor,
+        )
+
+        tissue_tests.append(
+            {
+                "cell_type": merged_type,
+                "split": tissue_result["split"],
+                "tissue_js": tissue_result["tissue_js"],
+                "donor_noise": tissue_result["donor_noise"],
+                "ratio": tissue_result["ratio"],
+                "eligible_tissues": ";".join(tissue_result["eligible_tissues"]),
+            })
+
+        # Tissue carries reproducible information
+
+        if tissue_result["split"]:
+
+            for tissue in tissue_result["eligible_tissues"]:
+
+                mask = type_obs[tissue_col].astype(str).eq(tissue).to_numpy()
+
+                ref, n_donors = _robust_donor_consensus(
+                    X=type_X[mask],
+                    obs=type_obs.loc[mask].reset_index(drop=True),
+                    donor_col=donor_col,
+                    eps=eps)
+
+                if n_donors < min_donors:
                     continue
-                suffix = f"|{assay}" if len(assay_values) > 1 else ""
-                name = (f"{merged_type}|{context}{suffix}" if scope == "context"
-                        else f"{merged_type}{suffix}")
-                if name in references:
-                    raise RuntimeError(f"Reference name collision: {name}")
-                references[name] = reference
-                contexts = sorted(group_obs.context.astype(str).unique())
-                tissues = sorted({value.split("::", 1)[0] for value in contexts})
-                manifest_rows.append({
-                    "reference": name, "cell_type": merged_type, "family": family,
-                    "assay": assay, "scope": scope, "context": context,
-                    "contexts": json.dumps(contexts), "tissues": json.dumps(tissues),
-                    "donors": json.dumps(sorted(donors)), "n_donors": len(donors),
-                    "n_cells": int(group_obs.n_cells.sum()),
-                    "n_counts": float(group_obs.n_counts.sum()),
-                    "source_cell_types": json.dumps(sorted(source_types.get(merged_type, []))),
-                    "context_js": result["context_js"],
-                    "context_noise": result["donor_noise"],
-                    "context_ratio": result["ratio"],
-                })
+
+                name = (f"{merged_type}|{tissue}")
+
+                references[name] = ref
+
+                manifest.append(
+                    {
+                        "profile": name,
+                        "cell_type": merged_type,
+                        "scope": "tissue",
+                        "tissue": tissue,
+                        "n_donors": n_donors,
+                        "n_cells": int(type_obs.loc[mask, "n_cells"].sum()),
+                        "n_fragments": int(type_obs.loc[mask,"n_fragments"].sum()),
+                        "source_cell_types": ";".join(source_types.get(merged_type,[])),
+                        "tissue_js": tissue_result["tissue_js"],
+                        "tissue_noise": tissue_result["donor_noise"],
+                        "tissue_ratio": tissue_result["ratio"]})
+
+        # Tissue does NOT add meaningful information
+        else:
+
+            ref, n_donors = _robust_donor_consensus(
+                X=type_X,
+                obs=type_obs,
+                donor_col=donor_col,
+                eps=eps,
+            )
+
+            if n_donors < min_donors:
+                continue
+
+            references[merged_type] = ref
+            manifest.append(
+                {
+                    "profile": merged_type,
+                    "cell_type": merged_type,
+                    "scope": "pan_tissue",
+                    "tissue": "pan_tissue",
+                    "n_donors": n_donors,
+                    "n_cells": int(type_obs["n_cells"].sum()),
+                    "n_fragments": int(type_obs["n_fragments"].sum()),
+                    "source_cell_types": ";".join(source_types.get(merged_type,[])),
+                    "tissue_js": tissue_result["tissue_js"],
+                    "tissue_noise": tissue_result["donor_noise"],
+                    "tissue_ratio": tissue_result["ratio"]})
 
     if not references:
-        raise ValueError("No final RNA reference profiles were generated.")
-    reference = pd.DataFrame(references, index=pd.Index(gene_gtf.gene, name="gene"),
-                             dtype=np.float64)
-    if not np.isfinite(reference.to_numpy()).all() or (reference <= 0).any().any():
-        raise RuntimeError("Reference profiles must be finite and positive.")
-    if not np.allclose(reference.sum(axis=0), 1.0, atol=1e-12):
-        raise RuntimeError("Reference normalization failed.")
-    manifest = pd.DataFrame(manifest_rows)
-    diagnostics = {
-        "cell_type_map": pd.DataFrame(mapping_rows),
-        "merge_history": pd.DataFrame(merge_rows),
-        "context_tests": pd.DataFrame(context_rows),
-        "initial_pseudobulk_qc": pb,
-        "merged_pseudobulk_qc": (pd.concat(merged_qc_rows, ignore_index=True)
-                                  if merged_qc_rows else pd.DataFrame()),
-        "global_donor_noise": pd.DataFrame(noise_rows),
-        "feature_mapping": feature_map,
-        "run_info": {
-            "builder_version": __version__, "algorithm": "direct_ATAC_hierarchy_RNA",
-            "n_input_cells": int(adata.n_obs), "n_input_genes": int(adata.n_vars),
-            "n_genes": int(reference.shape[0]), "n_references": int(reference.shape[1]),
-            "cell_qc": cell_qc, "subtype_ratio_threshold": subtype_ratio_threshold,
-            "tissue_ratio_threshold": tissue_ratio_threshold,
-            "family_mapping_sha256": hashlib.sha256(
-                json.dumps(families, sort_keys=True).encode()).hexdigest(),
-        },
-    }
-    result = (reference, manifest, gene_gtf)
-    return (*result, diagnostics) if return_diagnostics else result
+        raise ValueError("No final ATAC references were generated.")
 
+    # Final reference matrix
+    reference = pd.DataFrame(references, index=features)
+    manifest = pd.DataFrame(manifest)
+    bin_gtf = _make_bin_gtf(features)
 
-def save_rna_reference(reference, manifest, gene_gtf, diagnostics, output_dir):
-    output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=False)
-    reference.rename_axis(None).to_csv(output_dir / "ref_rna.tsv", sep="\t", index_label=False)
-    manifest.to_csv(output_dir / "reference_manifest.tsv", sep="\t", index=False)
-    gene_gtf.to_csv(output_dir / "gene_gtf.tsv", sep="\t", index=False)
-    for name, value in diagnostics.items():
-        if isinstance(value, pd.DataFrame):
-            if value.shape[1] == 0:
-                value = pd.DataFrame(columns=["stage", "reason"])
-            value.to_csv(output_dir / f"{name}.tsv", sep="\t", index=False)
-    (output_dir / "run_info.json").write_text(json.dumps(diagnostics["run_info"], indent=2) + "\n")
-    return output_dir / "ref_rna.tsv"
+    if not return_diagnostics:
+        return (reference,manifest,bin_gtf)
 
+    cell_type_map = pd.DataFrame(
+        {"original_cell_type": list(original_to_merged.keys()),
+         "merged_cell_type": list(original_to_merged.values())})
 
-def _main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("h5ad"); parser.add_argument("output_dir"); parser.add_argument("--gtf")
-    parser.add_argument("--assays", nargs="+", default=["10x"])
-    parser.add_argument("--donor-col", default="donor")
-    parser.add_argument("--tissue-col", default="tissue")
-    parser.add_argument("--cell-type-col", default="free_annotation")
-    parser.add_argument("--assay-col", default="method")
-    parser.add_argument("--anatomy-col"); parser.add_argument("--gene-col"); parser.add_argument("--layer")
-    parser.add_argument("--family-json"); parser.add_argument("--min-cells", type=int, default=50)
-    parser.add_argument("--min-counts", type=int, default=50_000)
-    parser.add_argument("--min-donors", type=int, default=2)
-    parser.add_argument("--min-context-donors", type=int, default=2)
-    parser.add_argument("--subtype-ratio-threshold", type=float, default=1.5)
-    parser.add_argument("--tissue-ratio-threshold", type=float, default=2.0)
-    parser.add_argument("--chunk-size", type=int, default=8192); parser.add_argument("--memmap-path")
-    args = parser.parse_args()
-    import anndata as ad
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-    atlas = ad.read_h5ad(args.h5ad, backed="r")
-    try:
-        result = build_rna_reference(
-            atlas, gtf=pd.read_csv(args.gtf, sep="\t") if args.gtf else None,
-            donor_col=args.donor_col, tissue_col=args.tissue_col,
-            cell_type_col=args.cell_type_col, assay_col=args.assay_col,
-            assays=None if args.assays == ["ALL"] else args.assays,
-            anatomy_col=args.anatomy_col, gene_col=args.gene_col, layer=args.layer,
-            family_mapping=json.loads(Path(args.family_json).read_text()) if args.family_json else None,
-            min_cells=args.min_cells, min_counts=args.min_counts, min_donors=args.min_donors,
-            min_context_donors=args.min_context_donors,
-            subtype_ratio_threshold=args.subtype_ratio_threshold,
-            tissue_ratio_threshold=args.tissue_ratio_threshold,
-            chunk_size=args.chunk_size, memmap_path=args.memmap_path, return_diagnostics=True)
-        save_rna_reference(*result, args.output_dir)
-    finally:
-        atlas.file.close()
+    cell_type_map["family"] = (cell_type_map["original_cell_type"]
+                               .map(FAMILY_MAPPING)
+                               .fillna(cell_type_map["original_cell_type"]
+                                       .map(CLEAN_NAMES).fillna(cell_type_map["original_cell_type"])))
 
+    diagnostics = {"cell_type_map": cell_type_map,
+                   "merge_history": pd.DataFrame(merge_history),
+                   "tissue_tests": pd.DataFrame(tissue_tests),
+                   "global_donor_js": global_noise}
 
-if __name__ == "__main__":
-    _main()
-
-
-
+    return (
+        reference,
+        manifest,
+        bin_gtf,
+        diagnostics,
+    )
