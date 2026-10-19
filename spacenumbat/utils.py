@@ -1794,7 +1794,7 @@ def find_common_diploid(
         Threshold on the maximum inter-segment FC ratio (after exponentiation) to
         optionally enable a “quadruploid state” choice for the baseline.
     alpha : float, default 1e-4
-        FDR threshold (after BH correction) used when testing segment similarity
+        Threshold (after Holm correction) used when testing segment similarity
         across samples (kept if q > alpha).
     min_genes : int, default 10
         Minimum number of genes for segment smoothing (`smooth_segs`).
@@ -2032,7 +2032,7 @@ def find_common_diploid(
             })
         
         summary_df = grouped.apply(group_summarize, include_groups=False)
-        reject, qvals, _, _ = multipletests(summary_df.loc[:,'p'].values, alpha=0.05, method='fdr_bh')
+        reject, qvals, _, _ = multipletests(summary_df.loc[:,'p'].values, alpha=0.05, method='holm')
         summary_df.loc[:,'q'] = qvals
         
         V = segs_bal
@@ -2067,9 +2067,12 @@ def find_common_diploid(
             fc = fc.set_index('sample')
         
         # Calculate diploid_cluster and fc_max
-        rowmins = fc.apply(np.argmin, axis=1)
-        c = Counter(rowmins)
-        diploid_cluster = c.most_common(1)[0][0]
+        rowmins = fc.idxmin(axis=1)
+        counts = rowmins.value_counts(sort=False)
+        candidates = counts.index[counts.eq(counts.max())]
+        
+        # breaks modal ties by the lowest expression across pseudobulks.
+        diploid_cluster = fc.loc[:, candidates].min(axis=0).sort_values(kind='stable').index[0]
         fc_diff = fc.subtract(fc[diploid_cluster], axis=0)
         fc_max = fc_diff.values.ravel().max()
         fc_exp = np.exp(fc_max)

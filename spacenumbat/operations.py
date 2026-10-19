@@ -114,7 +114,7 @@ def run_group_hmms(
         # Never call allele-based find_common_diploid().
         find_diploid = False
     elif common_diploid and diploid_chroms is None:
-        bulks = utils.find_common_diploid(bulks, gamma=gamma, alpha=alpha, ncores=ncores)
+        bulks = utils.find_common_diploid(bulks, gamma=gamma, alpha=alpha, ncores=ncores, min_genes=min_genes)
         find_diploid = False
     else:
         find_diploid = True
@@ -178,7 +178,7 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
     The function assigns a unique vertex id to each row, computes all pairwise
     overlaps via PyRanges self-join, filters edges by an overlap fraction
     threshold, builds a NetworkX graph, finds connected components, and for each
-    component selects the row from the sample with the largest LLR_sample
+    component selects all rows from the sample with the largest LLR_sample
     (defined as the per-(component, sample) maximum of LLR_x + LLR_y).
 
     Parameters
@@ -205,7 +205,7 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
     Returns
     -------
     pandas.DataFrame or dict
-        If debug is False: a DataFrame with one consensus row per connected component,
+        If debug is False: a DataFrame with the winning sample's rows per connected component,
         sorted by CHROM and then seg_start when available.
         If debug is True: a dict with keys:
         - 'G': the NetworkX graph
@@ -260,12 +260,14 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
         columns={'vertex':'to','seg_start_index':'start_y','seg_end_index':'end_y'})
     df_ov = df_ov.merge(segs_all_for_merge2, on='to', how='left')
     
-    df_ov['len_x'] = df_ov['end_x'] - df_ov['start_x'] + 1
-    df_ov['len_y'] = df_ov['end_y'] - df_ov['start_y'] + 1
+    df_ov['len_overlap'] = np.minimum(df_ov['end_x'], df_ov['end_y']) - np.maximum(df_ov['start_x'], df_ov['start_y'])
+    df_ov['len_x'] = df_ov['end_x'] - df_ov['start_x']
+    df_ov['len_y'] = df_ov['end_y'] - df_ov['start_y']
+    
     df_ov['frac_overlap_x'] = df_ov['len_overlap'] / df_ov['len_x']
     df_ov['frac_overlap_y'] = df_ov['len_overlap'] / df_ov['len_y']
     # keep edges above min_overlap
-    df_ov = df_ov[~((df_ov['frac_overlap_x']<min_overlap) & (df_ov['frac_overlap_y']<min_overlap))].copy()
+    df_ov = df_ov[(df_ov['frac_overlap_x'] >= min_overlap) | (df_ov['frac_overlap_y'] >= min_overlap)].copy()
     
     # Build an undirected graph using networkx
     G = nx.Graph()
@@ -295,10 +297,12 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
                                     key=natsort.natsort_keygen())
     
     segs_consensus_group = segs_all.groupby('component', as_index=False, group_keys=False, sort=False, observed=True)
-    max_llr_idx = []
+    winning_rows = []
     for k, group in segs_consensus_group:
-        max_llr_idx.append(group.LLR_sample.idxmax())
-    segs_consensus = segs_all.loc[max_llr_idx,:]
+        winner = group.loc[group.LLR_sample.idxmax(), 'sample']
+        winning_rows.extend(group.index[group['sample'].eq(winner)])
+    
+    segs_consensus = segs_all.loc[winning_rows,:]
     segs_consensus = segs_consensus.sort_values(by=['CHROM','seg_start'], key=natsort.natsort_keygen())
     segs_consensus = segs_consensus.drop(['vertex', 'sum_LLR'], axis=1)
 

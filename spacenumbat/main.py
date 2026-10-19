@@ -1232,10 +1232,13 @@ def run_spacenumbat(
         
         log.info(f"Tree building completed, pass {i}")
         
+        
+        # joint_post = None in non-spatial gene-level joint mode.
+        # Other modes retain joint scoring.
         clone_post = phylo.get_clone_post(gtree=gtree,
                                           exp_post=exp_post,
                                           allele_post=allele_post,
-                                          joint_post=joint_post)
+                                          joint_post= joint_post if spatial or exp_only or mode != "rna" else None)
         
         clone_post.to_csv(os.path.join(out_dir, f"clone_post_{i}.tsv"), sep="\t")
     

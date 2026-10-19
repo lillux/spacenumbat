@@ -1055,12 +1055,9 @@ def get_clone_post(
     """
     Compute per-cell posterior probabilities over clone genotypes.
 
-    The canonical combined clone posterior is computed from ``joint_post``
-    when supplied. Expression and allele posteriors are retained as separate
-    diagnostic clone assignments.
-
-    For diagnostics, when ``joint_post`` is None, the
-    combined score ``l_clone_x + l_clone_y`` is used.
+    The combined clone posterior uses ``joint_post`` when supplied, preserving
+    spatial and expression-only inference. Otherwise it sums expression and
+    allele scores.
 
     Parameters
     ----------
@@ -1069,12 +1066,12 @@ def get_clone_post(
         ``compartment``, and ``leaf`` node attributes.
 
     exp_post : pd.DataFrame
-        Expression-based segment posterior table. Used only for
-        expression-specific diagnostic clone probabilities.
+        Expression-based segment posterior table. Also contributes to the
+        combined score when ``joint_post`` is None.
 
     allele_post : pd.DataFrame
-        Allele-based segment posterior table. Used only for
-        allele-specific diagnostic clone probabilities.
+        Allele-based segment posterior table. Also contributes to the
+        combined score when ``joint_post`` is None.
 
     seg_col : str, default="seg"
         Segment or tree-event identifier.
@@ -1462,11 +1459,8 @@ def get_clone_post(
         y = pd.DataFrame(columns=[*score_keys, "l_clone_y"])
 
     if joint_post is None:
-        # Backward-compatible fallback.
-        log.warning(
-            "get_clone_post called without joint_post; using the legacy "
-            "sum of expression and allele clone scores."
-        )
+        # non-spatial scoring.
+        log.info("Using the Numbat sum of expression and allele clone scores.")
 
         merged = x.merge(
             y,
