@@ -162,7 +162,6 @@ _FAMILIES = {
     "Intestinal tuft": ["intestinal tuft cell", "tuft cell of colon"],
     "Enteroendocrine": ["enteroendocrine cell", "enteroendocrine cell of small intestine",
                         "enterochromaffin-like cell", "type l enteroendocrine cell"],
-    "Mammary basal": ["basal cell"],
     "Mammary luminal": [
         "secretory luminal epithelial cell of mammary gland",
         "hr positive luminal epithelial cell of mammary gland",
@@ -188,7 +187,7 @@ _FAMILIES = {
     "Alveolar type I": ["type i pneumocyte"],
     "Alveolar type II": ["type ii pneumocyte"],
     "Keratinocyte": ["krt epithelial", "stratified squamous epithelial cell",
-                     "corneal and limbal epithelium"],
+                     "corneal and limbal epithelium", "basal cell"],
     "Sebocyte": ["sebum secreting cell", "sebocytes"],
     "Melanocyte": ["melanocyte"],
     "Salivary acinar": ["acinar cell of salivary gland",
