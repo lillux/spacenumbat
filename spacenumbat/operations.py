@@ -297,12 +297,11 @@ def resolve_cnvs(segs_all: pd.DataFrame, min_overlap: float = 0.5, debug: bool =
                                     key=natsort.natsort_keygen())
     
     segs_consensus_group = segs_all.groupby('component', as_index=False, group_keys=False, sort=False, observed=True)
-    winning_rows = []
+    max_llr_idx = []
     for k, group in segs_consensus_group:
-        winner = group.loc[group.LLR_sample.idxmax(), 'sample']
-        winning_rows.extend(group.index[group['sample'].eq(winner)])
-    
-    segs_consensus = segs_all.loc[winning_rows,:]
+        max_llr_idx.append(group['LLR_sample'].idxmax())
+
+    segs_consensus = segs_all.loc[max_llr_idx, :].copy()
     segs_consensus = segs_consensus.sort_values(by=['CHROM','seg_start'], key=natsort.natsort_keygen())
     segs_consensus = segs_consensus.drop(['vertex', 'sum_LLR'], axis=1)
 
