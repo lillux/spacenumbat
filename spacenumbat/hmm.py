@@ -81,7 +81,7 @@ def viterbi_loh(HMM:Mapping[str, Any]):
         lengths do not equal `n`).
     """
     n = len(HMM['x'])
-    m = HMM['Pi'][:,:,1].shape[0]
+    m = HMM['Pi'].shape[0]
     nu = np.zeros([n,m])
     #mu = np.zeros([n,m+1])
     z = np.zeros(n)

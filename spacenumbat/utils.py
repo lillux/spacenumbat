@@ -1278,7 +1278,8 @@ def detect_clonal_loh(
     -----
     - Genes are summarized per chromosome, with per-gene and per-segment SNP statistics.
     - Statistical fitting is performed using Negative Binomial and Poisson lognormal models.
-    - HMM is used to segment genes into neutral and LOH states.
+    - HMM decoding restarts at every chromosome; nuisance parameters are fitted
+      across all eligible genes.
     - Only segments classified as 'loh' are retained in the output.
     - If no LOH segments are found, returns None.
     """
@@ -1323,6 +1324,8 @@ def detect_clonal_loh(
     bulk_snps_df = bulk_snps_df[(bulk_snps_df.logFC < 8) & (bulk_snps_df.logFC > -8)]
     bulk_snps_df = bulk_snps_df.sort_values(['CHROM','gene_start'],
                                             key=natsort.natsort_keygen()).reset_index(drop=True)
+    if bulk_snps_df.empty:
+        return None
     
     fit = dist_prob.fit_lnpois(bulk_snps_df.Y_obs.values,
                      bulk_snps_df.lambda_ref.values,
@@ -1333,28 +1336,25 @@ def detect_clonal_loh(
     snp_fit = fit_snp_rate(bulk_snps_df.gene_snps.values, bulk_snps_df.gene_length.values)
     snp_rate_ref, snp_sig = snp_fit
     
-    n = bulk_snps_df.shape[0]
     A = np.array([[1-t, t],[t, 1-t]])
-    As = np.tile(A, (n, 1, 1)).transpose(1, 2, 0)
-    
-    HMM = {
-    'x': bulk_snps_df.gene_snps,
-    'Pi': As,
-    'delta': [1-t, t],
-    'pm': np.array([snp_rate_ref, snp_rate_loh]),
-    'pn': np.array(bulk_snps_df.gene_length / 1e6),
-    'snp_sig': snp_sig,
-    'y': bulk_snps_df.Y_obs,
-    'phi': [1, 0.5],
-    'lambda_star': bulk_snps_df.lambda_ref,
-    'd': bulk_snps_df.d_obs.unique(),
-    'mu': mu,
-    'sig':sig,
-    'states': ['neu', 'loh']
-    }
-    
-    vtb = hmmlib.viterbi_loh(HMM)
-    bulk_snps_df.loc[:,'cnv_state'] = vtb
+    bulk_snps_df['cnv_state'] = pd.Series(index=bulk_snps_df.index, dtype='string')
+    for _, chrom_bulk in bulk_snps_df.groupby('CHROM', observed=True, sort=False):
+        HMM = {
+            'x': chrom_bulk.gene_snps.to_numpy(),
+            'Pi': np.tile(A, (len(chrom_bulk), 1, 1)).transpose(1, 2, 0),
+            'delta': [1-t, t],
+            'pm': np.array([snp_rate_ref, snp_rate_loh]),
+            'pn': chrom_bulk.gene_length.to_numpy() / 1e6,
+            'snp_sig': snp_sig,
+            'y': chrom_bulk.Y_obs.to_numpy(),
+            'phi': [1, 0.5],
+            'lambda_star': chrom_bulk.lambda_ref.to_numpy(),
+            'd': chrom_bulk.d_obs.unique(),
+            'mu': mu,
+            'sig': sig,
+            'states': ['neu', 'loh'],
+        }
+        bulk_snps_df.loc[chrom_bulk.index, 'cnv_state'] = hmmlib.viterbi_loh(HMM)
     
     bulk_snps_df.loc[:,'snp_index'] = bulk_snps_df.index
     bulk_snps_df.loc[:,'POS'] = bulk_snps_df.gene_start
