@@ -43,6 +43,9 @@ classifiers = [
 atac = [
     "snapatac2",
 ]
+circos = [
+    "pycirclize>=1.5.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/lillux/spacenumbat"

@@ -752,6 +752,616 @@ def plot_bulks(
     return fig
 
 
+def plot_bulks_circos(
+    bulks: pd.DataFrame,
+    columns: PsbulkColumns = DEFAULT_COLUMNS,
+    *,
+    track: str = "logFC",
+    sample_order: Sequence | None = None,
+    chrom_order: Sequence | None = None,
+    chrom_sizes: Mapping | pd.Series | None = None,
+    cytobands: bool = False,
+    use_pos: bool = True,
+    min_LLR: float = 5.0,
+    min_depth: int = 8,
+    exp_limit: float = 2.0,
+    mu_scale: float = 1.0,
+    phi_mle: bool = True,
+    theta_roll: bool = False,
+    transform_states: bool = True,
+    neutral_state: str = "neu",
+    loh_state: str = "loh",
+    p_up_states: Sequence[str] = ("amp", "loh", "del"),
+    p_up_threshold: float = 0.5,
+    level2_pattern: str | None = "_2",
+    cnv_colors: Mapping[str, str] | None = None,
+    cnv_labels: Mapping[str, str] | None = None,
+    unknown_color: str = "#666666",
+    dot_size: float = 2.0,
+    dot_alpha: float = 0.6,
+    raster: bool = True,
+    exclude_gap: bool = True,
+    gaps: pd.DataFrame | None = None,
+    acen: pd.DataFrame | None = None,
+    r_lim: tuple[float, float] = (20.0, 88.0),
+    track_gap: float = 1.5,
+    chrom_gap: float = 1.0,
+    label_gap: float = 36.0,
+    chrom_label_r: float = 106.0,
+    show_x_ticks: bool = False,
+    tick_interval: float | None = None,
+    text_size: float = 8.0,
+    show_center_text: bool = True,
+    title: str | None = None,
+    figsize: tuple[float, float] = (10.0, 10.0),
+    dpi: int = 100,
+    legend: bool = True,
+    legend_fontsize: float = 8.0,
+    legend_kwargs: Mapping | None = None,
+    savepath: str | Path | None = None,
+    close: bool = True,
+) -> Figure:
+    """Plot clone pseudobulks as aligned concentric tracks using pycirclize.
+
+    Accept the concatenated pseudobulk table used by ``plot_bulks`` and draw
+    one ring, or one pair of rings, per clone. Chromosomes occupy sectors
+    shared by all clones. Signal values increase from the inner edge of each
+    ring to its outer edge, using the same value scale for every clone.
+
+    Parameters
+    ----------
+    bulks : pandas.DataFrame
+        Concatenated clone pseudobulk observations. With default ``columns``,
+        the following input columns are used:
+
+        * Always required: ``CHROM`` and either ``POS`` or ``snp_index``,
+          selected by ``use_pos``.
+        * State source: ``state_post``, falling back to ``state``. A CNV state
+          source, ``cnv_state_post`` falling back to ``cnv_state``, is also
+          required unless ``columns.cnv_state_post`` is None. Fallbacks apply
+          when a column is absent, rather than to individual missing values.
+        * Expression tracks: ``logFC`` and ``mu``. If ``phi_mle=True``, also
+          require ``phi_mle`` and ``seg_start``/``seg_end`` in position mode,
+          or ``seg_start_index``/``seg_end_index`` in SNP-index mode. If
+          ``phi_mle=False``, require ``phi_mle_roll`` instead.
+        * BAF tracks: ``pBAF`` and ``DP``; also require ``theta_hat_roll``
+          when ``theta_roll=True``.
+        * Optional: ``sample`` for clone grouping, ``n_cells`` for clone
+          labels, and ``LLR``, ``loh``, and ``p_up`` for state preparation.
+
+        Rows with missing chromosomes are discarded. If ``sample`` is absent,
+        all retained rows form a single clone labeled ``"1"``. If present,
+        sample identifiers must not be missing. The input is not modified.
+    columns : spacenumbat.plot.PsbulkColumns, default DEFAULT_COLUMNS
+        Mapping of logical fields to input column names, shared with
+        ``plot_bulks``. It also maps the chromosome, start, and end fields
+        used by ``gaps`` and ``acen``.
+    track : {"logFC", "pBAF", "both"}, default "logFC"
+        Signal to display. ``"logFC"`` draws corrected expression,
+        ``logFC - mu * mu_scale``. ``"pBAF"`` draws phased B-allele frequency.
+        ``"both"`` assigns each clone a band containing an outer expression
+        ring and an inner BAF ring.
+    sample_order : sequence, optional
+        Distinct clone identifiers to select and arrange from outermost to
+        innermost. Identifiers must match the input values and their types.
+        By default, include all clones in their order of first appearance.
+    chrom_order : sequence, optional
+        Distinct chromosomes to select and arrange clockwise. Each requested
+        chromosome must occur in the selected clones. By default, include
+        all observed chromosomes in natural order, such as 1, 2, ..., 10.
+        A leading ``chr`` prefix is removed before matching names.
+    chrom_sizes : mapping or pandas.Series, optional
+        Physical chromosome lengths in the same coordinate units as ``POS``.
+        Keys are chromosome names, for example ``{"chr1": 248956422}``.
+        A Series must be indexed by chromosome. A nonempty mapping must cover
+        every selected chromosome; additional chromosomes do not add sectors.
+        Lengths must be positive and finite, and contain all retained marker
+        and available segment coordinates. Only valid with ``use_pos=True``.
+        If omitted, sector endpoints are inferred from the observed data,
+        except when ``cytobands=True`` uses full hg38 chromosome lengths.
+        With cytobands enabled, supplied lengths must match hg38 exactly.
+    cytobands : bool, default False
+        Draw hg38 cytobands on the outer chromosome track using pycirclize's
+        example dataset and standard stain colors. This also uses the full
+        hg38 chromosome lengths so bands and pseudobulk coordinates align.
+        Only valid with ``use_pos=True`` and positions in base pairs.
+        Chromosome names such as ``1`` and ``chr1`` are both accepted; each
+        selected chromosome must exist in the hg38 dataset. The first use
+        downloads the dataset; pycirclize caches it for subsequent calls.
+    use_pos : bool, default True
+        Use physical ``POS`` coordinates and position-based segment endpoints.
+        If False, use ``snp_index`` and index-based segment endpoints instead.
+        Coordinate ranges are shared across clones within each chromosome.
+    min_LLR : float, default 5.0
+        With state transformation enabled, assign rows with ``LLR < min_LLR``
+        to ``neutral_state`` before subsequent LOH and direction handling.
+        Missing or nonnumeric LLR values are treated as zero by the upstream
+        helper. Setting this to zero disables the LLR step; an absent LLR
+        column also skips it. This changes plotting states, not row inclusion.
+    min_depth : int, default 8
+        Minimum ``DP`` for displaying a BAF point, inclusive. Must be
+        nonnegative. Expression points and theta overlays are not filtered
+        by this threshold.
+    exp_limit : float, default 2.0
+        Positive finite magnitude defining the expression range
+        ``[-exp_limit, exp_limit]``. Finite expression points outside this
+        range are clipped to the nearest boundary and remain visible.
+        Out-of-range fitted overlays are omitted.
+    mu_scale : float, default 1.0
+        Multiplier for the expression baseline correction
+        ``logFC - mu * mu_scale``. It does not rescale fitted phi overlays.
+    phi_mle : bool, default True
+        On expression tracks, draw segment-level horizontal arcs at
+        ``log2(phi_mle)``. If False, draw the rolling-expression curve at
+        ``log2(phi_mle_roll)``. Nonpositive phi values are omitted. Ignored
+        when expression tracks are not requested.
+    theta_roll : bool, default False
+        On BAF tracks, overlay curves at ``0.5 - theta_hat_roll`` and
+        ``0.5 + theta_hat_roll``, colored by CNV state and allele direction.
+        Ignored when BAF tracks are not requested.
+    transform_states : bool, default True
+        Reuse the upstream state-preparation helper to apply LLR masking,
+        LOH overrides, and allele-direction refinement, in that order.
+        If False, retain the selected source state labels for plotting.
+    neutral_state : str, default "neu"
+        Label used by LLR neutralization. Its default point color is white
+        with a black outline; override the fill through ``cnv_colors``.
+    loh_state : str, default "loh"
+        Plotting state assigned to rows where the optional ``loh`` field is
+        True. Missing values in an existing ``loh`` field produce a missing
+        plotting state in the upstream helper. Used during transformation.
+    p_up_states : sequence of str, default ("amp", "loh", "del")
+        Base CNV states refined into allele-direction and level labels when
+        ``p_up`` and a CNV state source are available. Used during
+        transformation.
+    p_up_threshold : float, default 0.5
+        Direction threshold: ``p_up > p_up_threshold`` gives ``up``;
+        values at or below the threshold give ``down``. Used during
+        transformation when allele-direction refinement is available.
+    level2_pattern : str or None, default "_2"
+        Literal substring identifying level-2 states. It controls level
+        assignment during transformation and square point markers. Other
+        points use circles. None disables level-2 detection.
+    cnv_colors : mapping of str to color, optional
+        Overrides for individual entries in the default CNA palette. Keys
+        are plotting state labels and values are Matplotlib colors.
+        Level-1 ``*_1_up/down`` aliases are added for directional colors.
+    cnv_labels : mapping of str to str, optional
+        Display labels for legend entries. Both exact state labels and
+        canonical directional labels such as ``amp_up`` are supported.
+    unknown_color : color, default "#666666"
+        Fallback color for nonmissing state labels absent from the palette.
+    dot_size : float, default 2.0
+        Nonnegative scatter-marker area in points squared.
+    dot_alpha : float, default 0.6
+        Opacity of ordinary points, between zero and one. Level-2 square
+        markers are drawn fully opaque.
+    raster : bool, default True
+        Rasterize scatter points when saving vector formats such as PDF or
+        SVG. Text, track borders, and fitted curves remain vector elements.
+    exclude_gap : bool, default True
+        Shade supplied gap and centromere intervals in light gray when
+        ``use_pos=True``. Despite the name, this does not remove observations.
+        Ignored in SNP-index mode.
+    gaps : pandas.DataFrame, optional
+        Gap intervals with chromosome, start, and end columns, defaulting to
+        ``CHROM``, ``start``, and ``end``. Column names follow the
+        ``region_*`` fields in ``columns``. Coordinates must match the marker
+        coordinate convention. Shading is restricted to the sector range.
+    acen : pandas.DataFrame, optional
+        Centromere intervals in the same format and units as ``gaps``.
+    r_lim : tuple of float, default (20.0, 88.0)
+        Inner and outer radii allocated to clone bands in pycirclize radius
+        units, where the nominal outer radius is 100. Must satisfy
+        ``0 <= inner < outer < 94``. The chromosome track occupies radii
+        94 through 97. Clone bands share the available radial space equally.
+    track_gap : float, default 1.5
+        Nonnegative radial gap between consecutive clone bands. Paired
+        expression/BAF rings additionally have a fixed internal gap of 0.6.
+    chrom_gap : float, default 1.0
+        Nonnegative angular spacing between chromosome sectors, in degrees.
+        Total spacing must leave positive angular space for chromosome data.
+    label_gap : float, default 36.0
+        Angular span reserved around the top of the circle for clone labels,
+        in degrees. Must be strictly between zero and 180.
+    chrom_label_r : float, default 106.0
+        Radial position of chromosome labels in pycirclize radius units.
+        Increase it to move the labels farther from the chromosome track.
+    show_x_ticks : bool, default False
+        Draw coordinate ticks on the chromosome track. Physical-position
+        labels are shown in megabases; SNP-index labels use the original
+        index units.
+    tick_interval : float, optional
+        Positive finite tick spacing in input coordinate units, rather than
+        displayed megabases. Defaults to 50,000,000 in position mode. In
+        SNP-index mode, each sector uses its span divided by four, rounded
+        upward and bounded below by one. Used only if ``show_x_ticks=True``.
+    text_size : float, default 8.0
+        Base font size in points for clone labels and other plot annotations.
+    show_center_text : bool, default True
+        Show signal ranges and, when coordinate ticks are enabled, their
+        units in the center of the plot. Set False to leave the center blank.
+        Clone labels, chromosome labels, the title, and legend are unaffected.
+    title : str, optional
+        Figure title. None or an empty string omits the title.
+    figsize : tuple of float, default (10.0, 10.0)
+        Figure width and height in inches.
+    dpi : int, default 100
+        Resolution in dots per inch for the figure and automatic file export.
+        Must be positive and finite. For vector output such as PDF or SVG,
+        this controls the resolution of rasterized elements, including
+        scatter points when ``raster=True``.
+    legend : bool, default True
+        Add a shared legend for nonmissing plotting states present in the
+        selected data. State presence is assessed before depth and signal
+        filtering, so an entry can remain even if no corresponding point is
+        visible.
+    legend_fontsize : float, default 8.0
+        Legend-entry font size in points.
+    legend_kwargs : mapping, optional
+        Keyword overrides passed to ``Figure.legend``, such as ``loc``,
+        ``bbox_to_anchor``, ``title``, or ``frameon``. The default position is
+        just outside the right edge of the figure.
+    savepath : str or pathlib.Path, optional
+        Output path for automatically saving the completed figure. The file
+        format follows the extension, such as ``.png``, ``.pdf``, or ``.svg``.
+        Expand a leading ``~`` and create missing parent directories. Save
+        with ``dpi=dpi`` and ``bbox_inches="tight"`` to include the legend
+        and outer labels. An existing output file is overwritten. If None,
+        return the figure without saving it.
+    close : bool, default True
+        Close the figure in pyplot before returning it to suppress automatic
+        display. The returned object remains usable with ``fig.savefig``.
+        Automatic saving, when requested, occurs before closing. Set False
+        for interactive display.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Circular pseudobulk figure, matching the return type of
+        ``plot_bulks``. Use ``bbox_inches="tight"`` when saving to include
+        the external legend and chromosome labels.
+
+    Raises
+    ------
+    ImportError
+        If the optional pycirclize dependency is missing.
+    KeyError
+        If a required coordinate, signal, overlay, state-source, or
+        supplied-region column is absent.
+    ValueError
+        If the table or selection is empty, identifiers or requested orders
+        are invalid, coordinate ranges are unusable, chromosome lengths are
+        invalid or incomplete, or plotting parameters leave no room for
+        sectors or clone tracks. Also raised for invalid track choices,
+        numeric limits, opacity, gaps, tick intervals, or DPI. Also raised
+        if cytobands are requested in SNP-index mode, a selected chromosome
+        is unavailable in hg38, or supplied lengths disagree with hg38.
+    OSError
+        If an output directory cannot be created or the figure cannot be
+        written to ``savepath``, or downloading the cytoband dataset fails.
+
+    See Also
+    --------
+    spacenumbat.plot.plot_bulks : Plot pseudobulks in rectangular panels.
+    spacenumbat.plot.plot_psbulk : Plot an individual pseudobulk profile.
+
+    Notes
+    -----
+    This function uses the optional ``circos`` extra. From a source checkout,
+    install it with ``python -m pip install '.[circos]'``.
+
+    No zero-based/one-based coordinate conversion is performed. Without
+    ``chrom_sizes`` or cytobands, physical sectors start at zero and end at
+    the largest finite marker or available segment coordinate across
+    selected clones, with a minimum length of one. Unobserved chromosome
+    tails are therefore absent. With cytobands enabled, sectors instead span
+    the full hg38 chromosomes. In SNP-index mode, each sector spans the
+    minimum through maximum observed index or available segment endpoint,
+    with minimum span one.
+
+    Nonfinite coordinates or signals and missing plotting states are omitted
+    from scatter points. Finite expression values are clipped to the
+    expression range after baseline correction; this does not alter the
+    input table or fitted overlays. BAF points are limited to the displayed
+    range ``[-0.05, 1.05]``. Rolling lines break at missing or out-of-range values
+    and state changes; no fitted line joins separate chromosomes or clones.
+    A clone with no rows on a particular chromosome retains an empty aligned
+    track, provided it has rows on at least one selected chromosome.
+
+    Examples
+    --------
+    Draw one expression ring per clone and save a 300-DPI PNG:
+
+    >>> fig = plot_bulks_circos(
+    ...     bulks, dpi=300, savepath="figures/clone_circos.png",
+    ... )
+
+    Add hg38 cytobands and use the reference chromosome lengths:
+
+    >>> fig = plot_bulks_circos(
+    ...     bulks, cytobands=True, track="both", exp_limit=1.5,
+    ...     show_center_text=False,
+    ...     dpi=300, savepath="figures/clone_circos_hg38.pdf",
+    ... )
+
+    Draw paired rings with physical chromosome lengths read from a TSV:
+
+    >>> lengths = pd.read_table("chrom_sizes.tsv").set_index("CHROM")["length"]
+    >>> fig = plot_bulks_circos(
+    ...     bulks, track="both", chrom_sizes=lengths,
+    ...     min_depth=10, show_x_ticks=True, close=False,
+    ... )
+
+    Use a custom clone column while preserving all other field mappings:
+
+    >>> from dataclasses import replace
+    >>> custom_columns = replace(DEFAULT_COLUMNS, sample="clone_id")
+    >>> renamed = bulks.rename(columns={"sample": "clone_id"})
+    >>> fig = plot_bulks_circos(
+    ...     renamed, columns=custom_columns, track="pBAF",
+    ... )
+    """
+    try:
+        from pycirclize import Circos
+    except ModuleNotFoundError as exc:
+        if exc.name != "pycirclize":
+            raise
+        raise ImportError(
+            "plot_bulks_circos requires pycirclize. Install it with "
+            "`python -m pip install 'spacenumbat[circos]'` or, from a source "
+            "checkout, `python -m pip install '.[circos]'`."
+        ) from exc
+
+    if bulks.empty:
+        raise ValueError("bulks must contain at least one row")
+    if not np.isfinite(dpi) or dpi <= 0:
+        raise ValueError("dpi must be positive and finite")
+    if track not in {"logFC", "pBAF", "both"}:
+        raise ValueError("track must be 'logFC', 'pBAF', or 'both'")
+    if min_depth < 0 or not np.isfinite(exp_limit) or exp_limit <= 0:
+        raise ValueError("min_depth must be non-negative and exp_limit positive")
+    if not 0 <= dot_alpha <= 1 or dot_size < 0:
+        raise ValueError("dot_alpha must be in [0, 1] and dot_size non-negative")
+    if not 0 <= r_lim[0] < r_lim[1] < 94:
+        raise ValueError("r_lim must satisfy 0 <= inner < outer < 94")
+    if track_gap < 0 or chrom_gap < 0 or not 0 < label_gap < 180:
+        raise ValueError("Gaps must be non-negative; label_gap must be in (0, 180)")
+    if not use_pos and chrom_sizes is not None:
+        raise ValueError("chrom_sizes is only meaningful with use_pos=True")
+    if cytobands and not use_pos:
+        raise ValueError("cytobands requires use_pos=True and hg38 base-pair coordinates")
+    if tick_interval is not None and (not np.isfinite(tick_interval) or tick_interval <= 0):
+        raise ValueError("tick_interval must be positive and finite")
+
+    def chrom_name(value):
+        name = str(value)
+        return name[3:] if name.lower().startswith("chr") else name
+
+    marker = columns.pos if use_pos else columns.snp_index
+    start = columns.seg_start if use_pos else columns.seg_start_index
+    end = columns.seg_end if use_pos else columns.seg_end_index
+    metrics = ["logFC", "pBAF"] if track == "both" else [track]
+    required = [columns.chrom, marker]
+    if "logFC" in metrics:
+        required += [columns.logfc, columns.mu]
+        required += [start, end, columns.phi_mle] if phi_mle else [columns.phi_roll]
+    if "pBAF" in metrics:
+        required += [columns.pbaf, columns.depth]
+        if theta_roll:
+            required += [columns.theta_roll]
+    _require_columns(bulks, required, "Circos pseudobulk plotting")
+
+    # Reset potentially repeated indices from concatenated clone tables.
+    df = bulks.loc[bulks[columns.chrom].notna()].copy().reset_index(drop=True)
+    if columns.sample not in df:
+        df[columns.sample] = "1"
+    if df[columns.sample].isna().any():
+        raise ValueError("Clone/sample identifiers must not be missing")
+    available = list(pd.unique(df[columns.sample]))
+    samples = available if sample_order is None else list(sample_order)
+    if not samples or len(set(samples)) != len(samples) or any(s not in available for s in samples):
+        raise ValueError("sample_order must contain distinct, existing sample identifiers")
+    df = df.loc[df[columns.sample].isin(samples)].copy()
+    df[columns.chrom] = df[columns.chrom].map(chrom_name)
+    present = list(pd.unique(df[columns.chrom]))
+    chroms = sorted(present, key=_natural_key) if chrom_order is None else list(map(chrom_name, chrom_order))
+    if not chroms or len(set(chroms)) != len(chroms) or any(c not in present for c in chroms):
+        raise ValueError("chrom_order must contain distinct, existing chromosome names")
+    df = df.loc[df[columns.chrom].isin(chroms)].copy()
+    if any(not df[columns.sample].eq(s).any() for s in samples):
+        raise ValueError("A selected clone has no rows on the selected chromosomes")
+    if chrom_gap * len(chroms) >= 360 - label_gap:
+        raise ValueError("chrom_gap is too large for this number of chromosomes")
+
+    numeric_cols = {marker, start, end, columns.logfc, columns.mu, columns.phi_mle,
+                    columns.phi_roll, columns.pbaf, columns.depth, columns.theta_roll}
+    for name in numeric_cols.intersection(df.columns):
+        df[name] = pd.to_numeric(df[name], errors="coerce").astype(float)
+    df = _prepare_plot_states(
+        df, columns, min_LLR, transform_states, neutral_state, loh_state,
+        p_up_states, p_up_threshold, level2_pattern,
+    )
+
+    sizes = {}
+    for chrom, length in ({} if chrom_sizes is None else dict(chrom_sizes)).items():
+        name, length = chrom_name(chrom), float(length)
+        if name in sizes or not np.isfinite(length) or length <= 0:
+            raise ValueError("chrom_sizes must have unique chromosomes and positive, finite lengths")
+        sizes[name] = length
+    cytoband_file = None
+    if cytobands:
+        from pycirclize.parser import Bed
+        from pycirclize.utils import load_eukaryote_example_dataset
+
+        bed_file, cytoband_file, _ = load_eukaryote_example_dataset("hg38")
+        hg38_sizes = {chrom_name(rec.chr): rec.end for rec in Bed(bed_file).records}
+        for chrom in chroms:
+            if chrom not in hg38_sizes:
+                raise ValueError(f"Chromosome {chrom} is not available in the hg38 cytoband dataset")
+            if sizes and chrom not in sizes:
+                raise ValueError(f"chrom_sizes is missing chromosome {chrom}")
+            if chrom in sizes and sizes[chrom] != hg38_sizes[chrom]:
+                raise ValueError(f"chrom_sizes for chromosome {chrom} must match hg38: {hg38_sizes[chrom]}")
+        sizes = {chrom: hg38_sizes[chrom] for chrom in chroms}
+    coord_cols = [c for c in (marker, start, end) if c in df]
+    sectors = {}
+    for chrom in chroms:
+        coords = df.loc[df[columns.chrom].eq(chrom), coord_cols].to_numpy().ravel()
+        coords = coords[np.isfinite(coords)]
+        if not len(coords):
+            raise ValueError(f"Chromosome {chrom} has no finite coordinates")
+        lo = 0.0 if use_pos else float(coords.min())
+        hi = sizes.get(chrom, max(float(coords.max()), lo + 1.0))
+        if sizes and chrom not in sizes:
+            raise ValueError(f"chrom_sizes is missing chromosome {chrom}")
+        if coords.min() < lo or coords.max() > hi:
+            raise ValueError(f"Coordinates on chromosome {chrom} fall outside its supplied range")
+        sectors[f"chr{chrom}" if cytobands else chrom] = (lo, hi)
+
+    colors = default_cnv_colors()
+    colors[neutral_state] = "white"
+    if cnv_colors is not None:
+        colors.update(cnv_colors)
+    colors = _with_level1_aliases(colors)
+    for state in df[_PLOT_STATE].dropna().unique():
+        colors.setdefault(str(state), unknown_color)
+    custom_labels = {} if cnv_labels is None else cnv_labels
+    labels = {
+        state: custom_labels.get(state, custom_labels.get(state.replace("_1_", "_"), state.replace("_1_", "_")))
+        for state in colors
+    }
+    regions = _excluded_regions(gaps, acen, columns) if exclude_gap and use_pos else None
+    if regions is not None:
+        regions = regions.copy()
+        regions["chrom"] = regions["chrom"].map(chrom_name)
+
+    width = (r_lim[1] - r_lim[0] - track_gap * (len(samples) - 1)) / len(samples)
+    inner_gap = 0.6 if track == "both" else 0.0
+    subwidth = (width - inner_gap) / len(metrics)
+    if subwidth <= 0:
+        raise ValueError("Too many clones for r_lim and track_gap; decrease track_gap")
+    circos = Circos(sectors, start=label_gap / 2, end=360 - label_gap / 2, space=chrom_gap)
+    if cytobands:
+        circos.add_cytoband_tracks((94, 97), cytoband_file)
+
+    def rolling_line(ring, x, values, states, limits, color=None):
+        # Split at missing values and state changes; preserve breaks after sorting.
+        data = pd.DataFrame({"x": x, "y": values, "state": states}).sort_values("x", kind="stable")
+        valid = (np.isfinite(data.x) & np.isfinite(data.y)
+                 & data.y.between(*limits) & data.state.notna())
+        changed = data.state.ne(data.state.shift()).fillna(True)
+        runs = ((~valid) | (~valid.shift(fill_value=False)) | changed).cumsum()
+        for _, run in data.loc[valid].groupby(runs.loc[valid], sort=False):
+            ring.line(run.x.to_numpy(), run.y.to_numpy(), vmin=limits[0], vmax=limits[1],
+                      color=color or colors.get(str(run.state.iloc[0]), unknown_color), lw=0.7, zorder=4)
+
+    grouped = {s: df.loc[df[columns.sample].eq(s)] for s in samples}
+    for i, sample in enumerate(samples):
+        top = r_lim[1] - i * (width + track_gap)
+        label = str(sample)
+        if columns.n_cells in df:
+            counts = grouped[sample][columns.n_cells].dropna().unique()
+            if len(counts) == 1:
+                label += f" (n={counts[0]})"
+        circos.text(label, r=top - width / 2, deg=0, size=text_size, ha="center", va="center")
+
+    for ci, sector in enumerate(circos.sectors):
+        chrom = chrom_name(sector.name) if cytobands else sector.name
+        if cytobands:
+            chromosome = sector.get_track("cytoband")
+        else:
+            chromosome = sector.add_track((94, 97))
+            chromosome.axis(fc="#eeeeee" if ci % 2 == 0 else "#cccccc", ec="black", lw=0.5)
+        sector.text(f"chr{chrom}", r=chrom_label_r, size=text_size + 1)
+        if show_x_ticks:
+            interval = tick_interval or (50_000_000 if use_pos else max(1, np.ceil(sector.size / 4)))
+            formatter = (lambda x: f"{x / 1e6:g}") if use_pos else (lambda x: f"{x:g}")
+            chromosome.xticks_by_interval(interval, label_formatter=formatter, label_size=text_size - 1,
+                                          tick_length=1, show_endlabel=False)
+        for i, sample in enumerate(samples):
+            data = grouped[sample].loc[grouped[sample][columns.chrom].eq(chrom)].sort_values(marker, kind="stable")
+            top = r_lim[1] - i * (width + track_gap)
+            states = data[_PLOT_STATE].astype("string")
+            level2 = (states.str.contains(level2_pattern, regex=False, na=False)
+                      if level2_pattern is not None else pd.Series(False, index=data.index))
+            x = data[marker]
+            for j, metric in enumerate(metrics):
+                high = top - j * (subwidth + inner_gap)
+                ring = sector.add_track((high - subwidth, high), r_pad_ratio=0.05)
+                ring.axis(fc="white", ec="0.75", lw=0.35)
+                if regions is not None:
+                    for region in regions.loc[regions.chrom.eq(chrom)].itertuples(index=False):
+                        a, b = float(region.start), float(region.end)
+                        if not np.isfinite([a, b]).all():
+                            continue
+                        a, b = max(sector.start, a), min(sector.end, b)
+                        if a < b:
+                            ring.rect(a, b, fc="0.94", ec="none", zorder=0.5)
+                if metric == "logFC":
+                    limits, baseline = (-exp_limit, exp_limit), 0.0
+                    y = data[columns.logfc] - data[columns.mu] * mu_scale
+                    y = y.where(np.isfinite(y)).clip(*limits)
+                else:
+                    limits, baseline = (-0.05, 1.05), 0.5
+                    y = data[columns.pbaf].where(data[columns.depth] >= min_depth)
+                ring.line([sector.start, sector.end], [baseline, baseline],
+                          vmin=limits[0], vmax=limits[1], color="0.55", lw=0.5, ls="--", zorder=1)
+                valid = np.isfinite(x) & np.isfinite(y) & y.between(*limits) & states.notna()
+                for mask, symbol, alpha in ((valid & ~level2, "o", dot_alpha), (valid & level2, "s", 1.0)):
+                    if mask.any():
+                        ring.scatter(x.loc[mask].to_numpy(), y.loc[mask].to_numpy(),
+                                     vmin=limits[0], vmax=limits[1], s=dot_size, marker=symbol,
+                                     c=[colors.get(str(s), unknown_color) for s in states.loc[mask]],
+                                     ec="black", lw=0.15, alpha=alpha, rasterized=raster, zorder=2)
+                if metric == "logFC" and phi_mle:
+                    segments = data[[start, end, columns.phi_mle]].drop_duplicates()
+                    for a, b, phi in segments.itertuples(index=False, name=None):
+                        if not np.isfinite([a, b, phi]).all() or b < a or phi <= 0:
+                            continue
+                        value = np.log2(phi)
+                        if limits[0] <= value <= limits[1]:
+                            ring.line([a, b], [value, value], vmin=limits[0], vmax=limits[1],
+                                      color="darkred", lw=0.8, zorder=3)
+                elif metric == "logFC":
+                    values = np.log2(data[columns.phi_roll].where(data[columns.phi_roll] > 0))
+                    rolling_line(ring, x, values, states, limits, color="darkred")
+                elif theta_roll:
+                    base = data[_PLOT_CNV_STATE] if _PLOT_CNV_STATE in data else states
+                    for suffix, sign in (("down", -1), ("up", 1)):
+                        values = 0.5 + sign * data[columns.theta_roll]
+                        rolling_line(ring, x, values, base.astype("string") + f"_{suffix}", limits)
+
+    if show_center_text:
+        scale_text = []
+        if "logFC" in metrics:
+            scale_text.append(f"logFC: {-exp_limit:g} to {exp_limit:g}")
+        if "pBAF" in metrics:
+            scale_text.append("pBAF: 0 to 1")
+        if show_x_ticks:
+            scale_text.append("positions: Mb" if use_pos else "positions: SNP index")
+        circos.text("\n".join(scale_text), r=0, size=max(5, text_size - 1), color="0.35", ha="center", va="center")
+    fig = circos.plotfig(figsize=figsize, dpi=dpi)
+    if title:
+        fig.suptitle(title, fontsize=text_size + 3)
+    if legend:
+        kwargs = {"loc": "center left", "bbox_to_anchor": (0.98, 0.5)}
+        if legend_kwargs is not None:
+            kwargs.update(legend_kwargs)
+        _add_legend(fig, df[_PLOT_STATE], colors, labels, None, True, legend_fontsize, kwargs)
+        # White neutral markers need an outline in the legend as well.
+        for handle in fig.legends[-1].get_lines():
+            handle.set_markeredgecolor("black")
+            handle.set_markeredgewidth(0.4)
+    if savepath is not None:
+        savepath = Path(savepath).expanduser()
+        savepath.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
+    if close:
+        plt.close(fig)
+    return fig
+
+
 
 #### plot_exp_roll
 
